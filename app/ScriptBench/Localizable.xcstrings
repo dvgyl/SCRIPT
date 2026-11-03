@@ -1,0 +1,303 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "%@, session %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@, session %2$@"
+          }
+        }
+      }
+    },
+    "%lld, %lld lines" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$lld, %2$lld lines"
+          }
+        }
+      }
+    },
+    "A session cannot start yet" : {
+
+    },
+    "Aborted" : {
+
+    },
+    "Begin" : {
+
+    },
+    "Bench %@-%@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Bench %1$@-%2$@"
+          }
+        }
+      }
+    },
+    "Bench session" : {
+
+    },
+    "Bring the pen to the tablet" : {
+
+    },
+    "Bring the pen to the tablet. The app compares the two clocks at the first pen event." : {
+
+    },
+    "Clock check" : {
+
+    },
+    "Close the session" : {
+
+    },
+    "Completed" : {
+
+    },
+    "Damaged" : {
+
+    },
+    "Declined" : {
+
+    },
+    "Device problem" : {
+
+    },
+    "Disturbance" : {
+
+    },
+    "Done" : {
+
+    },
+    "Driver version" : {
+
+    },
+    "Exclude" : {
+
+    },
+    "Export" : {
+
+    },
+    "Exported" : {
+
+    },
+    "Failed: the tablet clock differs from the uptime by %@ s" : {
+
+    },
+    "Free at least 500 MB on this Mac, then start the session." : {
+
+    },
+    "Glossy" : {
+
+    },
+    "Interrupted" : {
+
+    },
+    "Last qualification" : {
+
+    },
+    "Leave the session" : {
+
+    },
+    "Mac" : {
+
+    },
+    "Mac asset code" : {
+
+    },
+    "Mark" : {
+
+    },
+    "Matte" : {
+
+    },
+    "Model" : {
+
+    },
+    "Motion system" : {
+
+    },
+    "Motion system version" : {
+
+    },
+    "Mounting" : {
+
+    },
+    "New" : {
+
+    },
+    "New bench session" : {
+
+    },
+    "New qualification session" : {
+
+    },
+    "New session" : {
+
+    },
+    "Next run" : {
+
+    },
+    "Nib" : {
+
+    },
+    "None" : {
+
+    },
+    "None for this tablet and pen" : {
+
+    },
+    "Not enough free storage" : {
+
+    },
+    "Not known" : {
+
+    },
+    "OK" : {
+
+    },
+    "Open" : {
+
+    },
+    "Open run" : {
+
+    },
+    "Operator" : {
+
+    },
+    "Operator code" : {
+
+    },
+    "Origin" : {
+
+    },
+    "Paper-like" : {
+
+    },
+    "Passed" : {
+
+    },
+    "Pen" : {
+
+    },
+    "Program" : {
+
+    },
+    "Qualification" : {
+
+    },
+    "Qualification session" : {
+
+    },
+    "Repeat requested" : {
+
+    },
+    "Resume" : {
+
+    },
+    "Run %lld" : {
+
+    },
+    "Run id" : {
+
+    },
+    "Runs" : {
+
+    },
+    "SCRIPT Bench" : {
+
+    },
+    "SCRIPT Bench cannot start" : {
+
+    },
+    "Sessions on this Mac" : {
+
+    },
+    "Set origin" : {
+
+    },
+    "Show the exports in Finder" : {
+
+    },
+    "Something went wrong" : {
+
+    },
+    "Start the bench session" : {
+
+    },
+    "Start the qualification" : {
+
+    },
+    "Surface" : {
+
+    },
+    "System" : {
+
+    },
+    "Tablet" : {
+
+    },
+    "Tablet area" : {
+
+    },
+    "Tablet asset code" : {
+
+    },
+    "Tablet clock" : {
+
+    },
+    "Task" : {
+
+    },
+    "Technical failure" : {
+
+    },
+    "The export failed" : {
+
+    },
+    "The journal could not be written" : {
+
+    },
+    "The qualification could not be recorded." : {
+
+    },
+    "The session could not start." : {
+
+    },
+    "The session is closed and stays on this Mac. Export it again from Home." : {
+
+    },
+    "The session stopped. Leave it, then resume it from Home." : {
+
+    },
+    "The sessions could not be read." : {
+
+    },
+    "The tablet event clock differs from the system uptime by %@ s, so the sample times would not match the app events. No session can start in this launch." : {
+
+    },
+    "The tablet of this session is not in the tablet table." : {
+
+    },
+    "Time limit" : {
+
+    },
+    "Unable" : {
+
+    },
+    "Use letters, digits, and hyphens only." : {
+
+    },
+    "Used" : {
+
+    },
+    "Wacom Pro Pen 3" : {
+
+    }
+  },
+  "version" : "1.0"
+}

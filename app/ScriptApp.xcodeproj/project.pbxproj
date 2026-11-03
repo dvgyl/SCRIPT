@@ -11,6 +11,11 @@
 		C20000000000000000000001 /* battery.json in Resources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000001 /* battery.json */; };
 		C20000000000000000000002 /* demo.json in Resources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000002 /* demo.json */; };
 		C20000000000000000000003 /* instruments.json in Resources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000003 /* instruments.json */; };
+		BE6000000000000000000001 /* ScriptCore in Frameworks */ = {isa = PBXBuildFile; productRef = BE7000000000000000000001 /* ScriptCore */; };
+		BE6000000000000000000002 /* battery.json in Resources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000001 /* battery.json */; };
+		BE6000000000000000000003 /* demo.json in Resources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000002 /* demo.json */; };
+		BE6000000000000000000004 /* instruments.json in Resources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000003 /* instruments.json */; };
+		BE6000000000000000000005 /* bench_programs.json in Resources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000004 /* bench_programs.json */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -28,6 +33,13 @@
 			remoteGlobalIDString = AA0000000000000000000001;
 			remoteInfo = ScriptApp;
 		};
+		BE8000000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A90000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = BE2000000000000000000001;
+			remoteInfo = ScriptBench;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
@@ -37,12 +49,17 @@
 		C10000000000000000000001 /* battery.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; name = battery.json; path = ../contract/battery.json; sourceTree = SOURCE_ROOT; };
 		C10000000000000000000002 /* demo.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; name = demo.json; path = ../contract/configs/demo.json; sourceTree = SOURCE_ROOT; };
 		C10000000000000000000003 /* instruments.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; name = instruments.json; path = ../contract/instruments.json; sourceTree = SOURCE_ROOT; };
+		BE0000000000000000000001 /* ScriptBench.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ScriptBench.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		BE0000000000000000000002 /* ScriptBenchTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ScriptBenchTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		C10000000000000000000004 /* bench_programs.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; name = bench_programs.json; path = ../contract/bench_programs.json; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		A20000000000000000000001 /* ScriptApp */ = {isa = PBXFileSystemSynchronizedRootGroup; path = ScriptApp; sourceTree = "<group>"; };
 		A20000000000000000000002 /* ScriptAppTests */ = {isa = PBXFileSystemSynchronizedRootGroup; path = ScriptAppTests; sourceTree = "<group>"; };
 		A20000000000000000000003 /* ScriptAppUITests */ = {isa = PBXFileSystemSynchronizedRootGroup; path = ScriptAppUITests; sourceTree = "<group>"; };
+		BE1000000000000000000001 /* ScriptBench */ = {isa = PBXFileSystemSynchronizedRootGroup; path = ScriptBench; sourceTree = "<group>"; };
+		BE1000000000000000000002 /* ScriptBenchTests */ = {isa = PBXFileSystemSynchronizedRootGroup; path = ScriptBenchTests; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -68,6 +85,21 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		BE4000000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BE6000000000000000000001 /* ScriptCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BE4000000000000000000002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -77,6 +109,8 @@
 				A20000000000000000000001 /* ScriptApp */,
 				A20000000000000000000002 /* ScriptAppTests */,
 				A20000000000000000000003 /* ScriptAppUITests */,
+				BE1000000000000000000001 /* ScriptBench */,
+				BE1000000000000000000002 /* ScriptBenchTests */,
 				C30000000000000000000001 /* Contract */,
 				A30000000000000000000002 /* Products */,
 			);
@@ -88,6 +122,8 @@
 				A10000000000000000000001 /* ScriptApp.app */,
 				A10000000000000000000002 /* ScriptAppTests.xctest */,
 				A10000000000000000000003 /* ScriptAppUITests.xctest */,
+				BE0000000000000000000001 /* ScriptBench.app */,
+				BE0000000000000000000002 /* ScriptBenchTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -98,6 +134,7 @@
 				C10000000000000000000001 /* battery.json */,
 				C10000000000000000000002 /* demo.json */,
 				C10000000000000000000003 /* instruments.json */,
+				C10000000000000000000004 /* bench_programs.json */,
 			);
 			name = Contract;
 			sourceTree = "<group>";
@@ -170,6 +207,50 @@
 			productReference = A10000000000000000000003 /* ScriptAppUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
+		BE2000000000000000000001 /* ScriptBench */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BEA000000000000000000001 /* Build configuration list for PBXNativeTarget "ScriptBench" */;
+			buildPhases = (
+				BE3000000000000000000001 /* Sources */,
+				BE4000000000000000000001 /* Frameworks */,
+				BE5000000000000000000001 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				BE1000000000000000000001 /* ScriptBench */,
+			);
+			name = ScriptBench;
+			packageProductDependencies = (
+				BE7000000000000000000001 /* ScriptCore */,
+			);
+			productName = ScriptBench;
+			productReference = BE0000000000000000000001 /* ScriptBench.app */;
+			productType = "com.apple.product-type.application";
+		};
+		BE2000000000000000000002 /* ScriptBenchTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BEA000000000000000000002 /* Build configuration list for PBXNativeTarget "ScriptBenchTests" */;
+			buildPhases = (
+				BE3000000000000000000002 /* Sources */,
+				BE4000000000000000000002 /* Frameworks */,
+				BE5000000000000000000002 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				BE8000000000000000000002 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				BE1000000000000000000002 /* ScriptBenchTests */,
+			);
+			name = ScriptBenchTests;
+			productName = ScriptBenchTests;
+			productReference = BE0000000000000000000002 /* ScriptBenchTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -190,6 +271,13 @@
 					AA0000000000000000000003 = {
 						CreatedOnToolsVersion = 27.2;
 						TestTargetID = AA0000000000000000000001;
+					};
+					BE2000000000000000000001 = {
+						CreatedOnToolsVersion = 27.2;
+					};
+					BE2000000000000000000002 = {
+						CreatedOnToolsVersion = 27.2;
+						TestTargetID = BE2000000000000000000001;
 					};
 				};
 			};
@@ -213,6 +301,8 @@
 				AA0000000000000000000001 /* ScriptApp */,
 				AA0000000000000000000002 /* ScriptAppTests */,
 				AA0000000000000000000003 /* ScriptAppUITests */,
+				BE2000000000000000000001 /* ScriptBench */,
+				BE2000000000000000000002 /* ScriptBenchTests */,
 			);
 		};
 /* End PBXProject section */
@@ -236,6 +326,24 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		A60000000000000000000003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BE5000000000000000000001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BE6000000000000000000002 /* battery.json in Resources */,
+				BE6000000000000000000003 /* demo.json in Resources */,
+				BE6000000000000000000004 /* instruments.json in Resources */,
+				BE6000000000000000000005 /* bench_programs.json in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BE5000000000000000000002 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -266,6 +374,20 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		BE3000000000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BE3000000000000000000002 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -278,6 +400,11 @@
 			isa = PBXTargetDependency;
 			target = AA0000000000000000000001 /* ScriptApp */;
 			targetProxy = E10000000000000000000002 /* PBXContainerItemProxy */;
+		};
+		BE8000000000000000000002 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = BE2000000000000000000001 /* ScriptBench */;
+			targetProxy = BE8000000000000000000001 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -444,6 +571,98 @@
 			};
 			name = Release;
 		};
+		BE9000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "ScriptBench-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "SCRIPT Bench";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.dvgyl.script.bench;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SCRIPT_SOURCE_REVISION = unknown;
+				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+			};
+			name = Debug;
+		};
+		BE9000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "ScriptBench-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "SCRIPT Bench";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.dvgyl.script.bench;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SCRIPT_SOURCE_REVISION = unknown;
+				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+			};
+			name = Release;
+		};
+		BE9000000000000000000003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.dvgyl.script.bench.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ScriptBench.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ScriptBench";
+			};
+			name = Debug;
+		};
+		BE9000000000000000000004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.dvgyl.script.bench.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ScriptBench.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ScriptBench";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -483,6 +702,24 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		BEA000000000000000000001 /* Build configuration list for PBXNativeTarget "ScriptBench" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BE9000000000000000000001 /* Debug */,
+				BE9000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		BEA000000000000000000002 /* Build configuration list for PBXNativeTarget "ScriptBenchTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BE9000000000000000000003 /* Debug */,
+				BE9000000000000000000004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
@@ -494,6 +731,10 @@
 
 /* Begin XCSwiftPackageProductDependency section */
 		B20000000000000000000001 /* ScriptCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = ScriptCore;
+		};
+		BE7000000000000000000001 /* ScriptCore */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = ScriptCore;
 		};
