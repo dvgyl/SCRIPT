@@ -2,9 +2,10 @@
  "format": "script.journal",
  "version": "1.0",
  "sessionID": "3F2A9C1E-0000-4000-8000-000000000001",
+ "demo": true,
  "journal": {
-  "bytes": 16630,
-  "lines": 19,
-  "sha256": "21419c3f83e512445c847c4889339105b48f2732bca3a414785c2b7755e95379"
+  "bytes": 17587,
+  "lines": 20,
+  "sha256": "e4a0d5d4d1a1fa2a5504afbd60ed63adef738a8e5c1ea7c1ed5490abb7fbbf1d"
  }
 }

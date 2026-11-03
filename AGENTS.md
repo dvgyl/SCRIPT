@@ -23,7 +23,10 @@ The recording format is shared by Swift and Python. To change it:
 - No local human dataset may be read, extracted, or analysed. This includes EMOTHAW, Mergl, PaHaW, and every dataset in the earlier project's study materials. A written governance decision is necessary first.
 - Public datasets with a CC BY licence may be used to test readers and features only. Do not train or evaluate a screening model on them.
 - `screening()` accepts synthetic cohorts and cleared datasets only.
-- The app must never show a result, score, or interpretation to the person who draws.
+- The app must never show a result, score, or interpretation to anyone, including the operator. The operator sees only a neutral safety alert.
+- The safety protocol in `docs/DESIGN.md` section 15 is a hard requirement. A change that weakens it (for example, a self-administered block with a safety item and no `remoteReview`, or a flow that differs when a flag is raised) is a defect.
+- Instrument text in `scriptkin/instruments.py` must match the published form word for word. Do not edit it without checking the source and the licence. The app refuses an instrument whose `textStatus` is not `verified`.
+- Crisis lists must come from the official pages of each service, with the date they were checked.
 
 ## Commits
 

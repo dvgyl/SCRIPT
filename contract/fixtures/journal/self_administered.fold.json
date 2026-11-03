@@ -1,0 +1,78 @@
+{
+ "sessionID": "3F2A9C1E-0000-4000-8000-00000000000B",
+ "purpose": "study",
+ "administration": "self",
+ "state": "closed",
+ "counts": {
+  "sessionOpened": 1,
+  "handoff": 0,
+  "trialStarted": 2,
+  "trialBegan": 2,
+  "contactBegan": 2,
+  "sample": 10,
+  "correction": 0,
+  "contactEnded": 2,
+  "hover": 0,
+  "finger": 0,
+  "trialEnded": 2,
+  "questionnaireStarted": 2,
+  "response": 17,
+  "questionnaireEnded": 2,
+  "safetyFlagged": 0,
+  "safetyShown": 1,
+  "safetyAction": 0,
+  "mark": 0,
+  "recovered": 0,
+  "sessionClosed": 1
+ },
+ "trials": [
+  {
+   "index": 0,
+   "task": "practice",
+   "attempt": 1,
+   "practice": true,
+   "began": true,
+   "outcome": "completed",
+   "contacts": 1,
+   "samples": 4,
+   "corrections": 0,
+   "unresolved": 0
+  },
+  {
+   "index": 1,
+   "task": "loops",
+   "attempt": 1,
+   "practice": false,
+   "began": true,
+   "outcome": "completed",
+   "contacts": 1,
+   "samples": 6,
+   "corrections": 0,
+   "unresolved": 0
+  }
+ ],
+ "questionnaires": [
+  {
+   "block": 0,
+   "instrument": "phq8",
+   "answered": 9,
+   "skipped": 0,
+   "outcome": "completed"
+  },
+  {
+   "block": 1,
+   "instrument": "gad7",
+   "answered": 8,
+   "skipped": 0,
+   "outcome": "completed"
+  }
+ ],
+ "safety": {
+  "flags": 0,
+  "crisisListShown": 1,
+  "operatorAlerts": 0,
+  "actions": 0
+ },
+ "unmatchedCorrections": 0,
+ "truncatedBytes": 0
+}

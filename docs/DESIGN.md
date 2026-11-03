@@ -120,28 +120,45 @@ An export is the folder `Exports/<participant>_<first 8 hex digits of the sessio
 
 | kind | written when | fields |
 |---|---|---|
-| `sessionOpened` | line 0 | `format` (`"1.0"`), `sessionID`, `participant`, `openedAt` (ISO 8601 UTC), `openedUptime`, `boot` (boot-session UUID), `app {version, build, sourceRevision}`, `device {model, os, nativeScale}`, `scale`, `pencil {declared}`, `channels`, `input`, `battery {id, version, sha256}` |
-| `trialStarted` | the stimulus becomes visible | `t`, `trial {index, task, attempt}`, `spec` (full task specification), `view {width, height}`, `stimulusOrigin {x, y}` |
+| `sessionOpened` | line 0 | `format` (`"1.0"`), `purpose`, `sessionID`, `participant`, `openedAt` (ISO 8601 UTC), `openedUptime`, `boot` (boot-session UUID), `app {version, build, sourceRevision}`, `device {model, os, nativeScale, asset}`, `surface {protector, nib}`, `qualification`?, `scale`, `pencil {declared}`, `channels`, `input`, `administration`, `study`, `visit {id, number}`, `ageBand`, `jurisdiction`, `locale`, `consent`, `ethics`, `battery {id, version, sha256}` |
+| `handoff` | the iPad passes to another person | `t`, `to` (`participant`, `operator`) |
+| `trialStarted` | the stimulus becomes visible | `t`, `trial {index, task, attempt}`, `spec` (full task specification), `practice`, `position`, `hand`, `instruction {id, version, locale}`, `accommodations`, `view {width, height}`, `stimulusOrigin {x, y}` |
+| `trialBegan` | the participant taps Begin | `t`, `trial` (index) |
 | `contactBegan` | Pencil touches down | `t`, `contact`, `maxForce`? |
 | `sample` | each coalesced Pencil touch | `contact`, `t`, `x`, `y`, `force`?, `altitude`?, `azimuth`?, `roll`?, `phase`, `est`, `pending {expect, update}`? |
 | `correction` | `touchesEstimatedPropertiesUpdated` | `contact` (or absent when unmatched), `update`, `arrived`, any of `x`, `y`, `force`, `altitude`, `azimuth`, `roll`, then `expect` (bits still pending) |
 | `contactEnded` | lift or cancel | `t`, `contact`, `cancelled` |
 | `hover` | a hover recognizer change | `t`, `clock` (`callback`), `x`, `y`, `z`, `altitude`?, `azimuth`?, `roll`? |
 | `finger` | a finger contact begins or ends | `t`, `phase`, `x`, `y` |
-| `trialEnded` | the trial ends | `t`, `trial` (index), `reason` (`participantDone`, `timeLimit`, `operatorAbort`, `backgrounded`) |
+| `trialEnded` | the trial ends | `t`, `trial` (index), `reason` |
+| `questionnaireStarted` | an instrument appears | `t`, `block`, `instrument {id, version, locale}` |
+| `response` | the participant answers or skips an item | `t`, `block`, `item`, `value`? (absent when skipped), `skipped` |
+| `questionnaireEnded` | the instrument closes | `t`, `block`, `reason` (`completed`, `declined`, `interrupted`) |
+| `safetyFlagged` | a safety item is endorsed or skipped | `t`, `block`, `item`, `value`? , `skipped` |
+| `safetyShown` | the app shows safety content | `t`, `what` (`crisisList`, `operatorAlert`), `listVersion`? |
+| `safetyAction` | the operator records the response to a flag | `t`, `code`, `role` |
 | `mark` | operator action | `t`, `trial` (index), `code` (`repeatRequested`, `disturbance`, `deviceProblem`, `exclude`) |
-| `recovered` | relaunch adopts an open journal | `t`, `at`, `boot`, `truncatedBytes`, `interrupted`? (trial index) |
+| `recovered` | relaunch adopts an open journal | `t`, `at`, `boot`, `truncatedBytes`, `interrupted`? (trial index), `interruptedBlock`? |
 | `sessionClosed` | close | `t`, `counts` (number of lines of each other kind before this line; every kind is present, zero included) |
 
 Field notes:
 
-- `scale` is one of `{"kind": "modelTable", "mmPerPoint", "ppi", "nativeScale"}`, `{"kind": "ruler", "mmPerPoint", "measuredMM", "drawnPoints"}`, or `{"kind": "unknown"}`. The formula is `mmPerPoint = 25.4 × nativeScale / ppi`. An unknown scale makes the library refuse every feature that needs millimetres.
+- `purpose` is `study` or `qualification` (section 16).
+- `scale` is one of `{"kind": "modelTable", "mmPerPoint", "ppi", "nativeScale"}`, `{"kind": "reference", "object", "mmPerPoint", "lengthMM", "drawnPoints"}`, or `{"kind": "unknown"}`. `object` is `steelRule` or `idCard` (an ISO/IEC 7810 ID-1 card, 85.60 mm wide). The model-table formula is `mmPerPoint = 25.4 × nativeScale / ppi`. An unknown scale makes the library refuse every feature that needs millimetres.
 - `channels` is the planned channel set: `{"force": bool, "altitude": bool, "azimuth": bool, "roll": bool, "hover": bool}`. It comes from the declared Pencil model and the hover support of the device. QC compares the plan with the data.
 - `input` is `pencil` in normal use. It is `directTouchAsPen` only in simulator tests, because the simulator cannot make Pencil touches. The library marks such recordings as simulated, and QC refuses every feature that needs a Pencil-only channel.
+- `device.asset` is a pseudonymous asset code that the site assigns to the iPad. `surface.protector` is `none`, `glossy`, `matte`, `paperlike`, or `unknown`; `surface.nib` is `new`, `used`, or `unknown`. `qualification` is `{"sessionID", "at"}` of the last qualification session on this device and Pencil, or absent.
+- `administration` is `supervised` or `self`. `study` is `{id, site, configID, configVersion, configSHA256, protocolVersion}`. `visit` links repeated sessions of one participant: `id` is a study visit code, `number` starts at 1.
+- `ageBand` is `13-17` or `18-24`. `jurisdiction` is an ISO 3166-1 alpha-2 country code. `locale` is a BCP 47 tag.
+- `consent` and `ethics` hold attestations and document versions only (section 15.4). The journal never holds a name, a date of birth, a signature, or contact details.
+- `trialStarted.position` is the 1-based position of the task in the session order. `hand` is `left`, `right`, or `unknown`. `practice` is true for a practice task; the library excludes practice trials from features. `accommodations` is a list of codes: `readAloud`, `largerText`, `extraTime`, `positionAssist`, `other`.
+- `trialEnded.reason` is `participantDone`, `timeLimit`, `declined`, `unable`, `operatorAbort`, `backgrounded`, or `technicalFailure`. `declined` means that the participant chose not to do the task. `unable` means that the participant could not do it.
 - `contact` is an integer, unique in the session, that starts at 1. A correction that arrives after the next trial starts is therefore still unambiguous.
-- `update` is `estimationUpdateIndex`. A correction never edits a sample. The library joins them by `(contact, update)`.
+- `update` is `estimationUpdateIndex`. A correction never edits a sample. The library joins them by `(contact, update)`. When two samples share a key, a correction with that key applies to both.
 - `z` in `hover` is normalized: 0 at contact, 1 at the maximum range. It has no unit.
 - Finger contacts never produce samples. They exist for QC only.
+- `block` numbers questionnaire blocks from 0 in session order. `item` is the item identifier from `contract/instruments.json`. `value` is the response value of the chosen option.
+- Responses are in the journal, because the journal is the single source of session state and crash recovery. `scriptkin` can write a pen-only copy of a journal for analysis that must stay blind to the labels.
 
 ### 3.4 Integrity rules
 
@@ -152,7 +169,7 @@ The reader raises `JournalError` when a rule fails.
 - **I3.** Line 0 is `sessionOpened`. The last line is `sessionClosed`. The major version matches the reader.
 - **I4.** `sessionClosed.counts` equals a recount.
 - **I5.** The manifest byte count, line count, and SHA-256 match the file.
-- **I6.** Nesting holds. Samples and `contactEnded` are inside an open contact. Contacts are inside an open trial. Trials do not overlap.
+- **I6.** Nesting holds. Samples and `contactEnded` are inside an open contact. Contacts are inside an open trial. `trialBegan` follows its `trialStarted` inside the same trial. Responses and safety flags are inside an open questionnaire block. Trials and questionnaire blocks do not overlap.
 - **I7.** Uptime values are compared only inside one `boot`.
 
 These are **QC findings**, not integrity failures: duplicate timestamps, gaps, a low sample rate, unresolved estimates, unmatched corrections, finger contacts, and a planned channel that the data does not show. A minor version adds optional keys only.
@@ -162,23 +179,27 @@ These are **QC findings**, not integrity failures: duplicate timestamps, gaps, a
 The fold summary is the shared test oracle. Both languages produce it from a journal:
 
 ```json
-{"sessionID": "...", "state": "ready | drawing | suspended | closed",
+{"sessionID": "...", "purpose": "study", "administration": "supervised",
+ "state": "ready | drawing | answering | suspended | closed",
  "counts": {"sample": 812, "correction": 37, "...": 0},
- "trials": [{"index": 0, "task": "spiral-trace", "attempt": 1, "outcome": "completed",
-             "contacts": 3, "samples": 640, "corrections": 30, "unresolved": 2}],
+ "trials": [{"index": 0, "task": "spiral-trace", "attempt": 1, "practice": false, "began": true,
+             "outcome": "completed", "contacts": 3, "samples": 640, "corrections": 30, "unresolved": 2}],
+ "questionnaires": [{"block": 0, "instrument": "phq9", "answered": 9, "skipped": 0, "outcome": "completed"}],
+ "safety": {"flags": 1, "crisisListShown": 1, "operatorAlerts": 1, "actions": 1},
  "unmatchedCorrections": 0, "truncatedBytes": 0}
 ```
 
-`outcome` is `completed`, `timeLimit`, `aborted`, `interrupted`, or `open`. `unresolved` counts samples whose `pending` bits never all cleared.
+`outcome` for a trial is `completed`, `timeLimit`, `declined`, `unable`, `aborted`, `interrupted`, `technicalFailure`, or `open`. `participantDone` maps to `completed`, `operatorAbort` to `aborted`, and `backgrounded` to `interrupted`. A questionnaire outcome is `completed`, `declined`, `interrupted`, or `open`. `unresolved` counts samples whose `pending` bits never all cleared. The summary holds counts only, never a questionnaire score.
 
 ## 4. Task battery
 
 `contract/battery.json` holds the battery. The Python module `scriptkin.battery` generates it, and `./check` fails when the checked-in file differs. Geometry is stored as polylines in millimetres, with the origin at the top-left of the stimulus frame and y down. Swift draws a stimulus with one multiply and one add. Swift has no spiral mathematics. `trialStarted` embeds the full task specification, so each journal is self-contained.
 
-Battery version 1 has six tasks:
+Battery version 1 has a practice task and six measured tasks:
 
 | id | mode | stimulus | source datasets |
 |---|---|---|---|
+| `practice` | trace | a straight line and a circle | none; excluded from features |
 | `spiral-trace` | trace | two-turn Archimedean spiral | PaHaW, ParkinsonHW, the earlier SCRIPT |
 | `loops` | copy | a row of connected "l" loops | EMOTHAW, Crespo cohort, EMBC bench |
 | `pentagons` | copy | two overlapping pentagons | EMOTHAW |
@@ -190,7 +211,7 @@ The sentence stimulus is text, not geometry. Spatial-error features return `not_
 
 ## 5. Swift shape
 
-`app/Package.swift` defines `ScriptCore`. It uses Foundation only, so `swift test` runs it on the Mac in seconds. The app target `ScriptApp` holds the SwiftUI screens and one UIKit view.
+`app/Package.swift` defines `ScriptCore`. It uses only system frameworks (Foundation, CryptoKit, CommonCrypto, Security, Synchronization) and no UIKit, so `swift test` runs it on the Mac in seconds. The app target `ScriptApp` holds the SwiftUI screens and one UIKit view.
 
 ```
 app/Sources/ScriptCore/
@@ -209,11 +230,13 @@ app/ScriptApp/
 
 Key decisions:
 
-- **Decider.** `decide(state, command) -> Result<[Event], Rejection>` turns an intent into events. `apply(state, entry) -> SessionState` turns a fact into the next state. `fold` applies every entry. Live operation and replay share `apply`.
-- **States.** `ready(Session)`, `drawing(Session, OpenTrial)`, `suspended(Session)` (the last line is `recovered`), `closed(Session)`. `sessionOpened` gives `ready`. `trialStarted` moves `ready` or `suspended` to `drawing`. `trialEnded` moves `drawing` to `ready`. `recovered` moves `ready` or `drawing` to `suspended`, and an open trial becomes interrupted. `sessionClosed` moves `ready` or `suspended` to `closed`. A correction is legal in every state before `closed`.
+- **Decider.** `decide(state, command, rules) -> Result<[Event], Rejection>` turns an intent into events. `rules` is the frozen study configuration for the session (instruments, safety items, crisis-list version, action codes, battery), because the fold does not hold it. `apply(state, entry) -> SessionState` turns a fact into the next state. `fold` applies every entry. Live operation and replay share `apply`.
+- **States.** `ready(Session)`, `drawing(Session, OpenTrial)`, `answering(Session, OpenBlock)`, `suspended(Session)` (the last line is `recovered`), `closed(Session)`. `sessionOpened` gives `ready`. `trialStarted` moves `ready` or `suspended` to `drawing`. `trialEnded` moves `drawing` to `ready`. `questionnaireStarted` moves `ready` or `suspended` to `answering`, and `questionnaireEnded` moves it back to `ready`. `recovered` moves `ready`, `drawing`, or `answering` to `suspended`, and an open trial or block becomes interrupted. `sessionClosed` moves `ready` or `suspended` to `closed`. A correction is legal in every state before `closed`.
+- **Further refusals in `decide`.** An operator alert or action in a self-administered session; an action with no open flag (each action answers the oldest open flag); a block start without a crisis list for the session's jurisdiction; an unverified instrument; a self-administered safety item without `remoteReview`.
+- **Safety rules in `decide`.** In a supervised session, `close` is rejected while a safety flag has no `safetyAction`. In a session with at least one questionnaire block, `close` is rejected until the crisis list has been shown after the last block. Section 15 gives the full protocol.
 - **InkRecorder** hides the contact lifecycle, the coalesced iteration, and the update-index map. It lives for the whole session, so a correction that arrives after a lift or after a trial still finds its contact. It is UIKit-free and testable on the Mac.
-- **JournalWriter** is an actor with one `AsyncStream` and one consumer, so line order equals call order on the main actor. It flushes at 64 KB, at 250 ms, or at `contactEnded`. It runs fsync at `trialEnded`, at `sessionClosed`, and when the scene goes to the background.
-- **recover** removes a torn final line with `ftruncate` and reports the removed bytes. Damage before the final line is not repaired. The file moves unchanged to `Damaged/`.
+- **JournalWriter** is an actor with one `AsyncStream` and one consumer, so line order equals call order on the main actor. It flushes at 64 KB, at 250 ms, or at `contactEnded`. It runs fsync at `trialEnded`, `questionnaireEnded`, `safetyFlagged`, `safetyAction`, `sessionClosed`, and when the scene goes to the background, so that no safety line can be lost in a crash.
+- **recover** keeps the complete lines, appends the `recovered` line, writes the result to a temporary file, and renames it over the journal. A crash at any point leaves either the old file or the new one, so a second launch writes identical bytes. Recovery is a fact about the launch (`SessionState.recovery`), not a `Command`. A `recovered` line is legal in `suspended` too, because a second crash on a new boot must record its boot. Damage before the final line is not repaired. The file moves unchanged to `Damaged/`.
 - **publish** clones the journal into `Staging/<name>/`, writes the manifest, runs fsync, verifies the staged copy (decode, fold, counts, SHA-256), and renames the folder into `Exports/`. Only then does it delete the source journal.
 - **reconcile** runs at launch and converges from any crash point. Two launches in a row give identical bytes.
 - UIKit types stop at `CaptureView.swift`. The ink layer is a `CAShapeLayer` path for each contact plus one temporary layer for predicted points. The app does not use PencilKit, because a PencilKit canvas takes the touches itself.
@@ -229,19 +252,26 @@ Documents/Damaged/<uuid>.jsonl                       journals with damage before
 
 ## 6. Python shape
 
-Package `scriptkin`. Runtime dependencies: numpy, scipy, scikit-learn. Python 3.12 or later.
+Package `scriptkin`. Runtime dependencies: numpy, scipy, scikit-learn, cryptography. Python 3.12 or later.
 
 ```
 python/src/scriptkin/
   __init__.py        public surface
-  recording.py       Recording, Trial, Stroke, Channel, Device, TaskRef
+  recording.py       Recording, Trial, Stroke, Channel, Device, TaskRef, session and trial context, questionnaire blocks
   battery.py         stimulus geometry and battery.json
-  formats/journal.py read_journal, fold, summarize
+  instruments.py     questionnaire text and scoring rules, instruments.json
+  studyconfig.py     the demo configuration and the configuration rules
+  formats/journal.py fold, summarize: line checks and the session state machine
+  formats/export.py  read_journal (manifest and encrypted exports), pen_only
+  formats/checks.py  value checks for the journal and manifest readers
   formats/svc.py     SvcReader
   formats/parkinsonhw.py
+  hpke.py            HPKE base mode for the export suite (RFC 9180)
   quality.py         QcPolicy, Refusal, Segment, Accepted, Rejected, assess
   signal.py          resampling, kinematics, Welch band power, entropy counts, micro-movement spikes, Gamma fit
   features.py        the feature catalog and extract, feature_table
+  labels.py          questionnaire scores or refusals, and the safety flag count for audit
+  qualification.py   the device qualification report
   synthetic.py       traits, device models, journals, cohorts
   evaluate/          screening, metrics, reliability, report
   contract.py        regenerate and verify the shared contract
@@ -251,13 +281,20 @@ python/src/scriptkin/
 Key decisions:
 
 - **Library frame.** Millimetres, x to the right, y up. Readers convert units and flip y at the boundary. When the source scale is unknown, coordinates stay in source units, `Device.spatial_unit` is `"source"`, and features that need millimetres refuse with `unknown_scale`.
-- **Readers** parse one source into a `Recording`. The journal reader applies matched corrections to the last value received and keeps a mask of unresolved estimates. The journal keeps the originals.
+- **Readers** parse one source into a `Recording`. The journal reader applies matched corrections to the last value received and keeps a mask of unresolved estimates. The journal keeps the originals. The journal reader also keeps the session context from the header, the trial context, the Begin time, and the end reason. Questionnaire blocks and their responses stay in `Recording.questionnaires`. They never enter strokes.
 - **QC.** `assess` is the only function that builds a `Segment`. A segment is a run inside one stroke with strictly increasing time, no step longer than `max_gap_s`, finite positions, and at least `min_segment_s` duration. A gap splits a stroke. Nothing bridges a gap. `Accepted` has a private constructor.
+- **Timing QC for each pen state.** Duplicate times, decreasing times, or a low rate in a contact stroke reject the trial. The same defects in an in-air stroke refuse only the in-air features, for example `timing.in_air_s`. The contact features stay.
 - **Refusals.** A failed requirement returns `Refusal(code, detail)`, never a silent number. Structural errors in a file raise `JournalError` or `FormatError`.
 - **Kernels** work on one segment, or count across segments without joining them. Sample entropy sums template matches over all segments. Templates never cross a segment end, and self-matches are excluded. Coarse-graining stays inside each segment.
 - **Pooling.** Each per-segment feature declares a pool rule and `min_values`. Fewer finite segment values give `Refusal(too_few_values)`.
-- **Feature families.** Kinematic, timing, pressure, tilt and roll, spatial error, spectral band power, entropy, and micro-movement spikes with a Gamma fit (Torres method: speed peaks normalized by the peak plus the mean speed between its neighbouring minima; location fixed at 0; maximum likelihood; intervals from the observed information).
-- **Provenance.** A `FeatureTable` carries the library version, the QC policy, the preprocessing settings, the catalog digest, and the source hashes.
+- **Spectral pooling by Welch windows.** The spectral feature averages the Welch spectra of all segments, weighted by the number of windows in each segment, and then integrates the band. Its `min_values` counts Welch windows, not segments. A segment shorter than one window adds no window. The window length never shrinks.
+- **Feature families.** Kinematic, timing, pressure, tilt and roll, spatial error, spectral band power, entropy, and micro-movement spikes with a Gamma fit (Torres method: speed peaks normalized by the peak plus the mean speed between its neighbouring minima; location fixed at 0; maximum likelihood; intervals from the observed information). `timing.initiation_latency_s` is the time of the first contact sample minus the time of the Begin tap. A trial without a Begin tap gives a refusal.
+- **Feature table.** Practice trials and qualification sessions never enter `feature_table`. Each row has `administration`, `hand`, and `accommodations`, so that an analysis can stratify. A source without this context gives `unknown` and no accommodations.
+- **Provenance.** A `FeatureTable` carries the library version, the QC policy, the preprocessing settings, the catalog digest, the source hashes, and the reader profiles. A reader profile is canonical JSON that names the reader and its unit conversions (for example the tablet resolution of an SVC file). Two tables from different reader settings therefore have different provenance.
+- **Labels.** `labels.labels(recording)` scores each questionnaire block with the scoring rule in `contract/instruments.json`. A `sum` rule adds the scored items. A DASS-21 subscale is its sum times 2. One missing item in a subscale is prorated (sum times 7/6). More missing items than the rule allows give a refusal, never a score of zero. Unscored items, such as `difficulty`, never enter a score. Each label has the instrument, version, locale, administration, block time, and score or refusal. `labels.safety_flag_count` counts safety flags for audit. It is never a label.
+- **Pen-only copy.** `pen_only(export, target)` writes a copy without questionnaire, response, and safety lines, and without `recovered.interruptedBlock`. It also ends at the last `trialEnded`: every later line is dropped, and `sessionClosed.t` is set to the time of that `trialEnded`. The time after the last task depends on whether an operator handled a safety flag, so keeping it would leak the label. It renumbers `seq`, recounts `sessionClosed.counts`, writes a new manifest, and writes `derivation.json` with the source session identifier and the SHA-256 of the source journal. The copy must pass I1 to I7 before the function returns.
+- **Encrypted exports.** `read_journal(path, private_key=...)` reads an export whose manifest has an `encryption` block (section 17). The key is the study's raw 32-byte X25519 private key. The reader checks the ciphertext size and SHA-256, opens the ciphertext, checks the plaintext size, line count, and SHA-256, and then applies I1 to I7. A ciphertext that does not open gives `JournalError` with rule I5.
+- **Qualification.** `qualification.qualify(recording)` accepts only a session with `purpose: qualification`. It reports the sample intervals inside contact strokes (median, 5th and 95th percentile, and the share of intervals longer than 30 ms), the jitter during the still hold (root mean square distance from the mean position of each stroke, in millimetres), the straight-line deviation (root mean square orthogonal distance from the total-least-squares line of each stroke, in millimetres), the scale source, and the planned and observed channels. A value that the data cannot support is a refusal.
 
 ## 7. Evaluation
 
@@ -341,3 +378,85 @@ Three runners designed the platform independently: GPT-6.1 Sol, GPT-6 Astra, and
 | U4 | App screens, capture view, simulator test | a simulator battery export reads with zero errors |
 | U5 | ParkinsonHW reader run; end-to-end report | public files read; features computed; no labels modelled |
 | U6 | Independent review by three models; fixes | no blocker or major finding open |
+
+## 14. Study configuration
+
+A study team controls a session through one configuration file, not through code. `contract/config.schema.json` is the authority. `contract/configs/demo.json` is the default that the app ships with.
+
+A configuration holds:
+
+- `study {id, version, protocolVersion}` and the list of allowed `sites`.
+- `tasks`: the tasks from the battery, in session order, with `practice` flags, `attempts` (the maximum number of attempts), and `hands` (`dominant`, `left`, `right`, or `both`).
+- `questionnaires`: blocks by administration mode and age band, each naming an instrument from `contract/instruments.json`, and their position (`beforeTasks` or `afterTasks`).
+- `locales`: the instruction texts for each locale, with an `instructionVersion`.
+- `safety`: the crisis lists by jurisdiction and locale, each with `version` and `verifiedOn`; the operator action codes; and, only when a self-administered block contains a safety item, a `remoteReview` block (section 15.3).
+- `consentModel`: which attestations the operator or the enrolment record must give for each age band (section 15.4).
+- `export`: the recipient public key for encrypted exports, or `null` for the demo configuration.
+- `operatorPin`: `{salt, iterations, pbkdf2Sha256}` for PBKDF2-HMAC-SHA256 of the UTF-8 PIN with the base64 salt (at least 16 bytes), at least 600,000 iterations, and a 32-byte key in hex; or `null` for the demo configuration. A short PIN with a fast hash can be found by trying every PIN, so the slow derivation is required.
+
+The app imports a configuration through Files. It checks the schema and the rules in this section, shows the study, version, and digest to the operator, and refuses a configuration that fails a check. Every session records `study.configSHA256`, so an analyst can prove which configuration produced it. A configuration is frozen for the life of a session.
+
+## 15. Questionnaires and safety
+
+### 15.1 Instruments
+
+`contract/instruments.json` holds each instrument: its identifier, version, licence status with the source, validated age range, recall text, response options, items, safety items, and scoring rule. The `scriptkin.instruments` module generates it. The app shows the exact item text and records item identifiers and response values. The app never computes or shows a score.
+
+| id | items | licence | validated ages | safety items |
+|---|---|---|---|---|
+| `phq9` | 9 | public domain (PHQ manual) | 13-17 (Richardson 2010), 18+ | item 9 |
+| `phq8` | 8 | public domain (PHQ manual) | 18+; adolescent validation not found | none |
+| `gad7` | 7 | public domain (PHQ manual) | 12-17 (exploratory), 15-24, 18+ | none |
+| `dass21` | 21 | public domain; enrolled participants only, results to the researcher only, no modification | 14+ | none |
+
+The modified-for-teens PHQ-A form needs written permission from its owners and is not included. A study can add an instrument only with a licence reference in its configuration.
+
+### 15.2 Supervised sessions
+
+- The default blocks are `phq9` and `gad7` after the tasks, for both age bands.
+- A skipped safety item counts as a flag, as in the NIMH ASQ pathway.
+- When a block ends, the app always shows the same handoff screen: "Please give the iPad back to the researcher." The flow is identical with and without a flag, so the participant cannot infer the result.
+- The operator screen then shows a neutral alert for each flag. The operator must record one action code before the session can close. The default codes are `clinicianAssessment`, `referred`, `emergencyServices`, `guardianContacted`, and `participantDeclinedHelp`.
+- Every participant sees the configured crisis list at the end of a session that had a questionnaire block.
+
+### 15.3 Self-administered sessions
+
+- The default blocks are `phq8` and `gad7`. They contain no safety item, because no one can respond in real time.
+- A configuration may add a block with a safety item to a self-administered session only with a `remoteReview` block: the reviewer role, the review interval (at most 1 weekday; at most 24 hours for imminent risk), the export interval that makes this review possible, and the version of the monitoring disclosure that the participant saw at consent. The app refuses a configuration that breaks this rule.
+- In such a session, the app shows the crisis list at once when a safety item is flagged, and again at the end. It records each display.
+- The app never tells the participant that a response was flagged.
+
+### 15.4 Consent attestations
+
+The site keeps identities, signed forms, and guardian contact details. The journal holds only attestations:
+
+- `consent {model, attestedBy {code, role}, attestedAt, documents [{id, version}]}`. `model` is `adult`, `guardianAndAssent`, or `waiver` (with an approval reference). For `13-17`, the default model is `guardianAndAssent`.
+- `ethics {approvalID, protocolVersion, safetyProtocolVersion, monitoringDisclosureVersion?}`.
+
+The operator gives the attestation in supervised sessions. In self-administered sessions, the enrolment record of the study supplies it, and `attestedBy.role` is `enrolment`.
+
+## 16. Device qualification
+
+A qualification session has `purpose: qualification` and a fixed task set: a reference-length check with a steel rule or an ID-1 card, a 10-second still hold, a straight-line stroke along a guide, and a channel check. It writes an ordinary journal. `scriptkin` computes the sample-interval distribution, gaps, jitter, scale error, and channel presence from it. A study session records the identifier of the last qualification session on its device. "Can record" differs from "qualified for comparison"; only the analysis plan decides the second.
+
+## 17. Privacy and withdrawal
+
+- Journals and exports use iOS file protection `completeUntilFirstUserAuthentication`.
+- Research data never enter a device backup. The app sets `isExcludedFromBackup` on `Sessions/`, `Staging/`, `Exports/`, `Damaged/`, and the deletion log, so no journal, export, or log reaches iCloud or a computer backup. Exports leave the device only through Files, by an operator or participant action. The device secret for the deletion log is a `ThisDeviceOnly` Keychain item, so the log is checkable only on the device that wrote it.
+- When the configuration has an export key, the export is encrypted to the study's public key with HPKE (RFC 9180, base mode, DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, ChaCha20-Poly1305). This is CryptoKit's `HPKE.Ciphersuite.Curve25519_SHA256_ChachaPoly`. The export folder then holds `journal.jsonl.hpke` in place of `journal.jsonl`. The `info` parameter is the UTF-8 text `SCRIPT export 1.0`, and the associated data is the UTF-8 session identifier. The manifest gains this block:
+
+  ```json
+  "encryption": {"scheme": "hpke-base", "suite": "X25519-HKDF-SHA256-ChaCha20Poly1305",
+                 "keyID": "...", "encapsulatedKey": "<base64>",
+                 "plaintext": {"bytes": 18234112, "lines": 131207, "sha256": "..."},
+                 "ciphertext": {"bytes": 18234128, "sha256": "..."}}
+  ```
+
+  The `journal` block of the manifest is then absent. `keyID` is the lowercase hex SHA-256 of the raw 32-byte X25519 public key; a configuration may state it, and then it must match. `scriptkin` refuses a private key whose public key does not give the manifest `keyID`. A plaintext export has `"demo": true` in its manifest; any configuration with an export key encrypts. `scriptkin` decrypts with the study's private key and then applies the normal integrity rules to the plaintext.
+- Withdrawal: the operator enters a participant code, confirms twice, and the app deletes every journal, staging folder, export, and damaged journal for that code on the device. Before it deletes, it appends one line to `Library/Application Support/Deletions.jsonl`: `{at, participantHMAC, sessions}`. `participantHMAC` is HMAC-SHA256 of the code with a 32-byte secret that the app creates at first launch and keeps in the Keychain. A plain hash of a short code can be reversed by trying every code; the keyed hash cannot without the device. A site confirms a deletion on the device by entering the code, which the app checks against the log. Copies outside the device are the site's duty; `docs/DATA_GOVERNANCE.md` gives the procedure.
+- Pseudonymous data remain personal data under the GDPR. A participant code alone does not meet HIPAA de-identification.
+
+## 18. Intended use
+
+SCRIPT is a research platform. It records drawing movement and reference questionnaire responses in supervised and self-administered sessions with people aged 13 to 24, and it tests whether movement features relate to symptom scores. It does not diagnose, screen, triage, or advise. It shows no score or interpretation to anyone. Any screening claim needs a separate intended-use statement, a validation study in the intended population and setting, and the applicable regulatory review.
+

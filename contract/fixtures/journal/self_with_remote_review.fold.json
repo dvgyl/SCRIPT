@@ -1,0 +1,59 @@
+{
+ "sessionID": "3F2A9C1E-0000-4000-8000-00000000000C",
+ "purpose": "study",
+ "administration": "self",
+ "state": "closed",
+ "counts": {
+  "sessionOpened": 1,
+  "handoff": 0,
+  "trialStarted": 1,
+  "trialBegan": 1,
+  "contactBegan": 1,
+  "sample": 6,
+  "correction": 0,
+  "contactEnded": 1,
+  "hover": 0,
+  "finger": 0,
+  "trialEnded": 1,
+  "questionnaireStarted": 1,
+  "response": 10,
+  "questionnaireEnded": 1,
+  "safetyFlagged": 1,
+  "safetyShown": 2,
+  "safetyAction": 0,
+  "mark": 0,
+  "recovered": 0,
+  "sessionClosed": 1
+ },
+ "trials": [
+  {
+   "index": 0,
+   "task": "spiral-trace",
+   "attempt": 1,
+   "practice": false,
+   "began": true,
+   "outcome": "completed",
+   "contacts": 1,
+   "samples": 6,
+   "corrections": 0,
+   "unresolved": 0
+  }
+ ],
+ "questionnaires": [
+  {
+   "block": 0,
+   "instrument": "phq9",
+   "answered": 9,
+   "skipped": 1,
+   "outcome": "completed"
+  }
+ ],
+ "safety": {
+  "flags": 1,
+  "crisisListShown": 2,
+  "operatorAlerts": 0,
+  "actions": 0
+ },
+ "unmatchedCorrections": 0,
+ "truncatedBytes": 0
+}

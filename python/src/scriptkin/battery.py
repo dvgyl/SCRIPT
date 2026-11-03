@@ -137,6 +137,32 @@ def house() -> dict[str, Any]:
     return _paths_stimulus((60.0, 64.0), [body, roof, door, window])
 
 
+def practice() -> dict[str, Any]:
+    line = _polyline([(6.0, 20.0), (56.0, 20.0)])
+    circle = _sample(lambda t: (78.0 + 15.0 * math.cos(t), 20.0 - 15.0 * math.sin(t)), 0.0, 2 * math.pi)
+    return _paths_stimulus((100.0, 40.0), [line, circle], start=line[0])
+
+
+def qualification_bar() -> dict[str, Any]:
+    """A 100 mm bar with end ticks. The operator measures it with a steel rule or an ID-1 card."""
+    bar = _polyline([(5.0, 10.0), (105.0, 10.0)])
+    ticks = [_polyline([(5.0, 4.0), (5.0, 16.0)]), _polyline([(105.0, 4.0), (105.0, 16.0)])]
+    return _paths_stimulus((110.0, 20.0), [bar, *ticks])
+
+
+def qualification_dot() -> dict[str, Any]:
+    ring = _sample(lambda t: (10.0 + 1.5 * math.cos(t), 10.0 - 1.5 * math.sin(t)), 0.0, 2 * math.pi)
+    return _paths_stimulus((20.0, 20.0), [ring], start=(10.0, 10.0))
+
+
+def qualification_line() -> dict[str, Any]:
+    line = _polyline([(5.0, 10.0), (105.0, 10.0)])
+    return _paths_stimulus((110.0, 20.0), [line], start=line[0])
+
+
+QUALIFICATION_TASKS = ("qual-reference", "qual-hold", "qual-line")
+
+
 def _paths_stimulus(frame: Point, paths: Sequence[Polyline], start: Point | None = None) -> dict[str, Any]:
     stimulus: dict[str, Any] = {"kind": "paths", "frameMM": _round(frame), "strokeMM": STIMULUS_STROKE_MM}
     if start is not None:
@@ -159,6 +185,13 @@ def _task(
 
 def battery() -> dict[str, Any]:
     tasks = [
+        _task(
+            "practice",
+            "trace",
+            "Practice: trace the line and the circle. This one does not count.",
+            practice(),
+            60,
+        ),
         _task(
             "spiral-trace",
             "trace",
@@ -189,6 +222,23 @@ def battery() -> dict[str, Any]:
                 "fontSizeMM": 6.0,
             },
             180,
+        ),
+        _task(
+            "qual-reference",
+            "trace",
+            "Operator: measure the bar with a steel rule or an ID card.",
+            qualification_bar(),
+            300,
+        ),
+        _task(
+            "qual-hold",
+            "trace",
+            "Operator: hold the pencil tip still on the dot for 10 seconds.",
+            qualification_dot(),
+            60,
+        ),
+        _task(
+            "qual-line", "trace", "Operator: draw along the line at an even speed.", qualification_line(), 60
         ),
     ]
     return {"id": BATTERY_ID, "version": BATTERY_VERSION, "tasks": tasks}
