@@ -211,7 +211,7 @@ The sentence stimulus is text, not geometry. Spatial-error features return `not_
 
 ## 5. Swift shape
 
-`app/Package.swift` defines `ScriptCore`. It uses Foundation only, so `swift test` runs it on the Mac in seconds. The app target `ScriptApp` holds the SwiftUI screens and one UIKit view.
+`app/Package.swift` defines `ScriptCore`. It uses only system frameworks (Foundation, CryptoKit, CommonCrypto, Security, Synchronization) and no UIKit, so `swift test` runs it on the Mac in seconds. The app target `ScriptApp` holds the SwiftUI screens and one UIKit view.
 
 ```
 app/Sources/ScriptCore/
@@ -442,6 +442,7 @@ A qualification session has `purpose: qualification` and a fixed task set: a ref
 ## 17. Privacy and withdrawal
 
 - Journals and exports use iOS file protection `completeUntilFirstUserAuthentication`.
+- Research data never enter a device backup. The app sets `isExcludedFromBackup` on `Sessions/`, `Staging/`, `Exports/`, `Damaged/`, and the deletion log, so no journal, export, or log reaches iCloud or a computer backup. Exports leave the device only through Files, by an operator or participant action. The device secret for the deletion log is a `ThisDeviceOnly` Keychain item, so the log is checkable only on the device that wrote it.
 - When the configuration has an export key, the export is encrypted to the study's public key with HPKE (RFC 9180, base mode, DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, ChaCha20-Poly1305). This is CryptoKit's `HPKE.Ciphersuite.Curve25519_SHA256_ChachaPoly`. The export folder then holds `journal.jsonl.hpke` in place of `journal.jsonl`. The `info` parameter is the UTF-8 text `SCRIPT export 1.0`, and the associated data is the UTF-8 session identifier. The manifest gains this block:
 
   ```json
