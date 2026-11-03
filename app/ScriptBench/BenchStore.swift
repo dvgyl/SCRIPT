@@ -424,11 +424,10 @@ final class BenchStore {
         perform(.endTrial(reason: reason, t: t))
     }
 
-    /// The marks the operator can add to the open trial. A fault run never offers `exclude`, because the quality gate
-    /// needs every fault run as an ordinary trial (bench protocol sections 2.4 and 5.3).
+    /// The marks the operator can add to the open trial. A qualification trial has no program and takes every mark.
     var markCodes: [MarkCode] {
         guard case .drawing = state?.phase else { return [] }
-        return live?.openProgram?.fault == nil ? [.disturbance, .deviceProblem, .exclude] : [.disturbance, .deviceProblem]
+        return live?.openProgram?.markCodes ?? [.disturbance, .deviceProblem, .exclude]
     }
 
     @discardableResult

@@ -261,6 +261,25 @@ private func decidedRun(_ d: Driver, _ plan: TrialPlan) throws -> BenchRun? {
     #expect(ClipName("" as String) == nil && ClipName(String(repeating: "c", count: 65)) == nil)
 }
 
+@Test func anExcludeMarkOnAFaultRunIsRefused() throws {
+    // Detects a fault run that an operator can exclude, which removes it from the quality gate of bench protocol
+    // section 5.3, in either capture app.
+    var d = try benchDriver()
+    try d.run(.startTrial(Driver.benchPlan("loops-l-v20", task: "bench-loops-l"), t: 102))
+    try d.run(.beginTrial(t: 102.5))
+    try d.run(.mark(trial: TrialIndex(count: 0), code: .exclude, t: 103))
+    try d.run(.endTrial(reason: .operatorDone, t: 104))
+    try d.run(.startTrial(Driver.benchPlan("fault-lift", task: "bench-loops-l", position: 2), t: 105))
+    try d.run(.beginTrial(t: 105.5))
+    let fault = TrialIndex(count: 1)
+    #expect(d.state.decide(.mark(trial: fault, code: .exclude, t: 106), rules: d.rules).rejection
+        == .excludeOnFaultRun("fault-lift"))
+    try d.run(.mark(trial: fault, code: .disturbance, t: 106))
+    try d.run(.endTrial(reason: .operatorDone, t: 107))
+    #expect(d.state.decide(.mark(trial: fault, code: .exclude, t: 108), rules: d.rules).rejection
+        == .excludeOnFaultRun("fault-lift"))
+}
+
 @Test func aStudySessionRefusesABenchTaskAndABenchSessionRefusesAStudyTask() throws {
     // Detects a purpose gate that lost its table: a bench geometry in a participant session, or a participant task
     // run by the robot.

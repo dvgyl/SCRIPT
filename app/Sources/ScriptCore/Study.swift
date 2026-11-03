@@ -504,6 +504,14 @@ public struct BenchProgram: Hashable, Sendable {
     public let trajectorySHA256: SHA256Digest
 }
 
+extension BenchProgram {
+    /// The marks that an operator can add to a run of this program. `decide` refuses `exclude` on a fault run, because
+    /// the quality gate needs every fault run as an ordinary trial (bench protocol section 5.3).
+    public var markCodes: [MarkCode] {
+        fault == nil ? [.disturbance, .deviceProblem, .exclude] : [.disturbance, .deviceProblem]
+    }
+}
+
 /// The programs from `contract/bench_programs.json`, keyed by program identifier, with the protocol they belong to.
 public struct BenchPrograms: Hashable, Sendable {
     public let `protocol`: BenchProtocolRef

@@ -103,6 +103,8 @@ public struct TrialRecord: Hashable, Sendable {
     public let task: TaskID
     public let attempt: Int
     public let practice: Bool
+    /// The program of a bench run, nil for a participant trial.
+    public let program: ProgramID?
     public internal(set) var began = false
     public internal(set) var outcome: TrialOutcome = .open
     public internal(set) var contacts = 0
@@ -234,8 +236,12 @@ extension SessionState {
             case (.participant, .participant), (.bench, .bench): break
             case (.participant, .bench), (.bench, .participant): throw fail(.subjectMismatch)
             }
+            let program: ProgramID? = switch e.subject {
+            case .bench(let run): run.program
+            case .participant: nil
+            }
             session.trials.append(TrialRecord(index: e.trial.index, task: e.trial.task, attempt: e.trial.attempt,
-                                              practice: e.practice))
+                                              practice: e.practice, program: program))
             phase = .drawing(OpenTrial(index: e.trial.index, task: e.trial.task,
                                        deadline: e.spec.completion.deadline(startedAt: e.t)))
 
@@ -486,6 +492,9 @@ public enum Rejection: Error, Hashable, Sendable {
     case programNotForTask(ProgramID)
     /// A run index outside `BenchRun.runs`.
     case invalidRun(Int)
+    /// An `exclude` mark on a fault run. The quality gate needs every fault run as an ordinary trial (bench protocol
+    /// section 5.3).
+    case excludeOnFaultRun(ProgramID)
     case unknownInstrument(InstrumentID)
     case unverifiedInstrument(InstrumentID)
     /// The instrument's lowest validated age is above the lowest age of the session's age band.
@@ -639,6 +648,10 @@ extension SessionState {
 
         case .mark(let trial, let code, let t):
             guard trial.rawValue < session.trials.count else { return .failure(.unknownTrial(trial)) }
+            if code == .exclude, let program = session.trials[trial.rawValue].program,
+               rules.benchPrograms?.program(program)?.fault != nil {
+                return .failure(.excludeOnFaultRun(program))
+            }
             return .success([.mark(Mark(t: t, trial: trial, code: code))])
 
         case .close(let t):

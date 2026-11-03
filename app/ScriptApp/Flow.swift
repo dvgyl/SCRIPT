@@ -147,14 +147,6 @@ extension BenchPrograms {
     }
 }
 
-extension BenchProgram {
-    /// The marks that the operator can add to a run. A fault run is never excluded, because the quality gate needs
-    /// every fault run as an ordinary trial (bench protocol section 5.3).
-    var markCodes: [MarkCode] {
-        fault == nil ? [.disturbance, .deviceProblem, .exclude] : [.disturbance, .deviceProblem]
-    }
-}
-
 // MARK: - Stimulus
 
 enum StimulusLayout {

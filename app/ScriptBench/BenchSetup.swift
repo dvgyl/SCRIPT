@@ -12,7 +12,7 @@ enum SessionKind: Hashable, Sendable {
 /// What the operator enters in Setup. `session` turns it into line 0, or gives nil while a field is missing.
 struct BenchDraft {
     var mounting: MountingCode = "M1"
-    var motionID = ""
+    var motionID = "nextdraw-8511"
     var motionVersion = ""
     var tabletModel = TabletTable.entries.first { $0.confirmed }?.model ?? ""
     var tabletAsset = ""
@@ -28,7 +28,9 @@ struct BenchDraft {
     /// The values of the last Setup on this Mac.
     static func remembered(_ defaults: UserDefaults = .standard) -> BenchDraft {
         var draft = BenchDraft()
-        for (key, path) in rememberedFields { draft[keyPath: path] = defaults.string(forKey: key) ?? "" }
+        for (key, path) in rememberedFields {
+            draft[keyPath: path] = defaults.string(forKey: key) ?? draft[keyPath: path]
+        }
         return draft
     }
 
