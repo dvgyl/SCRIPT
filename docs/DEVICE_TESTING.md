@@ -208,7 +208,7 @@ SCRIPT Bench is the Mac app of the bench study. Its tests drive the app with tab
 - The USB cable of the tablet. Do not use Bluetooth.
 - A steel rule of 100 mm or longer.
 
-Turn off every driver feature that changes the pen reports, and record the driver settings. Read the driver version in the window of the Wacom driver.
+Turn off every driver feature that changes the pen reports, and record the driver settings. Map the tablet to the display that shows SCRIPT Bench, so that the pen pointer stays inside its window. Read the driver version in the window of the Wacom driver.
 
 ### Build and start SCRIPT Bench
 
@@ -237,7 +237,7 @@ During a session, the pen cannot press a control of SCRIPT Bench. Use the mouse 
 1. On Home, click **Qualification session**.
 2. Enter an operator code, a tablet asset code, the driver version, and a Mac asset code. Use test codes, for example `OWNER` for the operator, `WACOM-01` for the tablet, and `MAC-01` for the Mac.
 3. Select **Wacom Pro Pen 3**, the surface **None**, and the nib state.
-4. Click **Start the qualification**.
+4. Click **Start the qualification**. Check that the window goes into full screen.
 5. Select the task `qual-reference`, and click **Begin**.
 6. Lay the steel rule on the tablet with its 0 mm mark at the left. Draw one stroke along the rule from the 0 mm mark to the 100 mm mark.
 7. Lay the rule with its 0 mm mark at the top. Draw one stroke along the rule from the 0 mm mark to the 100 mm mark.
@@ -320,6 +320,8 @@ Record each value, and mark each check as passed or failed.
 | Check | What to confirm | Where to read it |
 | --- | --- | --- |
 | Clock check | **Clock check** shows **Passed** after the first pen event. | Home |
+| Full screen | The window goes into full screen when a session starts, and it leaves full screen when the session closes. While the window is not in full screen, **Begin** is disabled and the screen shows "Begin needs full screen." | The run screen |
+| Pointer mapping | At each corner of the tablet, the pen pointer stays inside the window. | The run screen |
 | Tablet position | The driver fills `absoluteX` and `absoluteY`. The values of x and y change along the strokes and stay inside 0 to 52600 and 0 to 29600 lines. | `tablet_facts.py` |
 | Direction | The left-to-right stroke along the rule has a positive dx. The top-to-bottom stroke has a positive dy, so the journal is y down. The ink on the screen follows the pen. | `tablet_facts.py` and the run screen |
 | Scale | Each stroke along the rule measures 100 mm from start to end. | `tablet_facts.py` |
@@ -327,7 +329,6 @@ Record each value, and mark each check as passed or failed.
 | Report rate | Record the median sample interval and its 5th and 95th percentiles, with mouse coalescing off. SCRIPT Bench turns coalescing off at launch. | The qualification report |
 | Tablet-point events | Record the stationary samples. Each one comes from a `tabletPoint` event during a contact, beside the mouse events. The still hold of `qual-hold` can give them. | `tablet_facts.py` |
 | Hover | Hover lines have `clock: event` and no `z`. | `tablet_facts.py` |
-| Rotation | SCRIPT Bench plans no rotation channel, so the journal cannot show whether the driver reports rotation. Record this check as open. | None |
 | Driver version | `tablet.driver` is the version that the window of the Wacom driver shows. | `tablet_facts.py` |
 | Source revision | `app.sourceRevision` is the revision that you built. | `tablet_facts.py` |
 
