@@ -9,17 +9,36 @@ from scriptkin.formats.journal import JournalError, fold, summarize
 from scriptkin.formats.parkinsonhw import load_parkinsonhw, read_parkinsonhw
 from scriptkin.formats.svc import SvcReader, Tablet
 from scriptkin.quality import Accepted, QcPolicy, QcReport, Refusal, RefusalCode, Rejected, Segment, assess
-from scriptkin.recording import Channel, Device, PenState, Recording, Stroke, TaskRef, Trial, TrialOutcome
+from scriptkin.recording import (
+    BenchContext,
+    BenchRunContext,
+    Channel,
+    Device,
+    ParticipantContext,
+    PenState,
+    Recording,
+    SessionContext,
+    Stroke,
+    TabletContext,
+    TabletScale,
+    TaskRef,
+    Trial,
+    TrialContext,
+    TrialOutcome,
+)
 from scriptkin.signal import Preprocessing
 
 __all__ = [
     "CATALOG",
     "Accepted",
+    "BenchContext",
+    "BenchRunContext",
     "Channel",
     "Device",
     "FeatureTable",
     "FormatError",
     "JournalError",
+    "ParticipantContext",
     "PenState",
     "Preprocessing",
     "QcPolicy",
@@ -29,11 +48,15 @@ __all__ = [
     "RefusalCode",
     "Rejected",
     "Segment",
+    "SessionContext",
     "Stroke",
     "SvcReader",
     "Tablet",
+    "TabletContext",
+    "TabletScale",
     "TaskRef",
     "Trial",
+    "TrialContext",
     "TrialOutcome",
     "assess",
     "extract",

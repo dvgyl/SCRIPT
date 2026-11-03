@@ -6,6 +6,7 @@ import hashlib
 import itertools
 import json
 import math
+import re
 import struct
 from pathlib import Path
 from typing import Any
@@ -13,7 +14,7 @@ from typing import Any
 import pytest
 from jsonschema import Draft202012Validator
 
-from scriptkin import battery, contract, instruments, studyconfig
+from scriptkin import battery, bench, contract, instruments, studyconfig
 
 CONTRACT = Path(__file__).resolve().parents[2] / "contract"
 SCHEMA = Draft202012Validator(
@@ -187,6 +188,42 @@ def test_qualification_tasks_cannot_enter_a_study_session() -> None:
     config = _demo()
     config["tasks"].append({"task": "qual-hold", "practice": False, "attempts": 1, "hands": "dominant"})
     assert any("qualification" in p for p in studyconfig.validate(config))
+
+
+def test_bench_tasks_cannot_enter_a_study_session() -> None:
+    # Detects a study configuration that mixes bench geometry into participant sessions.
+    config = _demo()
+    config["tasks"].append({"task": "bench-loops-s", "practice": False, "attempts": 1, "hands": "dominant"})
+    assert any("bench" in p for p in studyconfig.validate(config))
+
+
+def test_bench_programs_match_the_generator_and_the_battery() -> None:
+    # Detects a programs file that names a task outside the bench tasks, repeats a digest, or differs from
+    # the run facts of the bench fixtures, and a bench task whose geometry is not the scaled base geometry.
+    programs = json.loads((CONTRACT / "bench_programs.json").read_text())
+    assert programs == json.loads(bench.programs_json())
+    assert programs["protocol"] == {"version": bench.PROTOCOL_VERSION, "sha256": bench.PROTOCOL_SHA256}
+    table = {p["id"]: p for p in programs["programs"]}
+    assert list(table) == [p.id for p in bench.BENCH_PROGRAMS] and len(table) == 11
+    assert {p["task"] for p in table.values()} == set(battery.BENCH_TASKS)
+    digests = {p["trajectorySHA256"] for p in table.values()}
+    assert len(digests) == 11 and all(re.fullmatch(r"[0-9a-f]{64}", d) for d in digests)
+    for name in ("bench_ipad", "bench_wacom"):
+        runs = [r for r in _fixture_rows(name) if r["kind"] == "trialStarted"]
+        assert runs
+        for run in runs:
+            program = table[run["bench"]["program"]]
+            assert run["trial"]["task"] == program["task"]
+            assert run["bench"]["trajectorySHA256"] == program["trajectorySHA256"]
+    loops, spiral = battery.task_spec("loops")["stimulus"], battery.task_spec("spiral-trace")["stimulus"]
+    assert battery.task_spec("bench-loops-l")["stimulus"] == loops
+    assert battery.task_spec("bench-spiral-l")["stimulus"] == spiral
+    for bench_id, base in (("bench-loops-s", loops), ("bench-spiral-s", spiral)):
+        small = battery.task_spec(bench_id)["stimulus"]
+        assert small["frameMM"] == [v / 2 for v in base["frameMM"]]
+        assert small["start"] == [v / 2 for v in base["start"]]
+        assert len(small["paths"][0]) == len(base["paths"][0])
+        assert small["paths"][0][7] == pytest.approx([v / 2 for v in base["paths"][0][7]], abs=5e-5)
 
 
 def test_phq9_item_9_is_the_only_safety_item_in_the_default_instruments() -> None:

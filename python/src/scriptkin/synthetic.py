@@ -27,7 +27,7 @@ from scipy.signal import lfilter
 from scipy.special import expit
 
 from scriptkin import battery
-from scriptkin.contract import ALL_CHANNELS, FORCE, JournalBuilder, manifest_bytes
+from scriptkin.contract import FORCE, PENCIL_PRO_CHANNELS, JournalBuilder, manifest_bytes
 from scriptkin.evaluate.metrics import auc
 from scriptkin.formats.journal import recording, replay
 from scriptkin.labels import Label, labels
@@ -85,7 +85,8 @@ class DeviceModel:
     `pressure_gamma` maps a pressure fraction to recorded force as `MAX_FORCE * pressure ** gamma`.
     `estimate_fraction` is the share of samples whose force arrives later in a `correction` line.
     `scale_bias` is the declared millimetres per point divided by the true value. `channels` is the
-    planned channel set; `channels["hover"]` gives hover lines between contacts.
+    planned channel set with every key of the 2.0 header; `channels["hover"]` gives hover lines between
+    contacts.
     """
 
     model: str
@@ -102,9 +103,11 @@ class DeviceModel:
     ppi: float = 264.0
 
 
-IPAD_PRO_PENCIL_PRO = DeviceModel("iPad16,3", "pro", 240.0, 0.0002, 0.0, 0.01, ALL_CHANNELS, 1.0, 0.02, 0.03)
+IPAD_PRO_PENCIL_PRO = DeviceModel(
+    "iPad16,3", "pro", 240.0, 0.0002, 0.0, 0.01, PENCIL_PRO_CHANNELS, 1.0, 0.02, 0.03
+)
 IPAD_PRO_PENCIL_2 = DeviceModel(
-    "iPad14,3", "second", 240.0, 0.0003, 0.0005, 0.015, dict(ALL_CHANNELS, roll=False), 1.3, 0.03, 0.04
+    "iPad14,3", "second", 240.0, 0.0003, 0.0005, 0.015, dict(PENCIL_PRO_CHANNELS, roll=False), 1.3, 0.03, 0.04
 )
 IPAD_AIR_PENCIL_USBC = DeviceModel(
     "iPad14,8",
@@ -113,7 +116,7 @@ IPAD_AIR_PENCIL_USBC = DeviceModel(
     0.0006,
     0.002,
     0.04,
-    dict(ALL_CHANNELS, force=False, roll=False, hover=False),
+    dict(PENCIL_PRO_CHANNELS, force=False, roll=False, hover=False),
     1.0,
     0.0,
     0.0,

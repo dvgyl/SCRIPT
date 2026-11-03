@@ -1,0 +1,85 @@
+{
+ "protocol": {
+  "version": "1.0",
+  "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+ },
+ "programs": [
+  {
+   "id": "loops-s1-v20",
+   "task": "bench-loops-l",
+   "speedMMPerS": 20.0,
+   "fault": null,
+   "trajectorySHA256": "616db8c667c6d1b87cc60ee01667405b4c030fc0344e9b30b07ae36c7e6c85d7"
+  },
+  {
+   "id": "loops-s1-v40",
+   "task": "bench-loops-l",
+   "speedMMPerS": 40.0,
+   "fault": null,
+   "trajectorySHA256": "1c2555feb2062954fd71f27ee089cc5d5f45eb820c0d585b4581d9e118885079"
+  },
+  {
+   "id": "loops-s05-v20",
+   "task": "bench-loops-s",
+   "speedMMPerS": 20.0,
+   "fault": null,
+   "trajectorySHA256": "c8d190e269550831938498532a3661fe384e6afb746d9434807592b0239fe721"
+  },
+  {
+   "id": "loops-s05-v40",
+   "task": "bench-loops-s",
+   "speedMMPerS": 40.0,
+   "fault": null,
+   "trajectorySHA256": "4be00f57952bed515351ba519e8c52a58565c59f9f72ac68a9e956df373bffa9"
+  },
+  {
+   "id": "spiral-s1-v20",
+   "task": "bench-spiral-l",
+   "speedMMPerS": 20.0,
+   "fault": null,
+   "trajectorySHA256": "06afaeadb75ded764bc7280cc23ff11227e9ce274759ed6701f8d8f906f1365c"
+  },
+  {
+   "id": "spiral-s1-v40",
+   "task": "bench-spiral-l",
+   "speedMMPerS": 40.0,
+   "fault": null,
+   "trajectorySHA256": "14e9f002a6d9143e773adf7200d4289c0e2e558e413d7635e7922cd4f941fbce"
+  },
+  {
+   "id": "spiral-s05-v20",
+   "task": "bench-spiral-s",
+   "speedMMPerS": 20.0,
+   "fault": null,
+   "trajectorySHA256": "000e8f98fa461323bf7647a35770275c57514b000ae4e8490fae346e36f8fa33"
+  },
+  {
+   "id": "spiral-s05-v40",
+   "task": "bench-spiral-s",
+   "speedMMPerS": 40.0,
+   "fault": null,
+   "trajectorySHA256": "1f50e12f98d3237f61daadf1609aa80c8cf992c9e03abe64396da1bc278cf995"
+  },
+  {
+   "id": "fault-dwell",
+   "task": "bench-loops-l",
+   "speedMMPerS": 20.0,
+   "fault": "dwell",
+   "trajectorySHA256": "739d79eec40ac90a8e5502ca4b86a53ae2a3dd988d108c8497557d3493212f3f"
+  },
+  {
+   "id": "fault-lift",
+   "task": "bench-loops-l",
+   "speedMMPerS": 20.0,
+   "fault": "lift",
+   "trajectorySHA256": "18cbec027fd8d947b1802bbff9a238f5327fc056b01d3d287a3bb630b5506300"
+  },
+  {
+   "id": "fault-truncated",
+   "task": "bench-loops-l",
+   "speedMMPerS": 20.0,
+   "fault": "truncated",
+   "trajectorySHA256": "34303ab9ee88cd13951440cdac558934f8d53b96cd6d95c6dd5b740c3347eea2"
+  }
+ ]
+}

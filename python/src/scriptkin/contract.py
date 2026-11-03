@@ -1,4 +1,4 @@
-"""The shared contract: battery, instruments, demo configuration, journal fixtures, and doubles.
+"""The shared contract: battery, bench programs, instruments, demo configuration, fixtures, and doubles.
 
 `regenerate` writes every generated file under contract/. `verify` regenerates into memory and
 reports each file that differs from the checked-in bytes. Expected fold summaries come from the
@@ -15,9 +15,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from scriptkin import battery, instruments, studyconfig
+from scriptkin import battery, bench, instruments, studyconfig
 
-FORMAT_VERSION = "1.0"
+FORMAT_VERSION = "2.0"
+# The major versions that the journal and manifest readers accept. Every 1.0 journal is a 2.0 journal.
+READABLE_MAJORS = ("1", "2")
 KINDS = (
     "sessionOpened",
     "handoff",
@@ -48,11 +50,29 @@ OUTCOME_OF_REASON = {
     "operatorAbort": "aborted",
     "backgrounded": "interrupted",
     "technicalFailure": "technicalFailure",
+    "operatorDone": "completed",
 }
 FORCE, AZIMUTH, ALTITUDE, LOCATION, ROLL = 1, 2, 4, 8, 16
 
-ALL_CHANNELS = {"force": True, "altitude": True, "azimuth": True, "roll": True, "hover": True}
+CHANNEL_KEYS = ("force", "altitude", "azimuth", "roll", "hover", "tiltX", "tiltY", "rotation")
+
+
+def channel_plan(*planned: str) -> dict[str, bool]:
+    """The planned channel set as a 2.0 header writes it, with every key present."""
+    return {k: k in planned for k in CHANNEL_KEYS}
+
+
+PENCIL_PRO_CHANNELS = channel_plan("force", "altitude", "azimuth", "roll", "hover")
+PRO_PEN_3_CHANNELS = channel_plan("force", "tiltX", "tiltY", "hover")
 MODEL_TABLE_SCALE = {"kind": "modelTable", "mmPerPoint": 25.4 * 2 / 264, "ppi": 264.0, "nativeScale": 2.0}
+TABLET_SCALE = {"kind": "tablet", "linesPerMM": 200.0, "mmPerPoint": 0.005}
+TABLET = {
+    "model": "Wacom Intuos Pro Medium (2025)",
+    "asset": "WACOM-01",
+    "driver": "6.4.10-3",
+    "pen": {"declared": "proPen3"},
+}
+BENCH_MOTION = {"id": "nextdraw-8511", "version": "unknown"}
 
 
 def encode_line(line: dict[str, Any]) -> bytes:
@@ -95,8 +115,9 @@ class JournalBuilder:
     """Writes journal lines and records, by construction, the fold summary they must produce."""
 
     session_id: str
-    participant: str
-    channels: dict[str, bool] = field(default_factory=lambda: dict(ALL_CHANNELS))
+    # None for a bench session, which records no person.
+    participant: str | None
+    channels: dict[str, bool] = field(default_factory=lambda: dict(PENCIL_PRO_CHANNELS))
     pencil: str = "pro"
     input: str = "pencil"
     scale: dict[str, Any] = field(default_factory=lambda: dict(MODEL_TABLE_SCALE))
@@ -109,9 +130,16 @@ class JournalBuilder:
     visit: int = 1
     qualification: dict[str, str] | None = None
     device_model: str = "iPad16,3"
+    device_os: str = "iPadOS 27.0"
     asset: str = "IPAD-01"
     site: str = "DEMO"
     opened_at: str = "2026-11-03T09:00:00Z"
+    # The `bench` header object of a bench session, and the `tablet` object when the input is a tablet.
+    bench: dict[str, Any] | None = None
+    tablet: dict[str, Any] | None = None
+    max_force: float = 4.166666666666667
+    view: tuple[float, float] = (834.0, 1210.0)
+    stimulus_origin: tuple[float, float] = (147.5, 200.0)
 
     lines: list[dict[str, Any]] = field(default_factory=list)
     _trials: list[_Trial] = field(default_factory=list)
@@ -147,48 +175,61 @@ class JournalBuilder:
         }
 
     def opened(self) -> JournalBuilder:
-        self._emit(
-            "sessionOpened",
-            format=FORMAT_VERSION,
-            purpose=self.purpose,
-            sessionID=self.session_id,
-            participant=self.participant,
+        bench_session = self.purpose == "bench"
+        assert (self.bench is not None) == bench_session and (self.participant is None) == bench_session
+        head: dict[str, Any] = {"format": FORMAT_VERSION, "purpose": self.purpose}
+        head["sessionID"] = self.session_id
+        if not bench_session:
+            head["participant"] = self.participant
+        head.update(
             openedAt=self.opened_at,
             openedUptime=self.opened_uptime,
             boot=self.boot,
             app={"version": "1.0.0", "build": "1", "sourceRevision": "fixture"},
-            device={"model": self.device_model, "os": "iPadOS 27.0", "nativeScale": 2.0, "asset": self.asset},
+            device={
+                "model": self.device_model,
+                "os": self.device_os,
+                "nativeScale": 2.0,
+                "asset": self.asset,
+            },
+            tablet=self.tablet,
             surface={"protector": "none", "nib": "new"},
             qualification=self.qualification,
             scale=self.scale,
             pencil={"declared": self.pencil},
             channels=self.channels,
             input=self.input,
-            administration=self.administration,
-            study={
-                "id": "DEMO",
-                "site": self.site,
-                "configID": "DEMO",
-                "configVersion": "1.0",
-                "configSHA256": demo_config_sha256(),
-                "protocolVersion": "demo",
-            },
-            visit={"id": f"V{self.visit}", "number": self.visit},
-            ageBand=self.age_band,
-            jurisdiction=self.jurisdiction,
-            locale="en",
-            consent=self._consent(),
-            ethics={
-                "approvalID": "DEMO-NOT-APPROVED",
-                "protocolVersion": "demo",
-                "safetyProtocolVersion": "demo",
-            },
-            battery={
-                "id": battery.BATTERY_ID,
-                "version": battery.BATTERY_VERSION,
-                "sha256": battery.battery_sha256(),
-            },
         )
+        if bench_session:
+            head["bench"] = self.bench
+        else:
+            head.update(
+                administration=self.administration,
+                study={
+                    "id": "DEMO",
+                    "site": self.site,
+                    "configID": "DEMO",
+                    "configVersion": "1.0",
+                    "configSHA256": demo_config_sha256(),
+                    "protocolVersion": "demo",
+                },
+                visit={"id": f"V{self.visit}", "number": self.visit},
+                ageBand=self.age_band,
+                jurisdiction=self.jurisdiction,
+                locale="en",
+                consent=self._consent(),
+                ethics={
+                    "approvalID": "DEMO-NOT-APPROVED",
+                    "protocolVersion": "demo",
+                    "safetyProtocolVersion": "demo",
+                },
+            )
+        head["battery"] = {
+            "id": battery.BATTERY_ID,
+            "version": battery.BATTERY_VERSION,
+            "sha256": battery.battery_sha256(),
+        }
+        self._emit("sessionOpened", **head)
         self._state = "ready"
         return self
 
@@ -205,23 +246,33 @@ class JournalBuilder:
         position: int = 1,
         hand: str = "right",
         accommodations: list[str] | None = None,
+        bench: dict[str, Any] | None = None,
     ) -> int:
+        """Start a trial. A bench session gives the run facts in `bench` and has no hand or instruction."""
         assert self._state in ("ready", "suspended") and self._open_trial is None
+        assert (bench is not None) == (self.purpose == "bench")
         index = len(self._trials)
         self._trials.append(_Trial(index, task, attempt, practice))
-        self._emit(
-            "trialStarted",
-            t=t,
-            trial={"index": index, "task": task, "attempt": attempt},
-            spec=battery.task_spec(task),
-            practice=practice,
-            position=position,
-            hand=hand,
-            instruction={"id": task, "version": "1.0", "locale": "en"},
-            accommodations=accommodations or [],
-            view={"width": 834.0, "height": 1210.0},
-            stimulusOrigin={"x": 147.5, "y": 200.0},
+        line: dict[str, Any] = {
+            "t": t,
+            "trial": {"index": index, "task": task, "attempt": attempt},
+            "spec": battery.task_spec(task),
+            "practice": practice,
+            "position": position,
+        }
+        if bench is None:
+            line.update(
+                hand=hand,
+                instruction={"id": task, "version": "1.0", "locale": "en"},
+                accommodations=accommodations or [],
+            )
+        else:
+            line["bench"] = bench
+        line.update(
+            view={"width": self.view[0], "height": self.view[1]},
+            stimulusOrigin={"x": self.stimulus_origin[0], "y": self.stimulus_origin[1]},
         )
+        self._emit("trialStarted", **line)
         self._open_trial = index
         self._state = "drawing"
         return index
@@ -231,7 +282,7 @@ class JournalBuilder:
         self._emit("trialBegan", t=t, trial=self._open_trial)
         self._trials[self._open_trial].began = True
 
-    def contact(self, t: float, max_force: float | None = 4.166666666666667) -> int:
+    def contact(self, t: float) -> int:
         assert self._open_trial is not None
         contact = self._next_contact
         self._next_contact += 1
@@ -239,7 +290,7 @@ class JournalBuilder:
         self._contact_trial[contact] = self._open_trial
         self._trials[self._open_trial].contacts += 1
         self._emit(
-            "contactBegan", t=t, contact=contact, maxForce=max_force if self.channels["force"] else None
+            "contactBegan", t=t, contact=contact, maxForce=self.max_force if self.channels["force"] else None
         )
         return contact
 
@@ -255,6 +306,9 @@ class JournalBuilder:
         altitude: float = 1.05,
         azimuth: float = 2.2,
         roll: float = 0.4,
+        tilt_x: float = 0.1,
+        tilt_y: float = -0.2,
+        rotation: float = 15.0,
         est: int = 0,
         pending: tuple[int, int] | None = None,
     ) -> None:
@@ -271,6 +325,9 @@ class JournalBuilder:
             altitude=altitude if c["altitude"] else None,
             azimuth=azimuth if c["azimuth"] else None,
             roll=roll if c["roll"] else None,
+            tiltX=tilt_x if c["tiltX"] else None,
+            tiltY=tilt_y if c["tiltY"] else None,
+            rotation=rotation if c["rotation"] else None,
             phase=phase,
             est=est,
         )
@@ -296,18 +353,24 @@ class JournalBuilder:
         self._open_contacts.remove(contact)
         self._emit("contactEnded", t=t, contact=contact, cancelled=cancelled)
 
-    def hover(self, t: float, x: float, y: float, z: float) -> None:
+    def hover(self, t: float, x: float, y: float, z: float | None = None) -> None:
+        """An in-air sample. A tablet reports no height and times its hover lines by the event clock."""
         c = self.channels
+        tablet = self.input == "tablet"
+        assert (z is None) == tablet
         self._emit(
             "hover",
             t=t,
-            clock="callback",
+            clock="event" if tablet else "callback",
             x=x,
             y=y,
             z=z,
             altitude=0.9 if c["altitude"] else None,
             azimuth=2.0 if c["azimuth"] else None,
             roll=0.3 if c["roll"] else None,
+            tiltX=0.05 if c["tiltX"] else None,
+            tiltY=-0.1 if c["tiltY"] else None,
+            rotation=10.0 if c["rotation"] else None,
         )
 
     def finger(self, t: float, phase: str, x: float, y: float) -> None:
@@ -454,13 +517,13 @@ class JournalBuilder:
         unresolved = [0] * len(self._trials)
         for trial, remaining in self._pending.values():
             unresolved[trial] += sum(1 for bits in remaining if bits)
-        return {
-            "sessionID": self.session_id,
-            "purpose": self.purpose,
-            "administration": self.administration,
-            "state": self._state,
-            "counts": counts,
-            "trials": [
+        summary: dict[str, Any] = {"sessionID": self.session_id, "purpose": self.purpose}
+        if self.bench is None:
+            summary["administration"] = self.administration
+        summary.update(
+            state=self._state,
+            counts=counts,
+            trials=[
                 {
                     "index": t.index,
                     "task": t.task,
@@ -475,7 +538,7 @@ class JournalBuilder:
                 }
                 for t in self._trials
             ],
-            "questionnaires": [
+            questionnaires=[
                 {
                     "block": b.block,
                     "instrument": b.instrument,
@@ -485,15 +548,16 @@ class JournalBuilder:
                 }
                 for b in self._blocks
             ],
-            "safety": {
+            safety={
                 "flags": self._flags,
                 "crisisListShown": self._crisis_shown,
                 "operatorAlerts": self._alerts,
                 "actions": self._actions,
             },
-            "unmatchedCorrections": self._unmatched,
-            "truncatedBytes": self._truncated,
-        }
+            unmatchedCorrections=self._unmatched,
+            truncatedBytes=self._truncated,
+        )
+        return summary
 
 
 def _stroke(
@@ -576,7 +640,7 @@ def _multi_trial() -> JournalBuilder:
 
 
 def _pencil2_no_roll() -> JournalBuilder:
-    channels = dict(ALL_CHANNELS, roll=False)
+    channels = dict(PENCIL_PRO_CHANNELS, roll=False)
     b = JournalBuilder(
         "3F2A9C1E-0000-4000-8000-000000000003", "P0003", channels=channels, pencil="second"
     ).opened()
@@ -590,7 +654,7 @@ def _pencil2_no_roll() -> JournalBuilder:
 
 
 def _usbc_no_force() -> JournalBuilder:
-    channels = dict(ALL_CHANNELS, force=False, roll=False, hover=False)
+    channels = dict(PENCIL_PRO_CHANNELS, force=False, roll=False, hover=False)
     b = JournalBuilder(
         "3F2A9C1E-0000-4000-8000-000000000004", "P0004", channels=channels, pencil="usbC"
     ).opened()
@@ -655,11 +719,10 @@ def _open_session() -> JournalBuilder:
 
 
 def _simulated_input() -> JournalBuilder:
-    channels = {"force": False, "altitude": False, "azimuth": False, "roll": False, "hover": False}
     b = JournalBuilder(
         "3F2A9C1E-0000-4000-8000-000000000009",
         "SIM-0001",
-        channels=channels,
+        channels=channel_plan(),
         pencil="none",
         input="directTouchAsPen",
     ).opened()
@@ -840,6 +903,116 @@ def _cross_contact_update() -> JournalBuilder:
     return b
 
 
+def _bench_header(role: str, mounting: str) -> dict[str, Any]:
+    return {
+        "role": role,
+        "mounting": mounting,
+        "motion": dict(BENCH_MOTION),
+        "protocol": {"version": bench.PROTOCOL_VERSION, "sha256": bench.PROTOCOL_SHA256},
+    }
+
+
+def _run(
+    b: JournalBuilder,
+    program_id: str,
+    attempt: int,
+    t: float,
+    *,
+    position: int,
+    run: int = 1,
+    clip: str | None = None,
+) -> int:
+    """Start one bench run: a trial of the program's task with the run facts from the programs table."""
+    p = bench.program(program_id)
+    facts: dict[str, Any] = {"program": p.id, "run": run, "trajectorySHA256": bench.trajectory_sha256(p.id)}
+    if clip is not None:
+        facts["clip"] = clip
+    return b.trial(p.task, attempt, t, position=position, bench=facts)
+
+
+def _tablet_stroke(
+    b: JournalBuilder, t0: float, n: int, x0: float, y0: float, *, cancelled: bool = False
+) -> int:
+    """One tablet contact of n samples in tablet lines. A cancelled contact ends with a proximity leave."""
+    contact = b.contact(t0)
+    for i in range(n):
+        last = "cancelled" if cancelled else "ended"
+        phase = "began" if i == 0 else (last if i == n - 1 else "moved")
+        b.sample(
+            contact,
+            t0 + i / 240,
+            x0 + 16.0 * i,
+            y0 + 0.5 * i * i,
+            phase,
+            force=0.3 + 0.02 * i,
+            tilt_x=0.1 + 0.01 * i,
+            tilt_y=-0.2,
+        )
+    b.lift(t0 + n / 240, contact, cancelled=cancelled)
+    return contact
+
+
+def _bench_ipad() -> JournalBuilder:
+    """Role P: the iPad in bench mode. Two main runs, then a fault run that the operator excludes."""
+    b = JournalBuilder(
+        "3F2A9C1E-0000-4000-8000-000000000013",
+        None,
+        purpose="bench",
+        asset="IPAD-02",
+        bench=_bench_header("P", "M1"),
+    ).opened()
+    _run(b, "loops-s1-v20", 1, 1010.0, position=1)
+    b.began(1010.5)
+    c1, lift = _stroke(b, 1011.0, 8, 300.0, 400.0, est_first=FORCE, first_pending=(FORCE, 301))
+    b.correction(c1, 301, lift + 0.004, 0, force=0.45)
+    b.end(1030.0, "operatorDone")
+    _run(b, "spiral-s05-v40", 1, 1040.0, position=2)
+    b.began(1040.5)
+    _stroke(b, 1041.0, 6, 320.0, 420.0)
+    b.end(1046.0, "operatorDone")
+    _run(b, "fault-lift", 2, 1060.0, position=3, clip="CLIP-0003")
+    b.began(1060.5)
+    b.mark(1060.8, 2, "cameraSync")
+    _stroke(b, 1061.0, 5, 300.0, 400.0)
+    _stroke(b, 1061.5, 5, 310.0, 405.0)
+    b.end(1080.0, "operatorDone")
+    b.mark(1081.0, 2, "exclude")
+    b.close(1090.0)
+    return b
+
+
+def _bench_wacom() -> JournalBuilder:
+    """Role W: the Wacom tablet on the Mac. A proximity leave cancels the first contact of the run."""
+    b = JournalBuilder(
+        "3F2A9C1E-0000-4000-8000-000000000014",
+        None,
+        channels=dict(PRO_PEN_3_CHANNELS),
+        pencil="none",
+        input="tablet",
+        scale=dict(TABLET_SCALE),
+        purpose="bench",
+        device_model="Mac16,1",
+        device_os="macOS 26.1",
+        asset="MAC-01",
+        bench=_bench_header("W", "M3"),
+        tablet=dict(TABLET),
+        max_force=1.0,
+        view=(52600.0, 29600.0),
+        stimulus_origin=(0.0, 0.0),
+    ).opened()
+    _run(b, "loops-s1-v20", 1, 1010.0, position=1)
+    b.began(1010.5)
+    for i in range(3):
+        b.hover(1010.8 + i / 240, 9800.0 + 20.0 * i, 8000.0)
+    _tablet_stroke(b, 1011.0, 5, 10000.0, 8000.0, cancelled=True)
+    for i in range(2):
+        b.hover(1011.5 + i / 240, 10100.0 + 20.0 * i, 8010.0)
+    _tablet_stroke(b, 1012.0, 8, 10120.0, 8010.0)
+    b.end(1030.0, "operatorDone")
+    b.close(1031.0)
+    return b
+
+
 JOURNAL_FIXTURES = {
     "basic": _basic,
     "multi_trial": _multi_trial,
@@ -859,6 +1032,8 @@ JOURNAL_FIXTURES = {
     "cross_contact_update": _cross_contact_update,
     "declined_unreached_safety": _declined_unreached_safety,
     "interrupted_unreached_safety": _interrupted_unreached_safety,
+    "bench_ipad": _bench_ipad,
+    "bench_wacom": _bench_wacom,
 }
 
 
@@ -932,6 +1107,7 @@ def generated_files() -> dict[str, bytes]:
     """Every generated file, keyed by its path relative to contract/."""
     files: dict[str, bytes] = {
         "battery.json": battery.battery_bytes(),
+        "bench_programs.json": bench.programs_json(),
         "instruments.json": instruments.instruments_bytes(),
         "configs/demo.json": studyconfig.config_bytes(studyconfig.demo_config()),
         "fixtures/doubles.json": _doubles_bytes(),

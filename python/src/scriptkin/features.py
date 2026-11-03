@@ -15,7 +15,16 @@ from scipy.spatial import KDTree
 
 from scriptkin import __version__
 from scriptkin.quality import DEFAULT_QC, Accepted, QcPolicy, Refusal, RefusalCode, Rejected, Segment, assess
-from scriptkin.recording import Channel, FloatArray, IntArray, PenState, Recording, Trial
+from scriptkin.recording import (
+    Channel,
+    FloatArray,
+    IntArray,
+    ParticipantContext,
+    PenState,
+    Recording,
+    Trial,
+    TrialContext,
+)
 from scriptkin.signal import (
     DEFAULT_PREPROCESSING,
     GammaFit,
@@ -586,7 +595,7 @@ def feature_table(
     policy: QcPolicy = DEFAULT_QC,
     settings: Preprocessing = DEFAULT_PREPROCESSING,
 ) -> FeatureTable:
-    """One row per measured trial. Practice trials and qualification sessions never enter the table.
+    """One row per measured trial. Practice trials, qualification sessions, and bench sessions never enter.
 
     Session context is "unknown" or None when the source format does not record it.
     """
@@ -595,8 +604,9 @@ def feature_table(
     profiles: set[str] = set()
     for recording in recordings:
         session = recording.context
-        if session is not None and session.purpose == "qualification":
+        if session is not None and session.purpose != "study":
             continue
+        person = session.subject if session and isinstance(session.subject, ParticipantContext) else None
         hashes.update(recording.source_hashes)
         profiles.add(recording.reader_profile)
         for trial in recording.trials:
@@ -607,21 +617,22 @@ def feature_table(
                 cells: dict[str, Cell] = {f.name: qc.refusals[0] for f in CATALOG}
             else:
                 cells = extract(qc, settings)
+            participant = trial.context if isinstance(trial.context, TrialContext) else None
             rows.append(
                 FeatureRow(
-                    recording.participant,
+                    recording.participant or "unknown",
                     recording.session_id,
-                    session.study.site if session else "unknown",
-                    session.administration if session else "unknown",
-                    session.age_band if session else "unknown",
-                    session.visit.number if session else None,
+                    person.study.site if person else "unknown",
+                    person.administration if person else "unknown",
+                    person.age_band if person else "unknown",
+                    person.visit.number if person else None,
                     session.opened_at if session else None,
                     trial.device.model,
                     trial.task.id,
                     trial.index,
                     trial.attempt,
-                    trial.context.hand if trial.context else "unknown",
-                    trial.context.accommodations if trial.context else (),
+                    participant.hand if participant else "unknown",
+                    participant.accommodations if participant else (),
                     tuple(r.code for r in qc.refusals) if isinstance(qc, Rejected) else (),
                     cells,
                 )

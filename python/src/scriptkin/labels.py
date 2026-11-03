@@ -15,7 +15,7 @@ from typing import Any
 
 from scriptkin import instruments
 from scriptkin.quality import Refusal, RefusalCode
-from scriptkin.recording import BlockOutcome, QuestionnaireBlock, Recording
+from scriptkin.recording import BlockOutcome, ParticipantContext, QuestionnaireBlock, Recording
 
 
 @dataclass(frozen=True)
@@ -84,7 +84,7 @@ def _block_labels(recording: Recording, block: QuestionnaireBlock, administratio
 
     def label(scale: str, value: float | Refusal) -> Label:
         return Label(
-            recording.participant,
+            recording.participant or "unknown",
             recording.session_id,
             ref.id,
             ref.version,
@@ -112,7 +112,8 @@ def _block_labels(recording: Recording, block: QuestionnaireBlock, administratio
 
 def labels(recording: Recording) -> tuple[Label, ...]:
     """Score every questionnaire block of a recording, in block order."""
-    administration = recording.context.administration if recording.context else "unknown"
+    subject = recording.context.subject if recording.context else None
+    administration = subject.administration if isinstance(subject, ParticipantContext) else "unknown"
     return tuple(
         label
         for block in recording.questionnaires

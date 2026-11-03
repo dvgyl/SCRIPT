@@ -14,12 +14,12 @@ FIXTURE_NAMES = sorted(p.stem for p in (FIXTURES / "journal").glob("*.jsonl") if
 
 @pytest.fixture(scope="module")
 def fixture_store(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Every journal fixture and the export fixture: 17 sessions, one duplicate, and one open session."""
+    """Every journal fixture and the export fixture: 19 sessions, one duplicate, and one open session."""
     root = tmp_path_factory.mktemp("qc")
     for name in FIXTURE_NAMES:
         write_export(root / "in" / name, fixture_lines(name))
     report = intake([root / "in", FIXTURES / "export"], root / "store")
-    assert sorted(r.result for r in report.receipts).count("accepted") == 17
+    assert sorted(r.result for r in report.receipts).count("accepted") == 19
     return root / "store"
 
 
@@ -27,14 +27,14 @@ def test_qc_report_counts_match_a_hand_count_of_the_contract_fixtures(fixture_st
     # Detects a QC report that counts a session, trial, sample, correction, or safety event wrongly.
     # The expected values come from the .fold.json oracles and the header lines of the fixtures.
     report = qc_report(fixture_store)
-    assert report["sessions"] == 17
+    assert report["sessions"] == 19
     assert report["sessionsBy"] == {
         "site": {"DEMO": 17},
-        "deviceAsset": {"IPAD-01": 17},
-        "configSHA256": {"f8184468496da4db92266e2808d01f37b063f6c2dbbf98541983a983a616e046": 17},
-        "appVersion": {"1.0.0": 17},
+        "deviceAsset": {"IPAD-01": 17, "IPAD-02": 1, "MAC-01": 1},
+        "configSHA256": {"0db6fda2fa8e6cbcad45b5f27619e609d1c87e0f87be057270f5d592a5e8279f": 17},
+        "appVersion": {"1.0.0": 19},
         "administration": {"self": 3, "supervised": 14},
-        "purpose": {"qualification": 1, "study": 16},
+        "purpose": {"bench": 2, "qualification": 1, "study": 16},
     }
     assert report["trials"] == {
         "accepted": 0,
@@ -47,18 +47,27 @@ def test_qc_report_counts_match_a_hand_count_of_the_contract_fixtures(fixture_st
         },
     }
     assert report["estimates"] == {
-        "samples": 155,
+        "samples": 155 + 24 + 13,
         "unresolved": 3,
-        "unresolvedRate": 3 / 155,
-        "corrections": 7,
+        "unresolvedRate": 3 / 192,
+        "corrections": 8,
         "unmatched": 3,
-        "unmatchedRate": 3 / 7,
+        "unmatchedRate": 3 / 8,
     }
     assert report["interrupted"] == {"trials": 1, "blocks": 2}
     assert report["recovered"] == {"sessions": 3, "truncatedBytes": 37}
     assert report["safetyAudit"] == {"actions": 2, "crisisListShown": 8, "flags": 4, "operatorAlerts": 2}
-    planned = {"force": 15, "altitude": 16, "azimuth": 16, "roll": 14, "hover": 15}
-    observed = {**planned, "hover": 2}
+    planned = {
+        "force": 17,
+        "altitude": 17,
+        "azimuth": 17,
+        "roll": 15,
+        "hover": 17,
+        "tiltX": 1,
+        "tiltY": 1,
+        "rotation": 0,
+    }
+    observed = {**planned, "hover": 3}
     assert report["channels"] == {
         c: {"planned": planned[c], "observed": observed[c], "plannedNotObserved": planned[c] - observed[c]}
         for c in planned
@@ -69,11 +78,15 @@ def test_qc_report_counts_match_a_hand_count_of_the_contract_fixtures(fixture_st
         ("IPAD-01", "pro"),
         ("IPAD-01", "second"),
         ("IPAD-01", "usbC"),
+        ("IPAD-02", "pro"),
+        ("WACOM-01", "proPen3"),
     ]
     latest = devices["IPAD-01", "pro"]["latestQualification"]
     assert latest["sessionID"] == "3F2A9C1E-0000-4000-8000-00000000000D"
-    assert [d["latestQualification"] for k, d in devices.items() if k[1] != "pro"] == [None, None, None]
+    assert [k for k, d in devices.items() if d["latestQualification"] is not None] == [("IPAD-01", "pro")]
     assert devices["IPAD-01", "pro"]["sampleRateHz"]["median"] == pytest.approx(240.0)
+    assert devices["WACOM-01", "proPen3"]["models"] == ["Wacom Intuos Pro Medium (2025)"]
+    assert devices["WACOM-01", "proPen3"]["sampleRateHz"]["median"] == pytest.approx(240.0)
 
 
 def test_qc_report_holds_no_label_score_or_response(fixture_store: Path) -> None:

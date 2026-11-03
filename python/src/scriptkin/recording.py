@@ -13,11 +13,13 @@ from numpy.typing import NDArray
 FloatArray = NDArray[np.float64]
 IntArray = NDArray[np.int64]
 
-Purpose = Literal["study", "qualification"]
+Purpose = Literal["study", "qualification", "bench"]
 Administration = Literal["supervised", "self"]
 AgeBand = Literal["13-17", "18-24"]
 Hand = Literal["left", "right", "unknown"]
 Accommodation = Literal["readAloud", "largerText", "extraTime", "positionAssist", "other"]
+BenchRole = Literal["P", "W"]
+TabletPen = Literal["proPen3", "unknown"]
 
 
 class Channel(StrEnum):
@@ -26,6 +28,9 @@ class Channel(StrEnum):
     AZIMUTH = "azimuth"
     ROLL = "roll"
     HOVER = "hover"
+    TILT_X = "tiltX"
+    TILT_Y = "tiltY"
+    ROTATION = "rotation"
 
 
 class PenState(StrEnum):
@@ -52,6 +57,7 @@ class EndReason(StrEnum):
     OPERATOR_ABORT = "operatorAbort"
     BACKGROUNDED = "backgrounded"
     TECHNICAL_FAILURE = "technicalFailure"
+    OPERATOR_DONE = "operatorDone"
 
 
 class BlockOutcome(StrEnum):
@@ -109,11 +115,25 @@ class LocalizedRef:
 
 @dataclass(frozen=True)
 class TrialContext:
+    """A trial of a participant session."""
+
     practice: bool
     position: int
     hand: Hand
     instruction: LocalizedRef
     accommodations: tuple[Accommodation, ...] = ()
+
+
+@dataclass(frozen=True)
+class BenchRunContext:
+    """A trial of a bench session: one run of one registered program."""
+
+    practice: bool
+    position: int
+    program: str
+    run: int
+    trajectory_sha256: str
+    clip: str | None = None
 
 
 @dataclass(frozen=True)
@@ -130,7 +150,7 @@ class Trial:
     finger_contacts: int = 0
     unmatched_corrections: int = 0
     marks: tuple[str, ...] = ()
-    context: TrialContext | None = None
+    context: TrialContext | BenchRunContext | None = None
     began: float | None = None
     end_reason: EndReason | None = None
 
@@ -172,11 +192,19 @@ class ReferenceScale:
 
 
 @dataclass(frozen=True)
+class TabletScale:
+    """A pen tablet that reports positions in lines. `mm_per_point` is `1 / lines_per_mm`."""
+
+    lines_per_mm: float
+    mm_per_point: float
+
+
+@dataclass(frozen=True)
 class UnknownScale:
     pass
 
 
-ScaleSource = ModelTableScale | ReferenceScale | UnknownScale
+ScaleSource = ModelTableScale | ReferenceScale | TabletScale | UnknownScale
 
 
 @dataclass(frozen=True)
@@ -232,10 +260,9 @@ class QualificationRef:
 
 
 @dataclass(frozen=True)
-class SessionContext:
-    """What a SCRIPT journal header records about the session. Public tablet formats have none."""
+class ParticipantContext:
+    """The facts of a session with a person: a study or qualification session."""
 
-    purpose: Purpose
     administration: Administration
     study: Study
     visit: Visit
@@ -244,11 +271,41 @@ class SessionContext:
     locale: str
     consent: Consent
     ethics: Ethics
+
+
+@dataclass(frozen=True)
+class BenchContext:
+    """The facts of a bench session: one mounting of one device under the bench protocol."""
+
+    role: BenchRole
+    mounting: str
+    motion: DocumentRef
+    protocol_version: str
+    protocol_sha256: str
+
+
+@dataclass(frozen=True)
+class TabletContext:
+    """The pen tablet of a session whose input is `tablet`. The device stays the host computer."""
+
+    model: str
+    asset: str
+    driver: str
+    pen: TabletPen
+
+
+@dataclass(frozen=True)
+class SessionContext:
+    """What a SCRIPT journal header records about the session. Public tablet formats have none."""
+
+    purpose: Purpose
+    subject: ParticipantContext | BenchContext
     device_asset: str
     surface: Surface
     scale: ScaleSource
     opened_at: str
     qualification: QualificationRef | None = None
+    tablet: TabletContext | None = None
 
 
 def reader_profile(reader: str, **conversions: Any) -> str:
@@ -258,8 +315,10 @@ def reader_profile(reader: str, **conversions: Any) -> str:
 
 @dataclass(frozen=True)
 class Recording:
+    """A read session. `participant` is None for a bench session, which records no person."""
+
     session_id: str
-    participant: str
+    participant: str | None
     device: Device
     trials: tuple[Trial, ...]
     reader_profile: str

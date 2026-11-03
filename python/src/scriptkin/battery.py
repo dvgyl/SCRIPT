@@ -16,7 +16,7 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 BATTERY_ID = "script-v1"
-BATTERY_VERSION = "1.0.0"
+BATTERY_VERSION = "1.1.0"
 
 Point = tuple[float, float]
 Polyline = list[Point]
@@ -162,6 +162,39 @@ def qualification_line() -> dict[str, Any]:
 
 
 QUALIFICATION_TASKS = ("qual-reference", "qual-hold", "qual-line")
+# Each bench task: its base task, the name of the figure in the operator instruction, and the scale.
+_BENCH_TASKS: dict[str, tuple[str, str, float]] = {
+    "bench-loops-l": ("loops", "loops", 1.0),
+    "bench-loops-s": ("loops", "loops", 0.5),
+    "bench-spiral-l": ("spiral-trace", "spiral", 1.0),
+    "bench-spiral-s": ("spiral-trace", "spiral", 0.5),
+}
+BENCH_TASKS = tuple(_BENCH_TASKS)
+
+
+def _scaled(stimulus: dict[str, Any], scale: float) -> dict[str, Any]:
+    """The stimulus with every coordinate multiplied by `scale` about the origin of its frame."""
+
+    def grown(p: Sequence[float]) -> Point:
+        return (p[0] * scale, p[1] * scale)
+
+    return _paths_stimulus(
+        grown(stimulus["frameMM"]),
+        [[grown(p) for p in path] for path in stimulus["paths"]],
+        start=grown(stimulus["start"]) if "start" in stimulus else None,
+    )
+
+
+def _bench_task(task_id: str, tasks: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    base_id, name, scale = _BENCH_TASKS[task_id]
+    base = next(t for t in tasks if t["id"] == base_id)
+    return _task(
+        task_id,
+        base["mode"],
+        f"Bench: the {name} at scale {scale}.",
+        _scaled(base["stimulus"], scale),
+        base["completion"]["maxSeconds"],
+    )
 
 
 def _paths_stimulus(frame: Point, paths: Sequence[Polyline], start: Point | None = None) -> dict[str, Any]:
@@ -242,6 +275,7 @@ def battery() -> dict[str, Any]:
             "qual-line", "trace", "Operator: draw along the line at an even speed.", qualification_line(), 60
         ),
     ]
+    tasks += [_bench_task(task_id, tasks) for task_id in BENCH_TASKS]
     return {"id": BATTERY_ID, "version": BATTERY_VERSION, "tasks": tasks}
 
 

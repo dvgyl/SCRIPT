@@ -27,6 +27,15 @@ def test_qualification_sessions_never_enter_the_feature_table() -> None:
     assert table.provenance.source_hashes == study.source_hashes
 
 
+def test_bench_sessions_never_enter_the_feature_table() -> None:
+    # Detects bench runs measured as participant trials, or their digests in the provenance.
+    bench = [fold(fixture_lines(name)) for name in ("bench_ipad", "bench_wacom")]
+    study = fold(fixture_lines("basic"))
+    table = feature_table([*bench, study])
+    assert {row.session for row in table.rows} == {study.session_id}
+    assert table.provenance.source_hashes == study.source_hashes
+
+
 def latency(began: float | None, started: float = 0.5) -> float | Refusal:
     t = np.arange(1.0, 2.001, 0.01)
     trial = replace(make_trial(t), started=started, began=began)
