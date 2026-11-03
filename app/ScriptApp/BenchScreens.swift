@@ -41,38 +41,40 @@ struct BenchRunScreen: View {
         NavigationStack {
             List {
                 Section("Next run") {
-                    Picker("Program", selection: $program) {
-                        Section("Main programs") {
-                            ForEach(programs.filter { $0.fault == nil }, id: \.id) { Text(verbatim: $0.id.rawValue).tag($0.id) }
+                    if refusal != .otherProtocol {
+                        Picker("Program", selection: $program) {
+                            Section("Main programs") {
+                                ForEach(programs.filter { $0.fault == nil }, id: \.id) { Text(verbatim: $0.id.rawValue).tag($0.id) }
+                            }
+                            Section("Fault programs") {
+                                ForEach(programs.filter { $0.fault != nil }, id: \.id) { Text(verbatim: $0.id.rawValue).tag($0.id) }
+                            }
                         }
-                        Section("Fault programs") {
-                            ForEach(programs.filter { $0.fault != nil }, id: \.id) { Text(verbatim: $0.id.rawValue).tag($0.id) }
+                        .accessibilityIdentifier("program")
+                        LabeledContent("Run") {
+                            Picker("Run", selection: $run) {
+                                ForEach(BenchRun.runs, id: \.self) { Text(verbatim: String($0)).tag($0) }
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+                            .frame(maxWidth: 480)
+                            .accessibilityIdentifier("runIndex")
                         }
-                    }
-                    .accessibilityIdentifier("program")
-                    LabeledContent("Run") {
-                        Picker("Run", selection: $run) {
-                            ForEach(BenchRun.runs, id: \.self) { Text(verbatim: String($0)).tag($0) }
+                        HStack {
+                            Text("Run ID")
+                            Spacer(minLength: 16)
+                            Text(verbatim: store.runID(choice)?.rawValue ?? "")
+                                .monospaced()
+                                .foregroundStyle(.secondary)
+                                .accessibilityIdentifier("runID")
                         }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                        .frame(maxWidth: 480)
-                        .accessibilityIdentifier("runIndex")
-                    }
-                    HStack {
-                        Text("Run ID")
-                        Spacer(minLength: 16)
-                        Text(verbatim: store.runID(choice)?.rawValue ?? "")
-                            .monospaced()
-                            .foregroundStyle(.secondary)
-                            .accessibilityIdentifier("runID")
+                        Button("Start the run") { store.chooseRun(choice) }
+                            .disabled(refusal != nil)
+                            .accessibilityIdentifier("startRun")
                     }
                     if let line = refusal?.runLine {
                         Text(line).foregroundStyle(.red).accessibilityIdentifier("runRefusal")
                     }
-                    Button("Start the run") { store.chooseRun(choice) }
-                        .disabled(refusal != nil)
-                        .accessibilityIdentifier("startRun")
                 }
                 if !digest.trials.isEmpty {
                     Section("Runs") {
@@ -186,6 +188,7 @@ extension Rejection {
     var runLine: LocalizedStringKey? {
         switch self {
         case .repeatedRun: "This session already has this run ID."
+        case .otherProtocol: "This session uses another bench protocol than this app, so it takes no more runs."
         default: nil
         }
     }

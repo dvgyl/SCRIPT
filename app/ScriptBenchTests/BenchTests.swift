@@ -293,6 +293,32 @@ private func export(_ bench: TestBench, _ opened: SessionOpened) throws -> (fold
         == ["W-M3-loops-l-v20-r1", "W-M3-loops-l-v20-r6"])
 }
 
+@Test @MainActor func aResumedBenchSessionOfAnotherProtocolOffersNoRun() async throws {
+    // Detects a build that continues a bench session of another bench protocol, so one journal mixes the runs of two
+    // registrations.
+    let first = try TestBench()
+    defer { first.remove() }
+    first.enter()
+    var opened = try first.opened(.bench)
+    guard case .bench(var facts) = opened.subject else { throw CocoaError(.featureUnsupported) }
+    facts.protocol = BenchProtocolRef(version: "1.0", sha256: facts.protocol.sha256)
+    opened.subject = .bench(facts)
+    #expect(first.store.open(opened))
+    try await first.requireLive().writer.close()
+
+    let second = try TestBench(root: first.root)
+    second.clock.now = first.clock.now + 60
+    second.enter()
+    second.store.refresh()
+    second.store.resume(opened.sessionID)
+    #expect(second.store.live != nil)
+    #expect(second.store.refusal(loops) == .otherProtocol)
+    second.store.begin(loops)
+    #expect(second.store.state?.session.trials.isEmpty == true)
+    await second.store.close()
+    #expect(second.store.live == nil)
+}
+
 @Test @MainActor func focusLossEndsAnOpenTrialAsBackgrounded() async throws {
     // Detects a trial that stays open after the window loses the keyboard focus, so a run could go on without the
     // capture (bench protocol section 2.4).

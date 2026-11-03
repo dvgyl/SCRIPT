@@ -675,6 +675,9 @@
     "This session already has this run ID." : {
 
     },
+    "This session uses another bench protocol than this app, so it takes no more runs." : {
+
+    },
     "Time limit" : {
 
     },

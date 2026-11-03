@@ -499,6 +499,11 @@ public enum Rejection: Error, Hashable, Sendable {
     /// A program and run index that an earlier trial of the session has, whatever its outcome. The run id names the
     /// camera files of the run, so a rerun takes run index 6 or 7 (bench protocol sections 6.4 and 15).
     case repeatedRun(ProgramID, Int)
+    /// A bench run planned as practice. Every bench run is measured.
+    case practiceBenchRun
+    /// The bench protocol of `sessionOpened` differs from the protocol of the programs file in the rules, so a new
+    /// run would mix two registrations in one journal.
+    case otherProtocol
     /// `timeLimit` for a trial without a time limit, which is a bench run (bench protocol section 5.2).
     case noTimeLimit
     /// An `exclude` mark on a fault run. The quality gate needs every fault run as an ordinary trial (bench protocol
@@ -560,6 +565,7 @@ extension SessionState {
                 }
                 subject = .participant(facts)
             case (.bench, .bench(let run)):
+                guard !plan.practice else { return .failure(.practiceBenchRun) }
                 let recorded: BenchRun
                 do throws(Rejection) {
                     recorded = try benchRun(run, rules: rules).get()
@@ -692,9 +698,9 @@ extension SessionState {
     /// it before it offers the start of a run.
     public func benchRun(_ plan: BenchRunPlan, rules: SessionRules) -> Result<BenchRun, Rejection> {
         guard case .bench(let facts) = session.opened.subject else { return .failure(.notABenchSession) }
-        guard let program = rules.benchPrograms?.program(plan.program) else {
-            return .failure(.unknownProgram(plan.program))
-        }
+        guard let programs = rules.benchPrograms else { return .failure(.unknownProgram(plan.program)) }
+        guard programs.protocol == facts.protocol else { return .failure(.otherProtocol) }
+        guard let program = programs.program(plan.program) else { return .failure(.unknownProgram(plan.program)) }
         guard BenchRun.runs.contains(plan.run) else { return .failure(.invalidRun(plan.run)) }
         guard !session.trials.contains(where: { $0.bench == plan }) else {
             return .failure(.repeatedRun(plan.program, plan.run))
