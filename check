@@ -39,7 +39,7 @@ app() {
 
 uv sync --project "$ROOT/python" --frozen --quiet
 sections=("$@")
-[ ${#sections[@]} -eq 0 ] && sections=(contract python core app)
+[ ${#sections[@]} -eq 0 ] && sections=(contract core python app)
 for section in "${sections[@]}"; do
     case "$section" in
         contract|python|core|app) "$section" ;;
