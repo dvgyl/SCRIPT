@@ -59,11 +59,11 @@ Working title: *Do Apple Pencil and Wacom measure the same drawing movement? A r
 
 - **Devices.** P: iPad Pro (M4 or M5) with Apple Pencil Pro, SCRIPT Capture in bench mode. W: a Wacom tablet on a Mac, with a SCRIPT Bench capture that writes the same journal format.
 - **Motion.** A motion system (a pen plotter or a 3D printer) holds the stylus at a fixed angle with a constant load. The choice changes the motion model in the analysis. The camera records the executed movement.
-- **Programs.** The SCRIPT battery loops and spiral, at two sizes and two speeds (8 programs), and three fault programs for the quality gate.
-- **Replication.** Six mountings per device and five runs per program per mounting: 480 main runs and about 90 fault runs.
-- **Measures.** Sampling interval and jitter; spatial accuracy against the camera and the commanded path; and agreement of a fixed feature set (duration, path length, mean speed, loop height, speed variability, normalised jerk, tremor-band power).
-- **Statistics.** For each feature and condition: the device difference with a confidence interval that includes mounting effects, a two-one-sided-tests (TOST) equivalence decision against prespecified limits, and Bland-Altman limits with repeated measures. The limits and the analysis are fixed and hashed before the main runs.
-- **Correction.** Per-feature Deming regression from W to P, fitted with leave-one-mounting-out validation. The residual difference is tested against the same limits.
+- **Programs.** The SCRIPT battery loops and spiral at two sizes and two speeds, one fast loops program, and three line programs with a designed 5 to 11 Hz oscillation (12 programs), plus three fault programs for the quality gate.
+- **Replication.** Six mountings per device and five runs per program per mounting: 720 main runs and 108 fault runs.
+- **Measures.** Sampling interval, jitter, and noise floor; spatial accuracy against the camera and the commanded path; and agreement of a fixed feature set on the motion interval (duration, path length, mean speed, loop height, speed variability, tremor-band power on the designed oscillations). Four of these are referenced to the camera track of each run. Normalised jerk is descriptive.
+- **Statistics.** For each feature: the device difference per program with a confidence interval that includes mounting effects, a two-one-sided-tests (TOST) equivalence decision against prespecified limits on every program of the feature's set, Holm-adjusted across features, and Bland-Altman limits with repeated measures. Per-program results are descriptive. The limits and the analysis are fixed and hashed before the main runs.
+- **Correction.** Per-feature Deming regression from W to P with speed and scale as covariates, checked for lack of fit on held-out mountings. The residual difference is tested against the same limits.
 - **Consequence experiment.** Synthetic cohorts with the measured per-feature device bias and noise, in three scenarios: one device for everyone, training on W and testing on P, and device confounded with case status. Report AUC, calibration, and decision curves under record-wise, participant-wise, and device-held-out validation, without and with the correction.
 
 ### 2.4 Page budget (8 free pages)
