@@ -44,7 +44,7 @@ The EMBC research reports stay in `/Volumes/T7 Shield/SCRIPT-records/embc/`.
 
 1. **Measurement agreement.** A robotic bench study of Apple Pencil Pro on an iPad Pro against a Wacom tablet, for the same programmed drawing movements, with a 240 frames-per-second camera as an independent reference.
 2. **Cross-device correction.** A per-feature mapping from Wacom values to Pencil values, learned on bench data and checked on mountings that the fit did not see.
-3. **Consequence for screening models.** Synthetic cohorts with the measured device bias and noise show how much a device difference changes apparent model performance, and how much of that change the correction removes.
+3. **Consequence for screening models.** Synthetic cohorts with the measured device bias and noise show how much a device difference changes apparent model performance, and how much of that change the correction removes. One real-data example repeats the check on a participant-wise model of the public ParkinsonHW data (section 2.4).
 4. **Open release.** The bench data, the capture and analysis code, the motion programs, and the fixture files.
 
 The SCRIPT platform appears only in the methods. The paper makes no mental health claim.
@@ -66,7 +66,16 @@ Working title: *Do Apple Pencil and Wacom measure the same drawing movement? A r
 - **Correction.** Per-feature Deming regression from W to P, fitted with leave-one-mounting-out validation. The residual difference is tested against the same limits.
 - **Consequence experiment.** Synthetic cohorts with the measured per-feature device bias and noise, in three scenarios: one device for everyone, training on W and testing on P, and device confounded with case status. Report AUC, calibration, and decision curves under record-wise, participant-wise, and device-held-out validation, without and with the correction.
 
-### 2.4 Page budget (8 free pages)
+### 2.4 Ethics
+
+The project cannot get ethics approval. The paper therefore uses no new data from people.
+
+- The bench study has no participants.
+- The real-data example is a secondary analysis of the public, anonymised ParkinsonHW release (CC BY 4.0). The paper cites the dataset and the original study, and states that no new data were collected.
+- The example uses only features that need no millimetre scale, because the public files have no known coordinate scale. It counts each duplicated trial once. It makes no clinical claim.
+- The paper must stand without the example. If an editor or a reviewer asks for ethics approval for it, remove the example. Do not seek approval.
+
+### 2.5 Page budget (8 free pages)
 
 | Part | Pages |
 | --- | --- |
@@ -107,7 +116,8 @@ If the bench hardware is not ready by 13 December, move every later date by the 
 ## 5. What the owner must settle
 
 1. The bench hardware: a motion system, a Wacom tablet with a Mac that runs its driver, and the 240 fps camera.
-2. One real-data illustration: use of the public ParkinsonHW labels to show the measured device difference on a real participant-wise model. The 3 November rule allows readers and features only.
-3. A second iPad or Wacom unit, to measure unit-to-unit variation (optional).
-4. The licence for the released data and code.
-5. Authorship and the AI-use disclosure text.
+2. A second iPad or Wacom unit, to measure unit-to-unit variation (optional).
+3. The licence for the released data and code.
+4. Authorship and the AI-use disclosure text.
+
+Settled on 3 November 2026: the Wacom tablet is an Intuos Pro Medium (2025) with Pro Pen 3, and the paper may use the ParkinsonHW labels for the one example in section 2.4.

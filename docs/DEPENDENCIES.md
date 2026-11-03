@@ -134,7 +134,7 @@ The Apple frameworks are part of the iOS and macOS SDKs (software development ki
 
 The reader tests use one public dataset: the UCI (University of California, Irvine) ParkinsonHW spiral drawings ([dataset 395](https://archive.ics.uci.edu/dataset/395/)). Its licence is CC BY 4.0. The reader also follows the acquisition description of [dataset 358](https://archive.ics.uci.edu/dataset/358/). `scriptkin.formats.parkinsonhw` reads it, and [the design](DESIGN.md#6-python-shape) describes the reader.
 
-The data stay outside the repository. `./check python` sets `SCRIPT_PARKINSONHW` when the unpacked folder exists, and the tests in `python/tests/test_parkinsonhw_real.py` read it. Without the folder, those tests skip. Use the data to test readers and features only. Do not train or evaluate a screening model on them.
+The data stay outside the repository. `./check python` sets `SCRIPT_PARKINSONHW` when the unpacked folder exists, and the tests in `python/tests/test_parkinsonhw_real.py` read it. Without the folder, those tests skip. Use the data to test readers and features. The first paper may also use the labels for one example: a participant-wise model with and without the measured device difference, with no clinical claim (owner decision, 3 November 2026; `docs/PAPER_PLAN.md` section 2.4). Do not train or evaluate any other model on them.
 
 The archive that the tests used has the SHA-256 digest `4181243d64c29382a0035a9bca3ebcf446079b65c70a0b343fe7975372dc92e6`. These facts were measured on that archive on 3 November 2026 with scriptkin 0.1.0. The archive has 77 data files and 202 trials: 76 of test 0, 72 of test 1, and 54 of test 2.
 
