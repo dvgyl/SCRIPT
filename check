@@ -24,6 +24,9 @@ python() {
     step "python: types"
     (cd "$ROOT/python" && "${UV[@]}" pyright)
     step "python: tests"
+    if [ -d "$BUILD/contract-out" ]; then
+        export SCRIPT_CONTRACT_OUT="$BUILD/contract-out"
+    fi
     (cd "$ROOT/python" && "${UV[@]}" pytest -q)
 }
 
