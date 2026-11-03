@@ -21,6 +21,8 @@ public struct ChannelPlan: Hashable, Sendable {
         self.hover = hover
     }
 
+    /// The channels of the declared Pencil. USB-C has no force channel until a device test confirms what it reports
+    /// (docs/DESIGN.md section 12). `none` is direct touch in the simulator, which has no Pencil channel.
     public static func plan(pencil: PencilModel, hoverSupported: Bool) -> ChannelPlan {
         switch pencil {
         case .pro: ChannelPlan(force: true, altitude: true, azimuth: true, roll: true, hover: hoverSupported)
@@ -41,7 +43,7 @@ public struct ChannelPlan: Hashable, Sendable {
     }
 }
 
-/// Identifies one `UITouch` while it is down. The app builds it from the touch object identity.
+/// Identifies one `UITouch`. The app builds it from the touch object identity.
 public struct TouchKey: Hashable, Sendable {
     public let rawValue: UInt
     public init(_ rawValue: UInt) { self.rawValue = rawValue }
@@ -130,16 +132,23 @@ public struct FingerReading: Sendable {
     }
 }
 
-/// Turns UIKit readings into journal events. It owns the contact numbers and the update-index map for the whole
+/// Turns UIKit readings into journal events. It owns the contact numbers and the update map for the whole
 /// session, so a correction that arrives after a lift or after the next trial starts still finds its contact.
 ///
 /// The recorder is the boundary for UIKit values: a non-finite channel value becomes an absent channel, and a
-/// reading with a non-finite time or position is dropped.
+/// reading with a non-finite time or position gives no event.
 public struct InkRecorder: Sendable {
     public let plan: ChannelPlan
     public private(set) var nextContact: ContactID
     private var down: [TouchKey: ContactID] = [:]
-    private var updates: [UpdateIndex: (contact: ContactID, expect: TouchProperties)] = [:]
+    /// Every pending estimate of the session. Samples that share a key share one entry, so one correction applies
+    /// to all of them.
+    private var updates: [UpdateKey: (contact: ContactID, expect: TouchProperties)] = [:]
+
+    private struct UpdateKey: Hashable {
+        let touch: TouchKey
+        let update: UpdateIndex
+    }
 
     public init(plan: ChannelPlan, nextContact: ContactID = .first) {
         self.plan = plan
@@ -164,13 +173,14 @@ public struct InkRecorder: Sendable {
                 nextContact = contact.next
                 down[r.key] = contact
                 events.append(.contactBegan(ContactBegan(t: r.t, contact: contact,
-                                                         maxForce: plan.force ? finite(r.maxForce) : nil)))
+                                                         maxForce: plan.force ? positive(r.maxForce) : nil)))
             }
             let expect = r.expectingUpdates.intersection(plan.properties)
             var pending: Pending?
             if let update = r.update, !expect.isEmpty {
                 pending = Pending(expect: expect, update: update)
-                updates[update] = (contact, expect)
+                let key = UpdateKey(touch: r.key, update: update)
+                updates[key] = (contact, expect.union(updates[key]?.expect ?? []))
             }
             events.append(.sample(Sample(
                 contact: contact, t: r.t, x: r.x, y: r.y,
@@ -189,23 +199,27 @@ public struct InkRecorder: Sendable {
     }
 
     /// Events for `touchesEstimatedPropertiesUpdated`. Each correction carries the values that this update resolved.
+    /// A correction that matches no pending estimate has no contact.
     public mutating func estimatesUpdated(_ readings: [PenReading], arrived: Double) -> [Event] {
         var events: [Event] = []
         for r in readings {
             guard let update = r.update else { continue }
-            let known = updates[update]
-            let remaining = r.expectingUpdates.intersection(plan.properties)
-            let resolved = (known?.expect ?? plan.properties).subtracting(remaining)
-            let location = resolved.contains(.location) && r.x.isFinite && r.y.isFinite ? Point(x: r.x, y: r.y) : nil
+            let key = UpdateKey(touch: r.key, update: update)
+            let known = updates[key]
+            let expected = known?.expect ?? plan.properties
+            let remaining = r.expectingUpdates.intersection(expected)
+            let resolved = expected.subtracting(remaining)
+            let location = resolved.contains(.location) && r.x.isFinite && r.y.isFinite
             events.append(.correction(Correction(
-                contact: known?.contact, update: update, arrived: arrived, location: location,
+                contact: known?.contact, update: update, arrived: arrived,
+                x: location ? r.x : nil, y: location ? r.y : nil,
                 force: resolved.contains(.force) ? finite(r.force) : nil,
                 altitude: resolved.contains(.altitude) ? finite(r.altitude) : nil,
                 azimuth: resolved.contains(.azimuth) ? finite(r.azimuth) : nil,
                 roll: resolved.contains(.roll) ? finite(r.roll) : nil,
                 expect: remaining
             )))
-            if let known { updates[update] = (known.contact, remaining) }
+            if let known { updates[key] = (known.contact, remaining) }
         }
         return events
     }
@@ -235,12 +249,16 @@ public struct InkRecorder: Sendable {
     private func finite(_ value: Double?) -> Double? {
         value.flatMap { $0.isFinite ? $0 : nil }
     }
+
+    private func positive(_ value: Double?) -> Double? {
+        value.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+    }
 }
 
 // MARK: - JSON
 
 extension ChannelPlan {
-    init(_ f: Fields) throws(LineCodec.DecodeError) {
+    init(_ f: Fields) throws(DecodeError) {
         self.init(force: try f.bool("force"), altitude: try f.bool("altitude"), azimuth: try f.bool("azimuth"),
                   roll: try f.bool("roll"), hover: try f.bool("hover"))
     }

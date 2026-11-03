@@ -1,14 +1,23 @@
 import Foundation
 
+/// The object that the operator uses to measure a bar of known length in points.
+public enum ReferenceObject: String, Hashable, Sendable {
+    case steelRule
+    /// An ISO/IEC 7810 ID-1 card, 85.60 mm wide.
+    case idCard
+
+    public static let idCardWidthMM = 85.60
+}
+
 /// How many millimetres one view point covers. An unknown scale makes the library refuse millimetre features.
 public enum MillimetreScale: Hashable, Sendable {
     case modelTable(mmPerPoint: Double, ppi: Double, nativeScale: Double)
-    case ruler(mmPerPoint: Double, measuredMM: Double, drawnPoints: Double)
+    case reference(object: ReferenceObject, mmPerPoint: Double, lengthMM: Double, drawnPoints: Double)
     case unknown
 
     public var mmPerPoint: Double? {
         switch self {
-        case .modelTable(let mm, _, _), .ruler(let mm, _, _): mm
+        case .modelTable(let mm, _, _), .reference(_, let mm, _, _): mm
         case .unknown: nil
         }
     }
@@ -20,9 +29,18 @@ public enum MillimetreScale: Hashable, Sendable {
     }
 
     /// The operator measured a bar of `drawnPoints` with a steel rule and read `measuredMM`.
-    public static func calibrated(measuredMM: Double, drawnPoints: Double) -> MillimetreScale? {
-        guard measuredMM.isFinite, drawnPoints.isFinite, measuredMM > 0, drawnPoints > 0 else { return nil }
-        return .ruler(mmPerPoint: measuredMM / drawnPoints, measuredMM: measuredMM, drawnPoints: drawnPoints)
+    public static func steelRule(measuredMM: Double, drawnPoints: Double) -> MillimetreScale? {
+        reference(.steelRule, lengthMM: measuredMM, drawnPoints: drawnPoints)
+    }
+
+    /// The operator set a bar of `drawnPoints` to the width of an ID-1 card.
+    public static func idCard(drawnPoints: Double) -> MillimetreScale? {
+        reference(.idCard, lengthMM: ReferenceObject.idCardWidthMM, drawnPoints: drawnPoints)
+    }
+
+    private static func reference(_ object: ReferenceObject, lengthMM: Double, drawnPoints: Double) -> MillimetreScale? {
+        guard lengthMM.isFinite, drawnPoints.isFinite, lengthMM > 0, drawnPoints > 0 else { return nil }
+        return .reference(object: object, mmPerPoint: lengthMM / drawnPoints, lengthMM: lengthMM, drawnPoints: drawnPoints)
     }
 }
 
@@ -33,7 +51,7 @@ public struct PixelDensity: Hashable, Sendable {
     public let name: String
     public let ppi: Double
     /// False when no source checked for this table confirmed the ppi value. The identifiers come from the
-    /// EveryMac identifier list (checked 2026-11-03). Setup can ask for a ruler calibration when this is false.
+    /// EveryMac identifier list (checked 2026-11-03). Setup asks for a reference measurement when this is false.
     public let ppiConfirmed: Bool
 }
 
@@ -69,14 +87,14 @@ public enum DeviceTable {
 // MARK: - JSON
 
 extension MillimetreScale {
-    init(_ f: Fields) throws(LineCodec.DecodeError) {
+    init(_ f: Fields) throws(DecodeError) {
         switch try f.string("kind") {
         case "modelTable":
             self = .modelTable(mmPerPoint: try f.positive("mmPerPoint"), ppi: try f.positive("ppi"),
                                nativeScale: try f.positive("nativeScale"))
-        case "ruler":
-            self = .ruler(mmPerPoint: try f.positive("mmPerPoint"), measuredMM: try f.positive("measuredMM"),
-                          drawnPoints: try f.positive("drawnPoints"))
+        case "reference":
+            self = .reference(object: try f.enumeration("object"), mmPerPoint: try f.positive("mmPerPoint"),
+                              lengthMM: try f.positive("lengthMM"), drawnPoints: try f.positive("drawnPoints"))
         case "unknown":
             self = .unknown
         default:
@@ -92,10 +110,11 @@ extension MillimetreScale {
             try o.add("mmPerPoint", mm)
             try o.add("ppi", ppi)
             try o.add("nativeScale", nativeScale)
-        case .ruler(let mm, let measured, let drawn):
-            o.add("kind", "ruler")
+        case .reference(let object, let mm, let length, let drawn):
+            o.add("kind", "reference")
+            o.add("object", object.rawValue)
             try o.add("mmPerPoint", mm)
-            try o.add("measuredMM", measured)
+            try o.add("lengthMM", length)
             try o.add("drawnPoints", drawn)
         case .unknown:
             o.add("kind", "unknown")

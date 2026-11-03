@@ -18,6 +18,39 @@ enum JSON: Sendable {
     }
 }
 
+/// Value equality, as Python compares parsed JSON: object key order does not matter, and numbers compare by value.
+extension JSON: Hashable {
+    static func == (a: JSON, b: JSON) -> Bool {
+        switch (a, b) {
+        case (.null, .null): true
+        case (.bool(let x), .bool(let y)): x == y
+        case (.number(let x), .number(let y)): numericValue(x) == numericValue(y)
+        case (.string(let x), .string(let y)): x == y
+        case (.array(let x), .array(let y)): x == y
+        case (.object(let x), .object(let y)): members(x) == members(y)
+        default: false
+        }
+    }
+
+    func hash(into hasher: inout Hasher) {
+        switch self {
+        case .null: hasher.combine(0)
+        case .bool(let b): hasher.combine(b)
+        case .number(let text): hasher.combine(Self.numericValue(text))
+        case .string(let s): hasher.combine(s)
+        case .array(let items): hasher.combine(items)
+        case .object(let pairs): hasher.combine(Self.members(pairs))
+        }
+    }
+
+    private static func numericValue(_ text: String) -> Double? { Double(text) }
+
+    /// A repeated key keeps its last value, as in Python `json.loads`.
+    static func members(_ pairs: [(key: String, value: JSON)]) -> [String: JSON] {
+        Dictionary(pairs, uniquingKeysWith: { _, last in last })
+    }
+}
+
 struct JSONSyntaxError: Error, Equatable {
     let offset: Int
 }

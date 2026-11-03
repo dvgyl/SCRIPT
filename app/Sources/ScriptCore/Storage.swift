@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 // MARK: - Reading a journal
@@ -7,7 +8,7 @@ public enum JournalError: Error, Hashable, Sendable {
     case empty
     /// The final line has no LF.
     case unterminated(line: Int)
-    case decode(line: Int, LineCodec.DecodeError)
+    case decode(line: Int, DecodeError)
     case fold(FoldError)
 
     public var line: Int {
@@ -29,6 +30,21 @@ public enum Journal {
         return state
     }
 
+    /// What a relaunch finds in a journal. Only the final line can be torn by a crash, so a complete line that does
+    /// not decode or fold is damage, and the bytes after the last LF are a torn tail, whatever they hold.
+    public enum Recovery: Hashable, Sendable {
+        case clean(SessionState)
+        case truncated(SessionState, bytes: Int)
+        /// The first complete line that does not decode or fold. Line 0 when no complete line exists.
+        case damaged(line: Int)
+    }
+
+    public static func recover(_ data: Data) -> Recovery {
+        let scan = scan(data)
+        guard let state = scan.state, scan.failure == nil else { return .damaged(line: scan.failure?.line ?? 0) }
+        return scan.tailBytes == 0 ? .clean(state) : .truncated(state, bytes: scan.tailBytes)
+    }
+
     struct Scan {
         var state: SessionState?
         /// Complete lines that decoded and folded.
@@ -44,12 +60,11 @@ public enum Journal {
             let bytes = raw.bindMemory(to: UInt8.self)
             var scan = Scan()
             var start = 0
-            while start < bytes.count {
-                guard let found = memchr(raw.baseAddress! + start, 0x0A, bytes.count - start) else { break }
+            while start < bytes.count, let found = memchr(raw.baseAddress! + start, 0x0A, bytes.count - start) {
                 let end = raw.baseAddress!.distance(to: UnsafeRawPointer(found))
                 let line = UnsafeBufferPointer(rebasing: bytes[start..<end])
                 let entry: Entry
-                do throws(LineCodec.DecodeError) {
+                do throws(DecodeError) {
                     entry = try LineCodec.decode(line)
                 } catch {
                     scan.failure = .decode(line: scan.lines, error)
@@ -117,7 +132,7 @@ public actor JournalWriter {
     public init(
         appendingTo url: URL, flushBytes: Int = 64 * 1024, flushInterval: Duration = .milliseconds(250)
     ) throws(WriteError) {
-        let descriptor = open(url.path, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0o644)
+        let descriptor = open(url.path, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0o600)
         guard descriptor >= 0 else { throw .io(errno) }
         self.descriptor = descriptor
         self.flushBytes = flushBytes
@@ -209,12 +224,149 @@ public actor JournalWriter {
     }
 }
 
+// MARK: - Export format
+
+/// How `publish` writes an export (docs/DESIGN.md section 17).
+public enum ExportPolicy: Sendable {
+    /// A plaintext `journal.jsonl`. Only the demo configuration writes plaintext exports.
+    case demo
+    /// `journal.jsonl.hpke`, sealed to the study's public key.
+    case encrypted(recipient: Curve25519.KeyAgreement.PublicKey, keyID: String)
+
+    public enum PolicyError: Error, Hashable, Sendable {
+        case noExportKey
+        case invalidKey
+    }
+
+    /// Encrypted when the configuration has an export key. Without a key, only a demo configuration may export.
+    /// When `keyID` is null, the key ID is the SHA-256 of the raw public key, so the analyst can still pick the key.
+    public init(configuration: StudyConfiguration) throws(PolicyError) {
+        guard let raw = configuration.export.recipientPublicKey else {
+            guard configuration.demo else { throw .noExportKey }
+            self = .demo
+            return
+        }
+        guard let key = try? Curve25519.KeyAgreement.PublicKey(rawRepresentation: raw) else { throw .invalidKey }
+        self = .encrypted(recipient: key, keyID: configuration.export.keyID ?? SHA256Digest(of: raw).hex)
+    }
+}
+
+/// HPKE base mode, DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, ChaCha20-Poly1305. The associated data is the session ID.
+enum ExportCipher {
+    static let info = Data("SCRIPT export 1.0".utf8)
+    static let suite = HPKE.Ciphersuite.Curve25519_SHA256_ChachaPoly
+    static let scheme = "hpke-base"
+    static let suiteName = "X25519-HKDF-SHA256-ChaCha20Poly1305"
+
+    static func seal(_ plaintext: Data, sessionID: String, recipient: Curve25519.KeyAgreement.PublicKey) throws
+        -> (ciphertext: Data, encapsulatedKey: Data)
+    {
+        var sender = try HPKE.Sender(recipientKey: recipient, ciphersuite: suite, info: info)
+        let ciphertext = try sender.seal(plaintext, authenticating: Data(sessionID.utf8))
+        return (ciphertext, sender.encapsulatedKey)
+    }
+
+    static func open(_ ciphertext: Data, sessionID: String, encapsulatedKey: Data,
+                     privateKey: Curve25519.KeyAgreement.PrivateKey) throws -> Data {
+        var recipient = try HPKE.Recipient(privateKey: privateKey, ciphersuite: suite, info: info,
+                                           encapsulatedKey: encapsulatedKey)
+        return try recipient.open(ciphertext, authenticating: Data(sessionID.utf8))
+    }
+}
+
+/// `manifest.json`: the facts that cannot be inside the journal.
+struct Manifest: Hashable, Sendable {
+    struct Facts: Hashable, Sendable {
+        var bytes: Int
+        var lines: Int
+        var sha256: SHA256Digest
+    }
+
+    struct Encryption: Hashable, Sendable {
+        var keyID: String
+        var encapsulatedKey: Data
+        var plaintext: Facts
+        var ciphertextBytes: Int
+        var ciphertextSHA256: SHA256Digest
+    }
+
+    enum Content: Hashable, Sendable {
+        case plaintext(Facts)
+        case encrypted(Encryption)
+    }
+
+    var sessionID: String
+    var content: Content
+
+    init(sessionID: String, content: Content) {
+        self.sessionID = sessionID
+        self.content = content
+    }
+
+    init(json: JSON) throws(DecodeError) {
+        let f = try Fields(json, path: "")
+        guard try f.string("format") == "script.journal" else { throw .invalid("format") }
+        guard JournalFormat.isReadable(try f.string("version")) else { throw .invalid("version") }
+        sessionID = try f.string("sessionID")
+        if f.has("encryption") {
+            let e = try f.object("encryption")
+            guard try e.string("scheme") == ExportCipher.scheme else { throw .invalid("encryption.scheme") }
+            guard try e.string("suite") == ExportCipher.suiteName else { throw .invalid("encryption.suite") }
+            let ciphertext = try e.object("ciphertext")
+            content = .encrypted(Encryption(
+                keyID: try e.string("keyID"),
+                encapsulatedKey: try e.read("encapsulatedKey") { $0.stringValue.flatMap { Data(base64Encoded: $0) } },
+                plaintext: try Facts(try e.object("plaintext")),
+                ciphertextBytes: try ciphertext.int("bytes"),
+                ciphertextSHA256: try ciphertext.text("sha256", SHA256Digest.init(hex:))
+            ))
+        } else {
+            if f.has("demo") { guard try f.bool("demo") else { throw .invalid("demo") } }
+            content = .plaintext(try Facts(try f.object("journal")))
+        }
+    }
+
+    /// Indented like Python `json.dumps(indent=1)`.
+    var data: Data {
+        var pairs: [(key: String, value: JSON)] = [
+            ("format", .string("script.journal")), ("version", .string(JournalFormat.version)),
+            ("sessionID", .string(sessionID)),
+        ]
+        switch content {
+        case .plaintext(let facts):
+            pairs.append(("demo", .bool(true)))
+            pairs.append(("journal", facts.json))
+        case .encrypted(let e):
+            pairs.append(("encryption", .object([
+                ("scheme", .string(ExportCipher.scheme)), ("suite", .string(ExportCipher.suiteName)),
+                ("keyID", .string(e.keyID)), ("encapsulatedKey", .string(e.encapsulatedKey.base64EncodedString())),
+                ("plaintext", e.plaintext.json),
+                ("ciphertext", .object([("bytes", .int(e.ciphertextBytes)), ("sha256", .string(e.ciphertextSHA256.hex))])),
+            ])))
+        }
+        return JSON.object(pairs).prettyData()
+    }
+}
+
+extension Manifest.Facts {
+    init(_ f: Fields) throws(DecodeError) {
+        self.init(bytes: try f.int("bytes"), lines: try f.int("lines"), sha256: try f.text("sha256", SHA256Digest.init(hex:)))
+    }
+
+    init(journal data: Data, state: SessionState) {
+        self.init(bytes: data.count, lines: state.session.lines, sha256: SHA256Digest(of: data))
+    }
+
+    var json: JSON { .object([("bytes", .int(bytes)), ("lines", .int(lines)), ("sha256", .string(sha256.hex))]) }
+}
+
 // MARK: - Storage
 
 /// The app container layout and the operations that keep it consistent across crashes.
 ///
 ///     <applicationSupport>/Sessions/<uuid>.jsonl   journals not yet exported
 ///     <applicationSupport>/Staging/<name>/         publication in progress
+///     <applicationSupport>/Deletions.jsonl         one line for each withdrawal
 ///     <documents>/Exports/<name>/                  verified exports, visible in Files
 ///     <documents>/Damaged/<uuid>.jsonl             journals with damage before the last line
 public struct Storage: Sendable {
@@ -222,22 +374,26 @@ public struct Storage: Sendable {
     public let staging: URL
     public let exports: URL
     public let damaged: URL
+    public let deletionLog: URL
 
     /// The fault-injection seam. A test returns true for a step to stop the operation there, as a crash would.
     let stops: @Sendable (Step) -> Bool
 
-    enum Step: Hashable, Sendable {
-        case stagingCleared, journalCloned, manifestWritten, stagedSynced, verified, renamed, sourceRemoved
-        case tailTruncated, movedToDamaged, recoveredAppended, staleStagingRemoved
+    /// Each point between two durable writes of `publish` and `reconcile`.
+    enum Step: String, CaseIterable, Sendable {
+        case stagingCleared, journalStaged, manifestWritten, stagedSynced, stagedVerified, renamed, sourceRemoved
+        case leftoverRemoved, movedToDamaged, recoveryStaged, recoveryCommitted, staleStagingRemoved
     }
 
-    struct InjectedCrash: Error {}
+    struct InjectedCrash: Error, Equatable {
+        let step: Step
+    }
 
     public enum StorageError: Error, Hashable, Sendable {
         case noJournal(String)
         case journal(String, JournalError)
         case notClosed(SessionState.Status)
-        /// Another session already holds this export name.
+        /// Another session, or a different copy of this one, already holds this export name.
         case exportTaken(String)
         /// The export does not match its manifest or its source.
         case verification(String)
@@ -251,6 +407,7 @@ public struct Storage: Sendable {
     init(applicationSupport: URL, documents: URL, stops: @escaping @Sendable (Step) -> Bool) {
         sessions = applicationSupport.appendingPathComponent("Sessions", isDirectory: true)
         staging = applicationSupport.appendingPathComponent("Staging", isDirectory: true)
+        deletionLog = applicationSupport.appendingPathComponent("Deletions.jsonl")
         exports = documents.appendingPathComponent("Exports", isDirectory: true)
         damaged = documents.appendingPathComponent("Damaged", isDirectory: true)
         self.stops = stops
@@ -260,50 +417,17 @@ public struct Storage: Sendable {
         sessions.appendingPathComponent("\(id.uuid.uuidString).jsonl")
     }
 
+    /// Creates the folders. On iOS, each folder has the file protection `completeUntilFirstUserAuthentication`,
+    /// which every file created inside it inherits.
     public func createDirectories() throws {
         for folder in [sessions, staging, exports, damaged] {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try protect(folder)
         }
     }
 
     private func checkpoint(_ step: Step) throws {
-        if stops(step) { throw InjectedCrash() }
-    }
-
-    // MARK: Recover
-
-    public enum Recovery: Hashable, Sendable {
-        /// Every complete line folds. `truncatedBytes` is the torn final line that was removed.
-        case intact(SessionState, truncatedBytes: Int)
-        /// A complete line does not decode or fold. The file moved unchanged to `Damaged/`.
-        case damaged(line: Int)
-    }
-
-    /// Removes a torn final line with `ftruncate`. A journal with damage before the final line moves unchanged
-    /// to `Damaged/`, because only the final line can be torn by a crash.
-    public func recover(_ journal: URL) throws -> Recovery {
-        let data = try Data(contentsOf: journal)
-        let scan = Journal.scan(data)
-        guard let state = scan.state, scan.failure == nil else {
-            let line = scan.failure?.line ?? 0
-            try FileManager.default.createDirectory(at: damaged, withIntermediateDirectories: true)
-            let target = damaged.appendingPathComponent(journal.lastPathComponent)
-            if !FileManager.default.fileExists(atPath: target.path) {
-                try move(journal, to: target)
-                try syncPath(journal.deletingLastPathComponent())
-                try syncPath(damaged)
-            }
-            try checkpoint(.movedToDamaged)
-            return .damaged(line: line)
-        }
-        if scan.tailBytes > 0 {
-            guard truncate(journal.path, off_t(data.count - scan.tailBytes)) == 0 else {
-                throw StorageError.io("truncate \(journal.lastPathComponent)", errno)
-            }
-            try syncPath(journal)
-            try checkpoint(.tailTruncated)
-        }
-        return .intact(state, truncatedBytes: scan.tailBytes)
+        if stops(step) { throw InjectedCrash(step: step) }
     }
 
     // MARK: Reconcile
@@ -332,57 +456,56 @@ public struct Storage: Sendable {
 
     /// Runs at launch and converges from any crash point. A second launch changes no byte.
     ///
-    /// An open journal gets a `recovered` line. A closed journal with a staging folder or an export finishes its
-    /// publication. A staging folder whose export exists and whose journal is gone is removed.
-    public func reconcile(_ launch: Launch) throws -> [Reconciled] {
+    /// An open journal loses its torn tail and gets a `recovered` line in one atomic replacement. A journal with
+    /// damage before its last line moves unchanged to `Damaged/`. A closed journal whose publication had started
+    /// finishes it. A staging folder whose export exists and whose journal is gone is removed.
+    public func reconcile(_ launch: Launch, policy: ExportPolicy) throws -> [Reconciled] {
         try createDirectories()
+        for leftover in try contents(of: sessions) where leftover.pathExtension == "recovering" {
+            try FileManager.default.removeItem(at: leftover)
+            try syncPath(sessions)
+            try checkpoint(.leftoverRemoved)
+        }
         var results: [Reconciled] = []
         var names = Set<String>()
-        let journals = try FileManager.default.contentsOfDirectory(at: sessions, includingPropertiesForKeys: nil)
-            .filter { $0.pathExtension == "jsonl" }
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
-        for journal in journals {
-            switch try recover(journal) {
-            case .damaged(let line):
-                results.append(.damaged(file: journal.lastPathComponent, line: line))
-            case .intact(var state, let truncatedBytes):
-                let name = state.session.opened.exportName
-                names.insert(name)
-                if state.phase == .closed {
-                    let started = [exports, staging].contains {
-                        FileManager.default.fileExists(atPath: $0.appendingPathComponent(name).path)
-                    }
-                    guard started else {
-                        results.append(.closed(state))
-                        continue
-                    }
-                    do {
-                        results.append(.published(try publish(journal: journal)))
-                    } catch let error as StorageError {
-                        results.append(.publishFailed(file: journal.lastPathComponent, error))
-                    }
-                    continue
-                }
-                let command = Command.recover(t: launch.uptime, at: launch.at, boot: launch.boot,
-                                              truncatedBytes: truncatedBytes)
-                let events = try state.decide(command).get()
-                if !events.isEmpty {
-                    var lines = Data()
-                    for event in events {
-                        let entry = Entry(seq: state.session.lines, event: event)
-                        lines.append(try LineCodec.encode(entry))
-                        try state.apply(entry)
-                    }
-                    try appendAndSync(lines, to: journal)
-                    try checkpoint(.recoveredAppended)
-                }
+        for journal in try contents(of: sessions) where journal.pathExtension == "jsonl" {
+            let data = try Data(contentsOf: journal)
+            let scan = Journal.scan(data)
+            guard var state = scan.state, scan.failure == nil else {
+                try moveToDamaged(journal)
+                results.append(.damaged(file: journal.lastPathComponent, line: scan.failure?.line ?? 0))
+                continue
+            }
+            let name = state.session.opened.exportName
+            names.insert(name)
+            var addition = Data()
+            if let event = state.recovery(t: launch.uptime, at: launch.at, boot: launch.boot,
+                                          truncatedBytes: scan.tailBytes) {
+                for entry in try state.record([event]) { addition.append(try LineCodec.encode(entry)) }
+            }
+            if scan.tailBytes > 0 {
+                try replace(journal, with: data.prefix(data.count - scan.tailBytes) + addition)
+            } else if !addition.isEmpty {
+                try appendAndSync(addition, to: journal)
+                try checkpoint(.recoveryCommitted)
+            }
+            guard case .closed = state.phase else {
                 results.append(.interrupted(state))
+                continue
+            }
+            let started = [exports, staging].contains { exists($0.appendingPathComponent(name)) }
+            guard started else {
+                results.append(.closed(state))
+                continue
+            }
+            do {
+                results.append(.published(try publish(journal: journal, policy: policy)))
+            } catch let error as StorageError {
+                results.append(.publishFailed(file: journal.lastPathComponent, error))
             }
         }
-        let folders = try FileManager.default.contentsOfDirectory(at: staging, includingPropertiesForKeys: nil)
-        for folder in folders.sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
-        where !names.contains(folder.lastPathComponent)
-            && FileManager.default.fileExists(atPath: exports.appendingPathComponent(folder.lastPathComponent).path) {
+        for folder in try contents(of: staging)
+        where !names.contains(folder.lastPathComponent) && exists(exports.appendingPathComponent(folder.lastPathComponent)) {
             try FileManager.default.removeItem(at: folder)
             try syncPath(staging)
             try checkpoint(.staleStagingRemoved)
@@ -390,19 +513,47 @@ public struct Storage: Sendable {
         return results
     }
 
-    // MARK: Publish
-
-    /// Clones the closed journal into `Staging/<name>/`, writes the manifest, syncs, verifies the staged copy
-    /// (decode, fold, counts, SHA-256), and renames the folder into `Exports/`. Only then does it delete the source.
-    @discardableResult
-    public func publish(_ id: SessionID) throws -> URL {
-        try publish(journal: journalURL(id))
+    /// Writes the new journal beside the old one and renames it over the old one, so the tail removal and the
+    /// `recovered` line become durable together.
+    private func replace(_ journal: URL, with data: Data) throws {
+        let temporary = journal.appendingPathExtension("recovering")
+        let descriptor = open(temporary.path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0o600)
+        guard descriptor >= 0 else { throw StorageError.io("open \(temporary.lastPathComponent)", errno) }
+        let written = data.withUnsafeBytes { writeAll(descriptor, $0) } && syncDescriptor(descriptor)
+        let error = errno
+        Darwin.close(descriptor)
+        guard written else { throw StorageError.io("write \(temporary.lastPathComponent)", error) }
+        try checkpoint(.recoveryStaged)
+        try move(temporary, to: journal)
+        try syncPath(sessions)
+        try checkpoint(.recoveryCommitted)
     }
 
-    func publish(journal source: URL) throws -> URL {
-        guard FileManager.default.fileExists(atPath: source.path) else {
-            throw StorageError.noJournal(source.lastPathComponent)
+    private func moveToDamaged(_ journal: URL) throws {
+        var target = damaged.appendingPathComponent(journal.lastPathComponent)
+        var copy = 1
+        while exists(target) {
+            target = damaged.appendingPathComponent("\(journal.deletingPathExtension().lastPathComponent)-\(copy).jsonl")
+            copy += 1
         }
+        try move(journal, to: target)
+        try syncPath(sessions)
+        try syncPath(damaged)
+        try checkpoint(.movedToDamaged)
+    }
+
+    // MARK: Publish
+
+    /// Clones or encrypts the closed journal into `Staging/<name>/`, writes the manifest, syncs, verifies the staged
+    /// copy (decode, fold, counts, SHA-256), and renames the folder into `Exports/`. Only then does it delete the source.
+    @discardableResult
+    public func publish(_ id: SessionID, policy: ExportPolicy) throws -> URL {
+        try publish(journal: journalURL(id), policy: policy)
+    }
+
+    func publish(journal source: URL, policy: ExportPolicy) throws -> URL {
+        guard exists(source) else { throw StorageError.noJournal(source.lastPathComponent) }
+        try createDirectories()
         let data = try Data(contentsOf: source)
         let state: SessionState
         do throws(JournalError) {
@@ -410,45 +561,61 @@ public struct Storage: Sendable {
         } catch {
             throw StorageError.journal(source.lastPathComponent, error)
         }
-        guard state.phase == .closed else { throw StorageError.notClosed(state.status) }
+        guard case .closed = state.phase else { throw StorageError.notClosed(state.status) }
         let name = state.session.opened.exportName
-        let manifest = Manifest(sessionID: state.session.opened.sessionID.description, bytes: data.count,
-                                lines: state.session.lines, sha256: SHA256.hex(data))
         let target = exports.appendingPathComponent(name, isDirectory: true)
 
-        if FileManager.default.fileExists(atPath: target.path) {
-            guard (try? Self.verify(target).manifest) == manifest else { throw StorageError.exportTaken(name) }
+        if exists(target) {
+            do {
+                try Self.verify(target, source: data, state: state)
+            } catch is StorageError {
+                throw StorageError.exportTaken(name)
+            }
         } else {
             let stage = staging.appendingPathComponent(name, isDirectory: true)
-            if FileManager.default.fileExists(atPath: stage.path) { try FileManager.default.removeItem(at: stage) }
+            if exists(stage) { try FileManager.default.removeItem(at: stage) }
             try checkpoint(.stagingCleared)
 
             try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: true)
-            try FileManager.default.copyItem(at: source, to: stage.appendingPathComponent(Export.journal))
-            try checkpoint(.journalCloned)
+            let facts = Manifest.Facts(journal: data, state: state)
+            let sessionID = state.session.opened.sessionID.description
+            let manifest: Manifest
+            let journalFile: URL
+            switch policy {
+            case .demo:
+                journalFile = stage.appendingPathComponent(Export.journal)
+                try FileManager.default.copyItem(at: source, to: journalFile)
+                manifest = Manifest(sessionID: sessionID, content: .plaintext(facts))
+            case .encrypted(let recipient, let keyID):
+                journalFile = stage.appendingPathComponent(Export.encryptedJournal)
+                let sealed = try ExportCipher.seal(data, sessionID: sessionID, recipient: recipient)
+                try sealed.ciphertext.write(to: journalFile)
+                manifest = Manifest(sessionID: sessionID, content: .encrypted(Manifest.Encryption(
+                    keyID: keyID, encapsulatedKey: sealed.encapsulatedKey, plaintext: facts,
+                    ciphertextBytes: sealed.ciphertext.count, ciphertextSHA256: SHA256Digest(of: sealed.ciphertext)
+                )))
+            }
+            try checkpoint(.journalStaged)
 
-            try manifest.data.write(to: stage.appendingPathComponent(Export.manifest), options: .atomic)
+            try manifest.data.write(to: stage.appendingPathComponent(Export.manifest))
             try checkpoint(.manifestWritten)
 
-            try syncPath(stage.appendingPathComponent(Export.journal))
+            try syncPath(journalFile)
             try syncPath(stage.appendingPathComponent(Export.manifest))
             try syncPath(stage)
             try syncPath(staging)
             try checkpoint(.stagedSynced)
 
-            guard try Self.verify(stage).manifest == manifest else {
-                throw StorageError.verification("the staged copy of \(name) differs from its source")
-            }
-            try checkpoint(.verified)
+            try Self.verify(stage, source: data, state: state)
+            try checkpoint(.stagedVerified)
 
-            try FileManager.default.createDirectory(at: exports, withIntermediateDirectories: true)
-            guard rename(stage.path, target.path) == 0 else { throw StorageError.io("rename \(name)", errno) }
+            try move(stage, to: target)
             try syncPath(exports)
             try syncPath(staging)
             try checkpoint(.renamed)
         }
         try FileManager.default.removeItem(at: source)
-        try syncPath(source.deletingLastPathComponent())
+        try syncPath(sessions)
         try checkpoint(.sourceRemoved)
         return target
     }
@@ -457,46 +624,164 @@ public struct Storage: Sendable {
 
     public enum Export {
         public static let journal = "journal.jsonl"
+        public static let encryptedJournal = "journal.jsonl.hpke"
         public static let manifest = "manifest.json"
     }
 
-    /// Checks an export folder: the manifest (rule I5) and every journal rule. The session must be closed.
-    public static func verifyExport(_ folder: URL) throws -> SessionState {
-        try verify(folder).state
+    /// Checks an export folder against the source journal that it must hold: the manifest facts (rule I5) and, for
+    /// a plaintext export, every journal rule of the copy on disk. An encrypted copy is checked by its size and hash.
+    static func verify(_ folder: URL, source: Data, state: SessionState) throws {
+        func fail(_ what: String) -> StorageError { .verification("\(folder.lastPathComponent): \(what)") }
+        let manifest = try readManifest(folder)
+        guard manifest.sessionID == state.session.opened.sessionID.description else { throw fail("another session") }
+        let facts = Manifest.Facts(journal: source, state: state)
+        switch manifest.content {
+        case .plaintext(let recorded):
+            guard recorded == facts else { throw fail("the manifest does not match the source journal") }
+            let copy = try Data(contentsOf: folder.appendingPathComponent(Export.journal))
+            let staged = try readJournal(copy, name: folder.lastPathComponent)
+            guard Manifest.Facts(journal: copy, state: staged) == recorded else {
+                throw fail("the journal does not match its manifest")
+            }
+        case .encrypted(let e):
+            guard e.plaintext == facts else { throw fail("the manifest does not match the source journal") }
+            let ciphertext = try Data(contentsOf: folder.appendingPathComponent(Export.encryptedJournal))
+            guard ciphertext.count == e.ciphertextBytes, SHA256Digest(of: ciphertext) == e.ciphertextSHA256 else {
+                throw fail("the ciphertext does not match its manifest")
+            }
+        }
     }
 
-    static func verify(_ folder: URL) throws -> (state: SessionState, manifest: Manifest) {
-        let manifestData = try Data(contentsOf: folder.appendingPathComponent(Export.manifest))
-        let manifest: Manifest
-        do {
-            manifest = try Manifest(json: try JSON.parse(manifestData))
-        } catch {
-            throw StorageError.verification("\(folder.lastPathComponent): the manifest does not parse")
+    /// Reads an export folder as the analyst does. An encrypted export needs the study's private key. The plaintext
+    /// must match the manifest and pass every journal rule, and the session must be closed.
+    static func readExport(_ folder: URL, privateKey: Curve25519.KeyAgreement.PrivateKey? = nil) throws
+        -> (state: SessionState, journal: Data)
+    {
+        let manifest = try readManifest(folder)
+        let journal: Data
+        let recorded: Manifest.Facts
+        switch manifest.content {
+        case .plaintext(let facts):
+            journal = try Data(contentsOf: folder.appendingPathComponent(Export.journal))
+            recorded = facts
+        case .encrypted(let e):
+            guard let privateKey else { throw StorageError.verification("\(folder.lastPathComponent) is encrypted") }
+            let ciphertext = try Data(contentsOf: folder.appendingPathComponent(Export.encryptedJournal))
+            journal = try ExportCipher.open(ciphertext, sessionID: manifest.sessionID, encapsulatedKey: e.encapsulatedKey,
+                                            privateKey: privateKey)
+            recorded = e.plaintext
         }
-        let data = try Data(contentsOf: folder.appendingPathComponent(Export.journal), options: .alwaysMapped)
+        let state = try readJournal(journal, name: folder.lastPathComponent)
+        guard Manifest.Facts(journal: journal, state: state) == recorded,
+              manifest.sessionID == state.session.opened.sessionID.description
+        else { throw StorageError.verification("\(folder.lastPathComponent): the journal does not match its manifest") }
+        return (state, journal)
+    }
+
+    private static func readManifest(_ folder: URL) throws -> Manifest {
+        let data = try Data(contentsOf: folder.appendingPathComponent(Export.manifest))
+        do throws(DecodeError) {
+            return try Manifest(json: try JSON.decodeDocument(data))
+        } catch {
+            throw StorageError.verification("\(folder.lastPathComponent): the manifest does not decode")
+        }
+    }
+
+    private static func readJournal(_ data: Data, name: String) throws -> SessionState {
         let state: SessionState
         do throws(JournalError) {
             state = try Journal.read(data)
         } catch {
-            throw StorageError.journal(folder.lastPathComponent, error)
+            throw StorageError.journal(name, error)
         }
-        guard state.phase == .closed else { throw StorageError.notClosed(state.status) }
-        let actual = Manifest(sessionID: state.session.opened.sessionID.description, bytes: data.count,
-                              lines: state.session.lines, sha256: SHA256.hex(data))
-        guard actual == manifest else {
-            throw StorageError.verification("\(folder.lastPathComponent): the journal does not match its manifest")
+        guard case .closed = state.phase else { throw StorageError.notClosed(state.status) }
+        return state
+    }
+
+    // MARK: Withdraw
+
+    public struct Withdrawal: Hashable, Sendable {
+        /// The sessions whose journals or exports were deleted, in identifier order.
+        public let sessions: [SessionID]
+    }
+
+    /// Deletes every journal, staging folder, and export of one participant code on this device. It first appends
+    /// one line to the deletion log: the time, the SHA-256 of the code, and the session identifiers. The line never
+    /// holds the code. A rerun after a crash deletes what is left and logs again, so the log never misses a deletion.
+    public func withdraw(participant: ParticipantCode, at: WallTime) throws -> Withdrawal {
+        try createDirectories()
+        var ids = Set<SessionID>()
+        var targets: [URL] = []
+        for folder in [sessions, damaged] {
+            for file in try contents(of: folder) where file.pathExtension == "jsonl" {
+                guard let opened = Self.firstLine(of: file), opened.participant == participant else { continue }
+                ids.insert(opened.sessionID)
+                targets.append(file)
+            }
         }
-        return (state, manifest)
+        for folder in [staging, exports] {
+            for export in try contents(of: folder) where export.lastPathComponent.hasPrefix("\(participant.rawValue)_") {
+                if let manifest = try? Self.readManifest(export), let uuid = UUID(uuidString: manifest.sessionID) {
+                    ids.insert(SessionID(uuid))
+                }
+                targets.append(export)
+            }
+        }
+        let sorted = ids.sorted { $0.description < $1.description }
+        let line = JSON.object([
+            ("at", .string(at.text)),
+            ("participantSHA256", .string(SHA256Digest(of: Data(participant.rawValue.utf8)).hex)),
+            ("sessions", .array(sorted.map { .string($0.description) })),
+        ])
+        var bytes: [UInt8] = []
+        line.write(into: &bytes)
+        bytes.append(0x0A)
+        let created = !exists(deletionLog)
+        try appendAndSync(Data(bytes), to: deletionLog, create: true)
+        if created {
+            try protect(deletionLog)
+            try syncPath(deletionLog.deletingLastPathComponent())
+        }
+        for target in targets {
+            try FileManager.default.removeItem(at: target)
+            try syncPath(target.deletingLastPathComponent())
+        }
+        return Withdrawal(sessions: sorted)
+    }
+
+    private static func firstLine(of file: URL) -> SessionOpened? {
+        guard let data = try? Data(contentsOf: file, options: .alwaysMapped),
+              let end = data.firstIndex(of: 0x0A),
+              let entry = try? LineCodec.decode(data[data.startIndex..<end]),
+              case .sessionOpened(let opened) = entry.event
+        else { return nil }
+        return opened
     }
 
     // MARK: Files
+
+    /// The folder's entries in name order, without the `._` files that macOS writes on exFAT drives.
+    private func contents(of folder: URL) throws -> [URL] {
+        try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+            .filter { !$0.lastPathComponent.hasPrefix("._") }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    private func exists(_ url: URL) -> Bool { FileManager.default.fileExists(atPath: url.path) }
+
+    private func protect(_ url: URL) throws {
+        #if os(iOS)
+        try FileManager.default.setAttributes(
+            [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: url.path)
+        #endif
+    }
 
     private func move(_ from: URL, to: URL) throws {
         guard rename(from.path, to.path) == 0 else { throw StorageError.io("rename \(from.lastPathComponent)", errno) }
     }
 
-    private func appendAndSync(_ data: Data, to url: URL) throws {
-        let descriptor = open(url.path, O_WRONLY | O_APPEND | O_CLOEXEC)
+    private func appendAndSync(_ data: Data, to url: URL, create: Bool = false) throws {
+        let descriptor = open(url.path, O_WRONLY | O_APPEND | O_CLOEXEC | (create ? O_CREAT : 0), 0o600)
         guard descriptor >= 0 else { throw StorageError.io("open \(url.lastPathComponent)", errno) }
         defer { Darwin.close(descriptor) }
         guard data.withUnsafeBytes({ writeAll(descriptor, $0) }), syncDescriptor(descriptor) else {
@@ -509,45 +794,6 @@ public struct Storage: Sendable {
         guard descriptor >= 0 else { throw StorageError.io("open \(url.lastPathComponent)", errno) }
         defer { Darwin.close(descriptor) }
         guard syncDescriptor(descriptor) else { throw StorageError.io("sync \(url.lastPathComponent)", errno) }
-    }
-}
-
-/// `manifest.json`: the facts that cannot be inside the journal.
-struct Manifest: Hashable, Sendable {
-    var format = "script.journal"
-    var version = JournalFormat.version
-    var sessionID: String
-    var bytes: Int
-    var lines: Int
-    var sha256: String
-
-    init(sessionID: String, bytes: Int, lines: Int, sha256: String) {
-        self.sessionID = sessionID
-        self.bytes = bytes
-        self.lines = lines
-        self.sha256 = sha256
-    }
-
-    init(json: JSON) throws(LineCodec.DecodeError) {
-        let f = try Fields(json, path: "")
-        let journal = try f.object("journal")
-        format = try f.string("format")
-        version = try f.string("version")
-        guard format == "script.journal", JournalFormat.isReadable(version) else { throw .invalid("version") }
-        sessionID = try f.string("sessionID")
-        bytes = try journal.int("bytes")
-        lines = try journal.int("lines")
-        sha256 = try journal.string("sha256")
-    }
-
-    /// Indented like Python `json.dumps(indent=1)`, so a Swift export and a Python export match byte for byte.
-    var data: Data {
-        JSON.object([
-            ("format", .string(format)),
-            ("version", .string(version)),
-            ("sessionID", .string(sessionID)),
-            ("journal", .object([("bytes", .int(bytes)), ("lines", .int(lines)), ("sha256", .string(sha256))])),
-        ]).prettyData()
     }
 }
 

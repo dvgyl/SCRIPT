@@ -6,36 +6,32 @@ public struct Battery: Hashable, Sendable {
     public let version: String
     public let tasks: [TaskSpec]
     /// SHA-256 of the file bytes, recorded in `sessionOpened.battery`.
-    public let sha256: String
+    public let sha256: SHA256Digest
 
-    public enum DecodeError: Error, Equatable, Sendable {
-        case syntax(Int)
-        case field(LineCodec.DecodeError)
+    /// The fixed task set of a qualification session (docs/DESIGN.md section 16), as in `scriptkin.battery`.
+    public static let qualificationTasks: Set<TaskID> = ["qual-reference", "qual-hold", "qual-line"]
+
+    public enum LoadError: Error, Hashable, Sendable {
+        case decode(DecodeError)
         case duplicateTask(TaskID)
     }
 
-    public init(data: Data) throws(DecodeError) {
-        let json: JSON
-        do throws(JSONSyntaxError) {
-            json = try JSON.parse(data)
-        } catch {
-            throw .syntax(error.offset)
-        }
-        do throws(LineCodec.DecodeError) {
-            let f = try Fields(json, path: "")
+    public init(data: Data) throws(LoadError) {
+        do throws(DecodeError) {
+            let f = try Fields(try JSON.decodeDocument(data), path: "")
             id = try f.string("id")
             version = try f.string("version")
             var tasks: [TaskSpec] = []
             for (n, item) in try f.array("tasks").enumerated() {
-                tasks.append(try TaskSpec(try Fields(item, path: "tasks[\(n)]")))
+                tasks.append(try TaskSpec(item, path: "tasks[\(n)]"))
             }
             self.tasks = tasks
         } catch {
-            throw .field(error)
+            throw .decode(error)
         }
         var seen = Set<TaskID>()
         for task in tasks where !seen.insert(task.id).inserted { throw .duplicateTask(task.id) }
-        sha256 = SHA256.hex(data)
+        sha256 = SHA256Digest(of: data)
     }
 
     public func task(_ id: TaskID) -> TaskSpec? { tasks.first { $0.id == id } }
@@ -50,14 +46,27 @@ public struct PointMM: Hashable, Sendable {
     public var y: Double
 }
 
-/// The full task specification. `trialStarted` embeds it, so each journal is self-contained.
+/// The full task specification. `trialStarted` embeds `source`, the exact JSON from the battery, so each journal
+/// is self-contained and repeats the battery's numbers as written.
 public struct TaskSpec: Hashable, Sendable {
-    public var id: TaskID
-    public var mode: TaskMode
-    public var instruction: String
+    public let id: TaskID
+    public let mode: TaskMode
+    public let instruction: String
     /// Nil for a free task, which shows no stimulus.
-    public var stimulus: Stimulus?
-    public var completion: Completion
+    public let stimulus: Stimulus?
+    public let completion: Completion
+    let source: JSON
+
+    init(_ json: JSON, path: String) throws(DecodeError) {
+        let f = try Fields(json, path: path)
+        id = try f.text("id", TaskID.init(_:))
+        mode = try f.enumeration("mode")
+        instruction = try f.string("instruction")
+        guard !instruction.isEmpty else { throw .invalid(f.keyPath("instruction")) }
+        stimulus = f.isNull("stimulus") ? nil : try Stimulus(try f.object("stimulus"))
+        completion = try Completion(try f.object("completion"))
+        source = json
+    }
 }
 
 public enum Stimulus: Hashable, Sendable {
@@ -82,33 +91,8 @@ public enum Completion: Hashable, Sendable {
 
 // MARK: - JSON
 
-extension TaskSpec {
-    init(_ f: Fields) throws(LineCodec.DecodeError) {
-        id = TaskID(try f.string("id"))
-        mode = try f.enumeration("mode")
-        instruction = try f.string("instruction")
-        let stimulus = try f.read("stimulus") { $0 }
-        if case .null = stimulus {
-            self.stimulus = nil
-        } else {
-            self.stimulus = try Stimulus(try f.object("stimulus"))
-        }
-        completion = try Completion(try f.object("completion"))
-    }
-
-    func json() throws(LineCodec.EncodeError) -> JSON {
-        var o = ObjectBuilder()
-        o.add("id", id.rawValue)
-        o.add("mode", mode.rawValue)
-        o.add("instruction", instruction)
-        o.add("stimulus", try stimulus?.json() ?? .null)
-        o.add("completion", try completion.json())
-        return o.json
-    }
-}
-
 extension Stimulus {
-    init(_ f: Fields) throws(LineCodec.DecodeError) {
+    init(_ f: Fields) throws(DecodeError) {
         let frame = try PointMM(try f.read("frameMM") { $0 }, path: f.keyPath("frameMM"))
         switch try f.string("kind") {
         case "paths":
@@ -124,75 +108,40 @@ extension Stimulus {
             let start = f.has("start") ? try PointMM(try f.read("start") { $0 }, path: f.keyPath("start")) : nil
             self = .paths(frameMM: frame, strokeMM: try f.positive("strokeMM"), start: start, paths: paths)
         case "text":
-            self = .text(frameMM: frame, text: try f.string("text"), fontSizeMM: try f.positive("fontSizeMM"))
+            let text = try f.string("text")
+            guard !text.isEmpty else { throw .invalid(f.keyPath("text")) }
+            self = .text(frameMM: frame, text: text, fontSizeMM: try f.positive("fontSizeMM"))
         default:
             throw .invalid(f.keyPath("kind"))
         }
     }
-
-    func json() throws(LineCodec.EncodeError) -> JSON {
-        var o = ObjectBuilder()
-        switch self {
-        case .paths(let frame, let stroke, let start, let paths):
-            o.add("kind", "paths")
-            o.add("frameMM", try frame.json())
-            try o.add("strokeMM", stroke)
-            if let start { o.add("start", try start.json()) }
-            var lines: [JSON] = []
-            for path in paths {
-                var points: [JSON] = []
-                for point in path { points.append(try point.json()) }
-                lines.append(.array(points))
-            }
-            o.add("paths", .array(lines))
-        case .text(let frame, let text, let size):
-            o.add("kind", "text")
-            o.add("frameMM", try frame.json())
-            o.add("text", text)
-            try o.add("fontSizeMM", size)
-        }
-        return o.json
-    }
 }
 
 extension Completion {
-    init(_ f: Fields) throws(LineCodec.DecodeError) {
+    init(_ f: Fields) throws(DecodeError) {
         switch try f.string("kind") {
         case "participantDone": self = .participantDone(maxSeconds: try f.positive("maxSeconds"))
         case "timed": self = .timed(seconds: try f.positive("seconds"))
         default: throw .invalid(f.keyPath("kind"))
         }
     }
-
-    func json() throws(LineCodec.EncodeError) -> JSON {
-        var o = ObjectBuilder()
-        switch self {
-        case .participantDone(let maxSeconds):
-            o.add("kind", "participantDone")
-            try o.add("maxSeconds", maxSeconds)
-        case .timed(let seconds):
-            o.add("kind", "timed")
-            try o.add("seconds", seconds)
-        }
-        return o.json
-    }
 }
 
 extension PointMM {
-    init(_ json: JSON, path: String) throws(LineCodec.DecodeError) {
+    init(_ json: JSON, path: String) throws(DecodeError) {
         guard case .array(let pair) = json, pair.count == 2, let x = pair[0].doubleValue, let y = pair[1].doubleValue
         else { throw .invalid(path) }
         self.init(x: x, y: y)
     }
-
-    func json() throws(LineCodec.EncodeError) -> JSON {
-        guard let x = JSON.double(x), let y = JSON.double(y) else { throw .nonFinite("point") }
-        return .array([x, y])
-    }
 }
 
-extension Fields {
-    func positive(_ key: String) throws(LineCodec.DecodeError) -> Double {
-        try read(key) { $0.doubleValue.flatMap { $0 > 0 ? $0 : nil } }
+extension JSON {
+    /// Parses a whole file into a JSON value.
+    static func decodeDocument(_ data: Data) throws(DecodeError) -> JSON {
+        do throws(JSONSyntaxError) {
+            return try parse(data)
+        } catch {
+            throw .syntax(offset: error.offset)
+        }
     }
 }
