@@ -10,9 +10,11 @@ from typing import Any
 from scriptkin.signal import Estimate
 
 AUC_STATEMENT = (
-    "The AUC compares cases and controls inside each test fold and averages over repeats. Its interval comes"
-    " from a participant bootstrap of fixed out-of-fold predictions. It is conditional on the fitted"
-    " procedure and does not include the variation from refitting on new samples."
+    "The AUC compares cases and controls inside each test fold and averages over repeats. Significance comes"
+    " from the permutation p-value, not from the interval. The interval is a participant bootstrap of fixed"
+    " out-of-fold predictions, widened to at least the AUC +/- t(0.975, P - 1) times se_null, the standard"
+    " deviation of the permutation null AUCs. The bootstrap omits the variation from refitting; the widening"
+    " adds the null spread of the full procedure."
 )
 NORMS_STATEMENT = "A deviation from the normative model is not a diagnosis."
 PPV_STATEMENT = (
@@ -78,18 +80,40 @@ class Subgroup:
 
 
 @dataclass(frozen=True)
+class AucResult:
+    """An AUC with its 95% interval, the spread of its permutation null, and its permutation p-value.
+
+    `se_null` is the standard deviation of the P null AUCs of the same plan. The interval is the participant
+    bootstrap interval, widened to at least `point +/- t(0.975, P - 1) * se_null`. Under the null, the
+    observed AUC and the null AUCs are exchangeable, so the widened interval covers 0.5 at about the nominal
+    rate. `p_value` is (1 + the number of null AUCs at least `point`) / (1 + P). For the model, its null
+    permutes inside sites (`NullCheck.site_aucs`); for a baseline, it is the null that gives `se_null`.
+    """
+
+    point: float
+    low: float
+    high: float
+    se_null: float
+    p_value: float
+
+
+@dataclass(frozen=True)
 class NullCheck:
     """Two permutation nulls of the full plan.
 
     `aucs` permute the labels between all participants, or inside each held-out site or device for a site
     or device holdout. They test that the pipeline is sound: their mean must be near 0.5. `site_aucs` permute
-    inside each site and give `p_value` for the observed AUC; with one site they equal `aucs`.
+    inside each site and give the p-value of the model AUC; with one site they equal `aucs`.
 
     The check passes when the mean null AUC is inside 0.5 +/- t(0.995, P - 1) * sd / sqrt(P) for P
     permutations. `sd` is the larger of the standard deviation of the null AUCs and sigma0, the null standard
-    deviation that the fold sizes imply for fixed untied scores: the pair-weighted root sum of
-    (n1 + n0 + 1) / (12 n1 n0) over the folds of one repeat. Fold models share training rows, so the null
-    AUCs can spread more than sigma0. The band narrows as P grows, so a small P gives a weak check.
+    deviation that the fold sizes imply for one repeat of fixed untied scores: the pair-weighted root sum of
+    (n1 + n0 + 1) / (12 n1 n0) over the folds. The floor keeps the band from narrowing when a few skewed null
+    AUCs happen to spread little, which would refuse sound plans. With several repeats the null can spread
+    less than sigma0, so the check is then slightly loose. The band narrows as P grows, so a small P gives a
+    weak check.
+
+    `resolution` is 1 / (P + 1), the smallest p-value that the site permutations can give.
     """
 
     aucs: tuple[float, ...]
@@ -98,12 +122,17 @@ class NullCheck:
     low: float
     high: float
     site_aucs: tuple[float, ...]
-    p_value: float
+    resolution: float
 
 
 @dataclass(frozen=True)
 class FoldRecord:
-    """What the fits of one outer fold saw, taken from the witness log. Dates are first-session dates."""
+    """What the fits of one outer fold saw, taken from the witness log. Dates are first-session dates.
+
+    `train_prevalence` is the case share of the outer training set; the prior shift starts from it.
+    `out_of_range` counts the test participants whose covariates are outside the range of the norms fitted
+    on the training set. Their deviations are unknown, so the training-fold median imputes them.
+    """
 
     fold: int
     test_participants: int
@@ -114,6 +143,8 @@ class FoldRecord:
     fit_devices: tuple[str, ...]
     test_earliest: str
     fit_latest: str
+    train_prevalence: float
+    out_of_range: int
 
 
 @dataclass(frozen=True)
@@ -222,11 +253,11 @@ class Screening:
     cases: int
     sample_prevalence: float
     stated_prevalence: float
-    auc: Estimate
+    auc: AucResult
     calibration: Calibration
     thresholds: tuple[ThresholdResult, ...]
     decision_curve: tuple[NetBenefit, ...]
-    baselines: dict[str, Estimate]
+    baselines: dict[str, AucResult]
     subgroups: tuple[Subgroup, ...]
     null: NullCheck
     attrition: Attrition

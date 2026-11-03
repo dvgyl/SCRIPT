@@ -77,9 +77,11 @@ def icc_a1(y: FloatArray, alpha: float = 0.05) -> tuple[Estimate, float, float]:
     return Estimate(icc, low, high), sem, between_sd
 
 
-def _key(between: Between, row: FeatureRow) -> tuple[str, str]:
-    occasion = row.device if between == "device" else f"visit {row.visit}"
-    return row.participant, occasion
+def _key(between: Between, row: FeatureRow) -> tuple[str, tuple[bool, int, str]]:
+    """The participant and a sortable occasion: devices by name, visits by number, an unknown visit last."""
+    if between == "device":
+        return row.participant, (False, 0, row.device)
+    return row.participant, (row.visit is None, row.visit or 0, f"visit {row.visit}")
 
 
 def reliability(
@@ -93,7 +95,8 @@ def reliability(
     if columns is None:
         columns = sorted({column(r.task, name) for r in table.rows for name in r.cells})
     keys, values = medians(table, columns, lambda row: _key(between, row))
-    occasions = tuple(sorted({occasion for _, occasion in keys}))
+    order = sorted({occasion for _, occasion in keys})
+    occasions = tuple(name for _, _, name in order)
     people = sorted({pid for pid, _ in keys})
     if len(occasions) < 2:
         return {}
@@ -102,7 +105,7 @@ def reliability(
     for j, name in enumerate(columns):
         grid = np.full((len(people), len(occasions)), np.nan)
         for p, pid in enumerate(people):
-            for o, occasion in enumerate(occasions):
+            for o, occasion in enumerate(order):
                 i = index.get((pid, occasion))
                 if i is not None:
                     grid[p, o] = values[i, j]

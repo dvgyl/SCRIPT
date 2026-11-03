@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib
 import math
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import replace
 from typing import Any
 
@@ -9,9 +11,10 @@ import numpy as np
 import pytest
 from conftest import FEATURES, Analysed, quick_plan
 from scipy.special import expit, logit
+from scipy.stats import t as t_distribution
 from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
 
-from scriptkin.evaluate.metrics import fold_auc
+from scriptkin.evaluate.metrics import fold_auc, fold_auc_null_sd
 from scriptkin.evaluate.participants import medians
 from scriptkin.evaluate.plan import (
     KNN,
@@ -24,12 +27,12 @@ from scriptkin.evaluate.plan import (
 )
 from scriptkin.evaluate.reliability import reliability
 from scriptkin.evaluate.report import NORMS_STATEMENT, TRIPOD_AI, Refused, RefusedCode, Screening
-from scriptkin.evaluate.screening import Design, Fold, crossfit, screening, witness_refusal
+from scriptkin.evaluate.screening import Design, Fold, crossfit, null_check, screening, witness_refusal
 from scriptkin.features import FeatureRow, FeatureTable, Provenance, catalog_digest
 from scriptkin.labels import Label
 from scriptkin.quality import DEFAULT_QC
 from scriptkin.recording import BlockOutcome
-from scriptkin.signal import DEFAULT_PREPROCESSING, Estimate
+from scriptkin.signal import DEFAULT_PREPROCESSING
 
 # The package exports the `screening` function under the module's own name, so import the module itself.
 screening_module = importlib.import_module("scriptkin.evaluate.screening")
@@ -56,7 +59,7 @@ def test_null_cohort_interval_covers_chance_and_passes_the_permutation_check(nul
     assert null_report.auc.low <= 0.5 <= null_report.auc.high
     assert null_report.null.low <= null_report.null.mean <= null_report.null.high
     assert null_report.null.high - null_report.null.low < 0.12
-    assert null_report.null.p_value > 0.05
+    assert null_report.auc.p_value > 0.05
 
 
 def test_fold_auc_compares_pairs_inside_one_test_fold() -> None:
@@ -75,17 +78,36 @@ def test_a_baseline_without_information_scores_exactly_chance(null_cohort: Analy
     # Detects pooled AUC bias: with uneven folds, a constant predictor ranks folds by training prevalence.
     report = run(null_cohort, folds=7, permutations=10, bootstrap=50)
     assert report.cases % 7 and (report.n - report.cases) % 7
-    assert report.baselines["device"] == Estimate(0.5, 0.5, 0.5)
+    device = report.baselines["device"]
+    assert (device.point, device.low, device.high, device.se_null) == (0.5, 0.5, 0.5, 0.0)
 
 
 def test_signal_cohort_interval_covers_the_oracle_auc(
     signal_cohort: Analysed, signal_report: Screening
 ) -> None:
     # Detects a harness that loses or inflates true signal relative to the Bayes risk of the planted traits.
+    # No model ranks better than the true risk, so a point above the oracle by more than noise is inflation.
     oracle = signal_cohort.cohort.oracle_auc
     assert oracle > 0.7
     assert signal_report.auc.low <= oracle <= signal_report.auc.high
-    assert signal_report.null.p_value <= 1 / 11
+    assert signal_report.auc.point <= oracle + 0.02
+    assert signal_report.auc.p_value <= 1 / 11
+
+
+def test_auc_intervals_reach_the_null_spread_so_an_uninformative_baseline_covers_chance(
+    signal_report: Screening,
+) -> None:
+    # Detects an AUC interval narrower than the spread of its permutation null, which reads as a failed chance
+    # test: the demographic baseline of the signal cohort carries no information but scores 0.385.
+    demographic = signal_report.baselines["demographic"]
+    assert demographic.low <= 0.5 <= demographic.high
+    assert demographic.se_null > 0
+    t975 = float(t_distribution.ppf(0.975, len(signal_report.null.aucs) - 1))
+    assert signal_report.auc.se_null == pytest.approx(float(np.std(signal_report.null.aucs, ddof=1)))
+    for result in (signal_report.auc, *signal_report.baselines.values()):
+        assert result.low <= max(0.0, result.point - t975 * result.se_null) + 1e-12
+        assert result.high >= min(1.0, result.point + t975 * result.se_null) - 1e-12
+    assert any("Significance comes from the permutation p-value" in s for s in signal_report.statements)
 
 
 def session_design(analysed: Analysed, ids_of: str) -> Design:
@@ -236,7 +258,14 @@ MATRIX_FEATURES = ("kinematic.speed_mean", "kinematic.jerk_mean", "spatial.trace
 MATRIX_COLUMNS = tuple(column("spiral-trace", f) for f in MATRIX_FEATURES)
 
 
-def matrix_cohort(x: np.ndarray, y: np.ndarray, sites: list[str]) -> tuple[FeatureTable, list[Label]]:
+def matrix_cohort(
+    x: np.ndarray,
+    y: np.ndarray,
+    sites: list[str],
+    *,
+    age_bands: list[str] | None = None,
+    dates: list[str] | None = None,
+) -> tuple[FeatureTable, list[Label]]:
     """A feature table with one spiral trial per participant and the three columns of `x`."""
     rows = tuple(
         FeatureRow(
@@ -244,9 +273,9 @@ def matrix_cohort(x: np.ndarray, y: np.ndarray, sites: list[str]) -> tuple[Featu
             f"S{i:05d}",
             sites[i],
             "supervised",
-            "18-24",
+            age_bands[i] if age_bands else "18-24",
             1,
-            "2026-01-05T09:00:00Z",
+            dates[i] if dates else "2026-01-05T09:00:00Z",
             "iPad16,3",
             "spiral-trace",
             0,
@@ -301,10 +330,138 @@ def test_site_confounding_is_a_caution_and_not_a_harness_failure() -> None:
     result = screening(table, labels, plan=quick_plan(features=MATRIX_COLUMNS, permutations=20), seed=2)
     assert isinstance(result, Screening), result
     assert result.null.low <= result.null.mean <= result.null.high
-    assert result.auc.low > 0.5
+    assert result.auc.point > result.null.high
     assert result.caution("site_baseline") is not None
-    assert result.null.p_value > 0.05
+    assert result.auc.p_value > 0.05
     assert np.mean(result.null.site_aucs) > result.null.high
+
+
+def test_baseline_caution_tests_each_baseline_against_its_own_null_spread() -> None:
+    # Detects a baseline caution from the bootstrap low bound. Here the age band carries no information, but
+    # the bootstrap interval of its fixed predictions excludes 0.5, so that rule raises a false caution.
+    rng = np.random.default_rng(121)
+    x = rng.standard_normal((120, 3))
+    y = rng.random(120) < 0.3
+    bands = [f"band{int(b)}" for b in rng.integers(2, size=120)]
+    table, labels = matrix_cohort(x, y, ["S1"] * 120, age_bands=bands)
+    plan = quick_plan(features=MATRIX_COLUMNS, repeats=3, permutations=20)
+    result = screening(table, labels, plan=plan, seed=121)
+    assert isinstance(result, Screening), result
+    assert result.caution("demographic_baseline") is None
+    demographic = result.baselines["demographic"]
+    assert demographic.point > 0.5 and demographic.se_null > 0
+    assert demographic.point >= result.auc.low
+
+
+def test_null_band_is_never_narrower_than_the_fold_size_floor() -> None:
+    # Detects a band set by the null spread alone. Skewed multi-repeat null AUCs often spread little, and such
+    # a band then refuses sound plans; a band that ignores a wider null spread refuses leaky plans too seldom.
+    folds = np.repeat(np.arange(5), 24)
+    y = np.tile((np.arange(24) < 7).astype(np.int64), 5)
+    sigma0 = fold_auc_null_sd(folds, y)
+    draws = np.random.default_rng(6).standard_normal(20)
+    unit = (draws - draws.mean()) / draws.std(ddof=1)
+    for scale, expected in ((0.5, sigma0), (2.0, 2.0 * sigma0)):
+        aucs = [float(a) for a in 0.5 + scale * sigma0 * unit]
+        for count in (10, 20):
+            check = null_check(aucs[:count], aucs[:count], folds, y)
+            assert check.sd >= sigma0
+            assert check.sd >= float(np.std(aucs[:count], ddof=1))
+            spread = t_distribution.ppf(0.995, count - 1) * check.sd / math.sqrt(count)
+            assert check.high - 0.5 == pytest.approx(spread)
+        assert null_check(aucs, aucs, folds, y).sd == pytest.approx(expected)
+
+
+def test_report_gives_the_p_value_resolution_and_cautions_when_it_cannot_reach_0_05(
+    null_report: Screening, signal_report: Screening
+) -> None:
+    # Detects a report that hides that P permutations cannot give a p-value below 1 / (P + 1).
+    assert null_report.null.resolution == pytest.approx(1 / 21)
+    assert null_report.caution("p_value_resolution") is None
+    assert signal_report.null.resolution == pytest.approx(1 / 11)
+    caution = signal_report.caution("p_value_resolution")
+    assert caution is not None and "0.091" in caution.detail
+
+
+def test_prior_shift_starts_from_the_training_prevalence_of_each_fold() -> None:
+    # Detects a prior shift from the pooled sample prevalence. Each fold's calibrated risks carry its own
+    # training prevalence, so under drifting prevalence a pooled shift gives threshold metrics spurious
+    # discrimination although the features carry no information.
+    rng = np.random.default_rng(1)
+    y = np.concatenate([rng.permutation(np.arange(50) < cases) for cases in (5, 15, 25, 35)])
+    dates = [f"2026-{1 + i // 50:02d}-{1 + i % 50 // 2:02d}T{9 + i % 2:02d}:00:00Z" for i in range(200)]
+    table, labels = matrix_cohort(rng.standard_normal((200, 3)), y, ["S1"] * 200, dates=dates)
+    plan = quick_plan(
+        features=MATRIX_COLUMNS, holdout=Holdout.TEMPORAL, folds=4, thresholds=(0.1, 0.15), bootstrap=50
+    )
+    result = screening(table, labels, plan=plan, seed=1)
+    assert isinstance(result, Screening), result
+    assert result.sample_prevalence == 0.5
+    for row in result.thresholds:
+        assert abs(row.sensitivity.point + row.specificity.point - 1) < 0.1
+    assert [f.train_prevalence for f in result.folds] == pytest.approx([0.1, 0.2, 0.3])
+
+
+@pytest.fixture(scope="module")
+def norms_report() -> Screening:
+    """Norms on age band, with one participant in an age band that nobody else has."""
+    rng = np.random.default_rng(8)
+    table, labels = matrix_cohort(
+        rng.standard_normal((120, 3)),
+        rng.random(120) < 0.3,
+        ["S1"] * 120,
+        age_bands=["13-17"] + ["18-24"] * 119,
+    )
+    plan = quick_plan(features=MATRIX_COLUMNS, norms=NormSpec(("age_band",)), bootstrap=50)
+    result = screening(table, labels, plan=plan, seed=4)
+    assert isinstance(result, Screening), result
+    return result
+
+
+def test_norms_count_test_rows_outside_the_range_of_their_training_fold(norms_report: Screening) -> None:
+    # Detects a test row outside the covariate range of its fold's norms that imputation hides silently.
+    assert sorted(f.out_of_range for f in norms_report.folds) == [0, 0, 0, 0, 1]
+    caution = norms_report.caution("norms_out_of_range")
+    assert caution is not None and ": 1," in caution.detail
+
+
+def test_norms_report_states_that_the_reference_includes_cases(norms_report: Screening) -> None:
+    # Detects a report that hides that the norms are fitted on every training participant, cases included,
+    # which pulls the norm toward the cases and shrinks their deviations.
+    content = next(t.content for t in norms_report.tripod if t.item == "12b")
+    assert content is not None and "without labels" in content and "cases included" in content
+
+
+def null_run(seed: int) -> tuple[bool, bool] | None:
+    """One null matrix cohort: whether the AUC interval covers 0.5 and whether p <= 0.05. None if refused."""
+    rng = np.random.default_rng(seed)
+    table, labels = matrix_cohort(rng.standard_normal((120, 3)), rng.random(120) < 0.3, ["S1"] * 120)
+    plan = quick_plan(
+        features=MATRIX_COLUMNS,
+        folds=3,
+        inner_folds=2,
+        repeats=2,
+        model=ModelSpec(grid=(10.0,)),
+        permutations=20,
+        bootstrap=50,
+    )
+    result = screening(table, labels, plan=plan, seed=seed)
+    if isinstance(result, Refused):
+        assert result.code == RefusedCode.NULL_CHECK, result
+        return None
+    return bool(result.auc.low <= 0.5 <= result.auc.high), result.auc.p_value <= 0.05
+
+
+@pytest.mark.slow
+def test_null_intervals_cover_chance_and_the_permutation_p_value_keeps_its_level() -> None:
+    # Detects an AUC interval that excludes 0.5 too often on null data, as the bootstrap of fixed predictions
+    # did (89% coverage in this design), or a permutation p-value that rejects at the wrong rate.
+    # The runs go to worker processes; 400 runs make the binomial noise small next to both limits.
+    with ProcessPoolExecutor(mp_context=multiprocessing.get_context("spawn")) as pool:
+        results = [r for r in pool.map(null_run, range(400)) if r is not None]
+    assert len(results) >= 380
+    assert sum(covered for covered, _ in results) / len(results) >= 0.93
+    assert 0.02 <= sum(rejected for _, rejected in results) / len(results) <= 0.09
 
 
 @pytest.mark.slow

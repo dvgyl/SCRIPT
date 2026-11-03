@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 import numpy as np
-from scipy.special import expit
+from scipy.special import expit, logit
 from scipy.stats import fisher_exact
 from scipy.stats import t as t_distribution
 from sklearn.linear_model import LogisticRegression
@@ -31,7 +31,7 @@ from scriptkin.evaluate.metrics import (
     logistic_fit,
     wilson,
 )
-from scriptkin.evaluate.norms import NormRow, Norms, deviations, fit_norms
+from scriptkin.evaluate.norms import NormRow, Norms, deviations, fit_norms, outside
 from scriptkin.evaluate.participants import Participant, medians, participants, refused_trials
 from scriptkin.evaluate.plan import (
     LOGISTIC_L2,
@@ -53,6 +53,7 @@ from scriptkin.evaluate.report import (
     PPV_STATEMENT,
     TRIPOD_AI,
     Attrition,
+    AucResult,
     Calibration,
     Caution,
     FoldRecord,
@@ -171,6 +172,11 @@ class _Deviation:
         z = deviations(self.norms, self._rows(x))
         return np.column_stack([x[:, 0], *(z.get(c, np.full(len(x), np.nan)) for c in self.columns)])
 
+    def count_outside(self, x: FloatArray) -> int:
+        """The rows whose covariates are outside the range of the fitted norms."""
+        assert self.norms is not None
+        return sum(outside(self.norms, r) is not None for r in self._rows(x))
+
 
 @dataclass
 class _Logistic:
@@ -255,22 +261,43 @@ class Fold:
 
 
 Splits = Sequence[Sequence[Fold]]
+# One plan for a permutation null: the design, the model, and the norms.
+Arm = tuple[FloatArray, ModelSpec, NormSpec | None]
+
+
+@dataclass(frozen=True)
+class FoldFit:
+    """The outer fit of one fold: its grid value, its training prevalence, and its test rows outside the
+    covariate range of its norms."""
+
+    chosen: float
+    prevalence: float
+    out_of_range: int
 
 
 @dataclass(frozen=True)
 class CrossFit:
     """Calibrated out-of-fold probabilities and the fold number of each row, one line per repeat.
 
-    A row that a repeat did not test has probability NaN and fold -1.
+    A row that a repeat did not test has probability NaN and fold -1. `fits` has one entry per fold number.
     """
 
     probabilities: FloatArray
     folds: IntArray
-    chosen: tuple[float, ...]
+    fits: tuple[FoldFit, ...]
     log: tuple[FitRecord, ...]
 
     def auc(self, y: IntArray, rows: IntArray) -> float:
         return fold_auc(self.probabilities, self.folds, y, rows)
+
+    def shifted(self, stated: float) -> FloatArray:
+        """Each probability moved from the training prevalence of its own fold to `stated`.
+
+        The calibrator of a fold learns that fold's training prevalence, so a pooled prevalence would move
+        the risks of different folds by the wrong amounts.
+        """
+        prevalence = np.array([f.prevalence for f in self.fits])[np.maximum(self.folds, 0)]
+        return np.where(self.folds >= 0, prior_shift(self.probabilities, prevalence, stated), np.nan)
 
 
 def grouped_folds(y: IntArray, groups: Sequence[str], k: int, seed: int) -> list[tuple[IntArray, IntArray]]:
@@ -306,7 +333,7 @@ def crossfit(
     log: list[FitRecord] = []
     probabilities = np.full((len(splits), n), np.nan)
     fold_of = np.full((len(splits), n), -1, dtype=np.int64)
-    chosen: list[float] = []
+    fits: list[FoldFit] = []
     number = 0
     for r, folds in enumerate(splits):
         for fold in folds:
@@ -340,9 +367,12 @@ def crossfit(
                 calibrator.score(np.column_stack((fold.test.astype(float), raw)))
             )
             fold_of[r, fold.test] = number
-            chosen.append(model.grid[best])
+            out_of_range = sum(
+                step.count_outside(rows[fold.test]) for step in final.steps if isinstance(step, _Deviation)
+            )
+            fits.append(FoldFit(model.grid[best], float(y_train.mean()), out_of_range))
             number += 1
-    return CrossFit(probabilities, fold_of, tuple(chosen), tuple(log))
+    return CrossFit(probabilities, fold_of, tuple(fits), tuple(log))
 
 
 def witness_refusal(cross: CrossFit, splits: Splits, ids: Sequence[str]) -> Refused | None:
@@ -438,9 +468,9 @@ def _check_sizes(splits: Splits, y: IntArray, inner_folds: int) -> Refused | Non
     return None
 
 
-def _mean_probability(cross: CrossFit) -> FloatArray:
-    tested = np.isfinite(cross.probabilities)
-    total = np.where(tested, cross.probabilities, 0.0).sum(axis=0)
+def _mean_over_repeats(values: FloatArray) -> FloatArray:
+    tested = np.isfinite(values)
+    total = np.where(tested, values, 0.0).sum(axis=0)
     count = tested.sum(axis=0)
     return np.where(count > 0, total / np.maximum(count, 1), np.nan)
 
@@ -452,11 +482,12 @@ def _one_hot(values: Sequence[str]) -> FloatArray:
     )
 
 
-def prior_shift(p: FloatArray, sample: float, stated: float) -> FloatArray:
-    """Move risks from the sample prevalence to the stated prevalence (Saerens et al. 2002)."""
-    return np.asarray(
-        expit(clipped_logit(p) + math.log(stated / (1 - stated)) - math.log(sample / (1 - sample)))
-    )
+def prior_shift(p: FloatArray, sample: FloatArray | float, stated: float) -> FloatArray:
+    """Move risks from the prevalence they were calibrated at to the stated prevalence (Saerens et al. 2002).
+
+    `sample` is one prevalence, or one for each risk.
+    """
+    return np.asarray(expit(clipped_logit(p) + logit(stated) - logit(sample)))
 
 
 def _ppv(se: float, sp: float, prevalence: float) -> float:
@@ -557,7 +588,7 @@ def _fold_records(cross: CrossFit, splits: Splits, people: Sequence[Participant]
     for record in cross.log:
         fitted[record.fold] |= record.participants
     records: list[FoldRecord] = []
-    for number, (test, fit) in enumerate(zip(tests, fitted, strict=True)):
+    for number, (test, fit, fold_fit) in enumerate(zip(tests, fitted, cross.fits, strict=True)):
         test_people = [people[i] for i in test]
         fit_people = [by_id[pid] for pid in fit]
         records.append(
@@ -571,17 +602,32 @@ def _fold_records(cross: CrossFit, splits: Splits, people: Sequence[Participant]
                 tuple(sorted({p.device for p in fit_people})),
                 min(p.first_opened for p in test_people),
                 max(p.first_opened for p in fit_people),
+                fold_fit.prevalence,
+                fold_fit.out_of_range,
             )
         )
     return tuple(records)
 
 
-def _baseline_caution(name: str, baseline: Estimate, model: Estimate) -> Caution | None:
-    """A baseline that predicts beyond chance and reaches the model interval can explain the result."""
-    if baseline.low > 0.5 and baseline.point >= model.low:
+def _auc_result(boot: Estimate, null_aucs: Sequence[float], p_value: float, t975: float) -> AucResult:
+    """The bootstrap interval widened to at least the point +/- t975 times the null standard deviation."""
+    se_null = float(np.std(null_aucs, ddof=1))
+    low = float(np.fmin(boot.low, boot.point - t975 * se_null))
+    high = float(np.fmax(boot.high, boot.point + t975 * se_null))
+    return AucResult(boot.point, max(0.0, low), min(1.0, high), se_null, p_value)
+
+
+def _p_value(null_aucs: Sequence[float], observed: float) -> float:
+    return (1 + sum(a >= observed for a in null_aucs)) / (1 + len(null_aucs))
+
+
+def _baseline_caution(name: str, baseline: AucResult, model: AucResult, t975: float) -> Caution | None:
+    """A baseline beyond its own null spread that reaches the model interval can explain the result."""
+    if baseline.point - 0.5 > t975 * baseline.se_null and baseline.point >= model.low:
         return Caution(
             f"{name}_baseline",
-            f"The {name}-only baseline reaches AUC {baseline.point:.3f}, inside or above the model interval"
+            f"The {name}-only baseline reaches AUC {baseline.point:.3f}, more than {t975:.2f} null standard"
+            f" deviations ({baseline.se_null:.3f}) above 0.5 and inside or above the model interval"
             f" {model.low:.3f} to {model.high:.3f}. The {name} can explain the result.",
         )
     return None
@@ -594,7 +640,7 @@ def _tripod(
     attrition: Attrition,
     n: int,
     cases: int,
-    auc_estimate: Estimate,
+    auc_estimate: AucResult,
     cal: Calibration,
 ) -> tuple[TripodItem, ...]:
     target = plan.target
@@ -608,15 +654,21 @@ def _tripod(
         "12a": f"Holdout {plan.holdout}, {plan.folds} folds,"
         f" {plan.repeats} repeats where the holdout allows.",
         "12b": "Training-fold median imputation and standardization"
-        + (f"; deviations from norms on {', '.join(plan.norms.covariates)}" if plan.norms else "")
+        + (
+            f"; deviations from norms on {', '.join(plan.norms.covariates)}, fitted without labels on all"
+            " participants of the training fold, cases included, as a general-population reference"
+            if plan.norms
+            else ""
+        )
         + ".",
         "12c": f"{plan.model.kind} with grid {list(plan.model.grid)}, chosen by grouped inner AUC over"
         f" {plan.inner_folds} folds; a FitWitness checks every fit.",
         "12d": "Results by site, device, age band, and administration.",
-        "12e": "AUC with a participant bootstrap interval, calibration intercept, slope, curve, Brier score,"
-        " sensitivity, specificity, PPV, NPV, and net benefit.",
-        "12f": "Platt recalibration cross-fitted inside each outer training set; prior shift to the stated"
-        " prevalence for thresholds.",
+        "12e": "AUC with a participant bootstrap interval widened to the spread of its permutation null, and"
+        " its permutation p-value; calibration intercept, slope, curve, Brier score, sensitivity,"
+        " specificity, PPV, NPV, and net benefit.",
+        "12f": "Platt recalibration cross-fitted inside each outer training set; prior shift from the"
+        " training prevalence of each fold to the stated prevalence for thresholds.",
         "13": "No resampling. Risks are moved to the stated prevalence by the prior-shift adjustment.",
         "14": "Subgroup results are reported. No fairness constraint is applied.",
         "15": f"A calibrated probability; thresholds {list(plan.thresholds)} from the plan.",
@@ -624,8 +676,9 @@ def _tripod(
         "20a": f"{attrition.participants} participants, {attrition.analysed} analysed,"
         f" excluded {attrition.excluded}.",
         "21": f"{n} participants with {cases} cases in the evaluation.",
-        "23a": f"AUC {auc_estimate.point:.3f} ({auc_estimate.low:.3f} to {auc_estimate.high:.3f});"
-        f" calibration slope {cal.slope:.3f}; subgroup results reported.",
+        "23a": f"AUC {auc_estimate.point:.3f} ({auc_estimate.low:.3f} to {auc_estimate.high:.3f}),"
+        f" permutation p {auc_estimate.p_value:.3g}; calibration slope {cal.slope:.3f}; subgroup results"
+        " reported.",
         "23b": "Per-site and per-device results are reported.",
     }
     return tuple(TripodItem(item, topic, known.get(item)) for item, topic in TRIPOD_AI)
@@ -696,9 +749,9 @@ def _analysis_set(
 
 
 def null_check(
-    null_aucs: Sequence[float], site_aucs: Sequence[float], folds: IntArray, y: IntArray, observed: float
+    null_aucs: Sequence[float], site_aucs: Sequence[float], folds: IntArray, y: IntArray
 ) -> NullCheck:
-    """The mean null AUC and its band 0.5 +/- t(0.995, P - 1) * sd / sqrt(P), and the within-site p-value."""
+    """The mean null AUC, its band 0.5 +/- t(0.995, P - 1) * sd / sqrt(P), and the p-value resolution."""
     spread = max(fold_auc_null_sd(folds, y), float(np.std(null_aucs, ddof=1)))
     half = float(t_distribution.ppf(0.995, len(null_aucs) - 1)) * spread / math.sqrt(len(null_aucs))
     return NullCheck(
@@ -708,7 +761,7 @@ def null_check(
         0.5 - half,
         0.5 + half,
         tuple(site_aucs),
-        (1 + sum(a >= observed for a in site_aucs)) / (1 + len(site_aucs)),
+        1 / (1 + len(site_aucs)),
     )
 
 
@@ -776,88 +829,128 @@ def screening(
     if isinstance(observed, Refused):
         return observed
     cross, splits = observed
-    p_all = _mean_probability(cross)
+    p_all = _mean_over_repeats(cross.probabilities)
     tested = np.flatnonzero(np.isfinite(p_all))
     p, y_tested = p_all[tested], y[tested]
     boot = np.random.default_rng(boot_seq)
-    auc_estimate = bootstrap(lambda rows: cross.auc(y, rows), y, tested, plan.bootstrap, boot)
-    if math.isnan(auc_estimate.point):
+    model_boot = bootstrap(lambda rows: cross.auc(y, rows), y, tested, plan.bootstrap, boot)
+    if math.isnan(model_boot.point):
         return Refused(RefusedCode.TOO_FEW_PARTICIPANTS, "No test fold has both cases and controls.")
 
-    baselines: dict[str, Estimate] = {}
-    for name, x in (
-        (
-            "demographic",
-            np.column_stack(
-                (_one_hot([q.age_band for q in people]), _one_hot([q.administration for q in people]))
-            ),
+    baseline_designs = {
+        "demographic": np.column_stack(
+            (_one_hot([q.age_band for q in people]), _one_hot([q.administration for q in people]))
         ),
-        ("device", _one_hot([q.device for q in people])),
-        ("site", _one_hot([q.site for q in people])),
-    ):
+        "device": _one_hot([q.device for q in people]),
+        "site": _one_hot([q.site for q in people]),
+    }
+    baseline_boot: dict[str, Estimate] = {}
+    for name, x in baseline_designs.items():
         base = run(y, x, LOGISTIC_L2, None)
         if isinstance(base, Refused):
             return base
-        baselines[name] = bootstrap(lambda rows, b=base[0]: b.auc(y, rows), y, tested, plan.bootstrap, boot)
+        baseline_boot[name] = bootstrap(
+            lambda rows, b=base[0]: b.auc(y, rows), y, tested, plan.bootstrap, boot
+        )
+    # A constant design ties every pair under any labelling: its null is its observed AUC and needs no runs.
+    varying = [name for name, x in baseline_designs.items() if np.ptp(x, axis=0).any()]
 
-    def permutation_null(strata: Sequence[str], sequence: np.random.SeedSequence) -> list[float] | Refused:
-        """Run the full plan on labels permuted inside each stratum.
+    def permutation_null(
+        strata: Sequence[str], sequence: np.random.SeedSequence, arms: Sequence[Arm]
+    ) -> list[list[float]] | Refused:
+        """Run the plan of each arm on labels permuted inside each stratum, one AUC list per arm.
 
         Each permutation draws its own split seed: stratified fold assignment depends on the labels and on a
         fixed row order, so one split seed for every permutation would condition the null on that order. A
         permutation that leaves a training set too few cases (possible in a temporal holdout) is drawn again.
+        Every arm of one permutation uses the same labels and splits.
         """
-        aucs: list[float] = []
+        aucs: list[list[float]] = [[] for _ in arms]
         for permutation_seq in sequence.spawn(plan.permutations):
             rng = np.random.default_rng(permutation_seq)
             result: tuple[CrossFit, Splits] | Refused = Refused(RefusedCode.TOO_FEW_PARTICIPANTS, "")
-            permuted = y
+            permuted, split = y, split_seed
             for _ in range(20):
                 permuted = _permute_within(y, strata, rng)
-                result = run(permuted, design.x, plan.model, plan.norms, int(rng.integers(2**32)))
+                split = int(rng.integers(2**32))
+                result = run(permuted, *arms[0], split)
                 if not (isinstance(result, Refused) and result.code == RefusedCode.TOO_FEW_PARTICIPANTS):
                     break
-            if isinstance(result, Refused):
-                return Refused(result.code, f"A permuted null run failed: {result.reason}")
-            aucs.append(result[0].auc(permuted, tested))
+            for k, arm in enumerate(arms):
+                arm_result = result if k == 0 else run(permuted, *arm, split)
+                if isinstance(arm_result, Refused):
+                    return Refused(arm_result.code, f"A permuted null run failed: {arm_result.reason}")
+                aucs[k].append(arm_result[0].auc(permuted, tested))
         return aucs
 
     # The band needs an exchangeable null. With participant or temporal folds, a test fold mixes sites, so a
     # permutation inside sites would keep site prevalence that features can predict, and its null AUC would
     # not centre on 0.5. A site or device holdout scores pairs inside one held-out group, so permuting inside
-    # that group keeps the fold sizes and still centres on 0.5. The p-value permutes inside sites.
+    # that group keeps the fold sizes and still centres on 0.5. The model p-value permutes inside sites.
     sites = [q.site for q in people]
     groups = {Holdout.SITE: sites, Holdout.DEVICE: [q.device for q in people]}
     band_strata = groups.get(plan.holdout, ["all"] * len(people))
     band_seq, site_seq = null_seq.spawn(2)
-    null_aucs = permutation_null(band_strata, band_seq)
-    if isinstance(null_aucs, Refused):
-        return null_aucs
+    model_arm: Arm = (design.x, plan.model, plan.norms)
+    band = permutation_null(
+        band_strata, band_seq, [model_arm, *((baseline_designs[name], LOGISTIC_L2, None) for name in varying)]
+    )
+    if isinstance(band, Refused):
+        return band
+    null_aucs, *varying_nulls = band
     same = len(set(sites)) == 1 or list(band_strata) == sites
-    site_aucs = null_aucs if same else permutation_null(sites, site_seq)
-    if isinstance(site_aucs, Refused):
-        return site_aucs
-    null = null_check(null_aucs, site_aucs, cross.folds[0], y, auc_estimate.point)
+    site = [null_aucs] if same else permutation_null(sites, site_seq, [model_arm])
+    if isinstance(site, Refused):
+        return site
+    site_aucs = site[0]
+    null = null_check(null_aucs, site_aucs, cross.folds[0], y)
     if not null.low <= null.mean <= null.high:
         return Refused(
             RefusedCode.NULL_CHECK,
             f"The mean permutation AUC {null.mean:.4f} is outside {null.low:.4f} to {null.high:.4f}.",
         )
+    t975 = float(t_distribution.ppf(0.975, len(null_aucs) - 1))
+    auc_result = _auc_result(model_boot, null_aucs, _p_value(site_aucs, model_boot.point), t975)
+    baseline_nulls = dict(zip(varying, varying_nulls, strict=True))
+    baselines: dict[str, AucResult] = {}
+    for name, b in baseline_boot.items():
+        base_null = baseline_nulls.get(name, [b.point] * len(null_aucs))
+        baselines[name] = _auc_result(b, base_null, _p_value(base_null, b.point), t975)
     cases_t = int(y_tested.sum())
 
     sample_prevalence = cases_t / len(y_tested)
-    shifted = prior_shift(p, sample_prevalence, plan.prevalence)
+    shifted = _mean_over_repeats(cross.shifted(plan.prevalence))[tested]
     for name in ("device", "site", "demographic"):
-        caution = _baseline_caution(name, baselines[name], auc_estimate)
+        caution = _baseline_caution(name, baselines[name], auc_result, t975)
         if caution is not None:
             cautions.append(caution)
+    if null.resolution > 0.05:
+        cautions.append(
+            Caution(
+                "p_value_resolution",
+                f"With {len(site_aucs)} permutations the smallest possible p-value is {null.resolution:.3f},"
+                " so the p-value cannot reach 0.05. Use at least 19 permutations.",
+            )
+        )
+    out_of_range = sum(f.out_of_range for f in cross.fits)
+    if out_of_range:
+        cautions.append(
+            Caution(
+                "norms_out_of_range",
+                f"Test rows with covariates outside the range of the norms of their training fold:"
+                f" {out_of_range}, a participant counted once per repeat. Their deviations are unknown, so"
+                " the training-fold median deviation replaces them. Each fold gives its count in"
+                " `out_of_range`.",
+            )
+        )
     if abs(sample_prevalence - plan.prevalence) > 1e-12:
         cautions.append(
             Caution(
                 "prevalence_shift",
                 f"The sample prevalence {sample_prevalence:.3f} differs from the stated prevalence"
-                f" {plan.prevalence}. Threshold metrics use risks moved by the prior-shift adjustment, which"
-                " assumes the same feature distribution within each class in the target population.",
+                f" {plan.prevalence}. Threshold metrics use risks moved from the training prevalence of each"
+                " fold to the stated prevalence by the prior-shift adjustment, which assumes the same feature"
+                " distribution within each class in the target population.",
             )
         )
     cases = int(y.sum())
@@ -886,7 +979,7 @@ def screening(
         cases=cases_t,
         sample_prevalence=sample_prevalence,
         stated_prevalence=plan.prevalence,
-        auc=auc_estimate,
+        auc=auc_result,
         calibration=cal,
         thresholds=tuple(threshold_metrics(shifted, y_tested, t, plan.prevalence) for t in plan.thresholds),
         decision_curve=tuple(
@@ -898,8 +991,8 @@ def screening(
         null=null,
         attrition=attrition,
         folds=_fold_records(cross, splits, people),
-        chosen=cross.chosen,
+        chosen=tuple(f.chosen for f in cross.fits),
         cautions=tuple(cautions),
         statements=tuple(statements),
-        tripod=_tripod(plan, digest, used, attrition, len(y_tested), cases_t, auc_estimate, cal),
+        tripod=_tripod(plan, digest, used, attrition, len(y_tested), cases_t, auc_result, cal),
     )

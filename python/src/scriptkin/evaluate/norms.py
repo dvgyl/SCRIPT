@@ -132,7 +132,8 @@ def fit_norms(rows: Sequence[NormRow], covariates: Sequence[str]) -> Norms:
     return Norms(tuple(covariates), support, knots, features)
 
 
-def _outside(norms: Norms, row: NormRow) -> Refusal | None:
+def outside(norms: Norms, row: NormRow) -> Refusal | None:
+    """The refusal for a row outside the covariate range of the fitted sample, or None."""
     for name in norms.covariates:
         value = row.covariates.get(name)
         if value is None:
@@ -150,7 +151,7 @@ def _outside(norms: Norms, row: NormRow) -> Refusal | None:
 
 def deviations(norms: Norms, rows: Sequence[NormRow]) -> dict[str, FloatArray]:
     """Standardized deviations (value - location) / scale. NaN where a refusal applies."""
-    inside = np.array([_outside(norms, r) is None for r in rows], dtype=bool)
+    inside = np.array([outside(norms, r) is None for r in rows], dtype=bool)
     usable = [r for r, ok in zip(rows, inside, strict=True) if ok]
     result: dict[str, FloatArray] = {}
     x = _design(norms.covariates, norms.support, norms.knots, usable) if usable else np.empty((0, 0))
@@ -168,7 +169,7 @@ def centiles(norms: Norms, rows: Sequence[NormRow]) -> list[dict[str, Cell]]:
     z = deviations(norms, rows)
     result: list[dict[str, Cell]] = []
     for i, row in enumerate(rows):
-        refusal = _outside(norms, row)
+        refusal = outside(norms, row)
         cells: dict[str, Cell] = {}
         for feature in row.values:
             if refusal is not None:

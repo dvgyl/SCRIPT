@@ -7,6 +7,9 @@ from conftest import SPIRAL, Analysed, analysed
 from scriptkin import synthetic as syn
 from scriptkin.evaluate.plan import GateCriteria, column
 from scriptkin.evaluate.reliability import GateStatus, icc_a1, reliability, reliability_gate
+from scriptkin.features import FeatureRow, FeatureTable, Provenance, catalog_digest
+from scriptkin.quality import DEFAULT_QC
+from scriptkin.signal import DEFAULT_PREPROCESSING
 
 # Shrout and Fleiss (1979), Table 2: six targets rated by four judges.
 SHROUT_FLEISS = np.array(
@@ -102,3 +105,36 @@ def test_device_agreement_pairs_each_participant_across_devices() -> None:
     assert pair.bias > 0 and pair.low < pair.bias < pair.high
     result = reliability_gate(force, GateCriteria(between="device", min_participants=20, min_icc_low=-1.0))
     assert result.status == GateStatus.FAIL and "Bias" in result.reason
+
+
+def test_session_occasions_follow_the_visit_number() -> None:
+    # Detects visits sorted as text, which puts "visit 10" before "visit 2" and reverses Bland-Altman pairs.
+    rng = np.random.default_rng(5)
+    speed = rng.normal(100.0, 10.0, 12)
+    rows = tuple(
+        FeatureRow(
+            f"P{i}",
+            f"P{i}-{visit}",
+            "S1",
+            "supervised",
+            "18-24",
+            visit,
+            None,
+            "iPad16,3",
+            "spiral-trace",
+            0,
+            1,
+            "right",
+            (),
+            (),
+            {"kinematic.speed_mean": float(speed[i] + visit + rng.normal(0.0, 1.0))},
+        )
+        for i in range(12)
+        for visit in (10, 2, 1)
+    )
+    provenance = Provenance("test", DEFAULT_QC, DEFAULT_PREPROCESSING, catalog_digest(), (), ())
+    agreement = reliability(FeatureTable(rows, provenance), "session")[SPEED]
+    assert agreement.occasions == ("visit 1", "visit 2", "visit 10")
+    pairs = {(pair.first, pair.second): pair.bias for pair in agreement.bland_altman}
+    assert list(pairs) == [("visit 1", "visit 2"), ("visit 1", "visit 10"), ("visit 2", "visit 10")]
+    assert pairs["visit 2", "visit 10"] == pytest.approx(8.0, abs=1.5)
