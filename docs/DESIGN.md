@@ -25,10 +25,10 @@ After the reader, each stage accepts only a type that the previous stage built a
 ### 2.1 Operator and participant
 
 1. **Home** lists sessions as open, interrupted, closed, exported, or damaged. The operator taps New session.
-2. **Setup** asks for three items: a participant code (pattern `^[A-Z0-9-]{3,16}$`), the Pencil model (Pro, 2nd generation, USB-C), and the battery. If the iPad model is not in the device table, Setup shows a bar of known length in points and asks the operator to measure it with a steel rule.
+2. **Setup** asks for the participant code (pattern `^[A-Z0-9-]{3,16}$`), the age band, jurisdiction, locale, dominant hand, visit number, consent attestation, device asset code, screen protector, nib state, and Pencil model (Pro, 2nd generation, USB-C). If the iPad model is not in the device table, or its table density is not confirmed, Setup asks for a reference measurement with a steel rule or an ID-1 card. Setup refuses to start a session when the device has less than 500 MB of free storage.
 3. **Handoff** says "Please give the iPad to the participant."
 4. **Task.** The participant reads one instruction, taps Begin, and draws. The task ends when the participant taps Done or the time limit occurs. The participant never sees a score, a replay, or a quality value.
-5. **Thank you** says "Thank you. Please give the iPad back." A press-and-hold of 2 seconds with three fingers opens Review.
+5. **Handoff** says "Please give the iPad back to the researcher." A visible Operator control (press and hold for 2 seconds, then the PIN when the configuration has one) opens the operator screens. The flow is the same whatever the answers were.
 6. **Review** shows each trial with its duration, sample rate, and channels present. The operator can repeat a trial, add a mark from a fixed list, or close the session.
 7. **Export** puts a verified folder in Files under On My iPad > SCRIPT > Exports.
 
@@ -96,7 +96,7 @@ This section is the contract between the app and the library. `contract/journal.
 
 ### 3.1 Files
 
-An export is the folder `Exports/<participant>_<first 8 hex digits of the session UUID>/`. It contains two files:
+An export is the folder `Exports/SCRIPT_<studyID>_<siteCode>_<first 8 hex digits of the session UUID, lowercase>/`. The participant code is not in the name; it stays inside the journal, and inside the ciphertext when the export is encrypted. It contains two files:
 
 - `journal.jsonl`: the journal.
 - `manifest.json`: the facts that cannot be inside the journal.
@@ -247,7 +247,7 @@ App container layout:
 Library/Application Support/Sessions/<uuid>.jsonl    journals not yet exported
 Library/Application Support/Staging/<name>/          publication in progress
 Documents/Exports/<name>/                            verified exports, visible in Files
-Documents/Damaged/<uuid>.jsonl                       journals with damage before the last line
+Library/Application Support/Damaged/<uuid>.jsonl    journals with damage before the last line; exported only through publish
 ```
 
 ## 6. Python shape
@@ -405,7 +405,7 @@ The app imports a configuration through Files. It checks the schema and the rule
 | id | items | licence | validated ages | safety items |
 |---|---|---|---|---|
 | `phq9` | 9 | public domain (PHQ manual) | 13-17 (Richardson 2010), 18+ | item 9 |
-| `phq8` | 8 | public domain (PHQ manual) | 18+; adolescent validation not found | none |
+| `phq8` | 8 | public domain (PHQ manual) | 13+: items 1-8 of the PHQ-9, which is validated at 13-17; a separate adolescent validation of the PHQ-8 was not found | none |
 | `gad7` | 7 | public domain (PHQ manual) | 12-17 (exploratory), 15-24, 18+ | none |
 | `dass21` | 21 | public domain; enrolled participants only, results to the researcher only, no modification | 14+ | none |
 
@@ -437,7 +437,7 @@ The operator gives the attestation in supervised sessions. In self-administered 
 
 ## 16. Device qualification
 
-A qualification session has `purpose: qualification` and a fixed task set: a reference-length check with a steel rule or an ID-1 card, a 10-second still hold, a straight-line stroke along a guide, and a channel check. It writes an ordinary journal. `scriptkin` computes the sample-interval distribution, gaps, jitter, scale error, and channel presence from it. A study session records the identifier of the last qualification session on its device. "Can record" differs from "qualified for comparison"; only the analysis plan decides the second.
+A qualification session has `purpose: qualification` and a fixed task set: a reference-length check with a steel rule or an ID-1 card, a 10-second still hold, and a straight-line stroke along a guide. Channel presence comes from the samples of these three tasks. It writes an ordinary journal. `scriptkin` computes the sample-interval distribution, gaps, jitter, scale error, and channel presence from it. A study session records the identifier of the last qualification session on its device. "Can record" differs from "qualified for comparison"; only the analysis plan decides the second.
 
 ## 17. Privacy and withdrawal
 
