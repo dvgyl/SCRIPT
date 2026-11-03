@@ -36,3 +36,14 @@ The sections are `contract`, `python`, `core`, and `app`. Build output goes to `
 | [contract/](contract/) | The journal schema, the task battery, and shared test fixtures |
 | [app/](app/) | The iPad app and its `ScriptCore` Swift package |
 | [python/](python/) | The scriptkin library and its tests |
+
+## Documentation
+
+| Document | Contents |
+| --- | --- |
+| [docs/DESIGN.md](docs/DESIGN.md) | The design, the recording format, and the safety rules |
+| [docs/INTENDED_USE.md](docs/INTENDED_USE.md) | What SCRIPT is for, what it is not for, and which claims it supports |
+| [docs/STUDY_GUIDE.md](docs/STUDY_GUIDE.md) | How a site prepares and runs a study |
+| [docs/DATA_GOVERNANCE.md](docs/DATA_GOVERNANCE.md) | The data flow, the threats, the controls, withdrawal, and the law checklist |
+| [docs/HAZARDS.md](docs/HAZARDS.md) | The hazard log, with the controls and the tests for each hazard |
+| [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md) | The third-party software, with versions and licences |
