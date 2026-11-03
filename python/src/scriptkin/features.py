@@ -15,7 +15,7 @@ from scipy.spatial import KDTree
 
 from scriptkin import __version__
 from scriptkin.quality import DEFAULT_QC, Accepted, QcPolicy, Refusal, RefusalCode, Rejected, Segment, assess
-from scriptkin.recording import Channel, FloatArray, IntArray, PenState, Recording
+from scriptkin.recording import Channel, FloatArray, IntArray, PenState, Recording, Trial
 from scriptkin.signal import (
     DEFAULT_PREPROCESSING,
     GammaFit,
@@ -70,6 +70,12 @@ CATALOG = (
         definition="Sum of contact segment chord lengths.",
     ),
     Feature("timing.duration_s", "s", state=None, definition="Trial end minus trial start in one boot."),
+    Feature(
+        "timing.initiation_latency_s",
+        "s",
+        state=None,
+        definition="First contact sample time minus the Begin tap time; refused without a Begin tap.",
+    ),
     Feature("timing.contact_s", "s", "sum", definition="Sum of accepted contact segment durations."),
     Feature(
         "timing.in_air_s",
@@ -279,6 +285,18 @@ def _spatial(ok: Accepted, segments: tuple[Segment, ...], *, copy: bool) -> Cell
         return Refusal(RefusalCode.UNDEFINED, f"Cannot align this path: {e}")
 
 
+def _initiation_latency(trial: Trial) -> Cell:
+    if trial.began is None:
+        return Refusal(RefusalCode.UNDEFINED, "The trial has no Begin tap.")
+    starts = [float(s.t[0]) for s in trial.strokes if s.state == PenState.CONTACT and len(s.t)]
+    if not starts:
+        return Refusal(RefusalCode.UNDEFINED, "The trial has no contact.")
+    latency = min(starts) - trial.began
+    if latency < 0:
+        return Refusal(RefusalCode.UNDEFINED, "The first contact precedes the Begin tap.")
+    return latency
+
+
 def extract(ok: Accepted, settings: Preprocessing = DEFAULT_PREPROCESSING) -> dict[str, Cell]:
     """Calculate all catalog cells from QC output. Return a refusal for each failed requirement."""
     trial = ok.trial
@@ -326,6 +344,8 @@ def extract(ok: Accepted, settings: Preprocessing = DEFAULT_PREPROCESSING) -> di
                 if trial.ended is not None and trial.started is not None and trial.ended >= trial.started
                 else Refusal(RefusalCode.UNDEFINED, "No trial duration.")
             )
+        elif name == "timing.initiation_latency_s":
+            cell = _initiation_latency(trial)
         elif name == "timing.stroke_count":
             cell = float(len({s.stroke_index for s in contact}))
         elif name in ("timing.contact_s", "timing.in_air_s"):
@@ -402,12 +422,17 @@ def extract(ok: Accepted, settings: Preprocessing = DEFAULT_PREPROCESSING) -> di
 
 @dataclass(frozen=True)
 class FeatureRow:
+    """One trial. `administration`, `hand`, and `accommodations` let an analysis stratify."""
+
     participant: str
     session: str
+    administration: str
     device: str
     task: str
     trial: int
     attempt: int
+    hand: str
+    accommodations: tuple[str, ...]
     cells: dict[str, Cell]
 
 
@@ -435,10 +460,13 @@ class FeatureTable:
                 (
                     "participant",
                     "session",
+                    "administration",
                     "device",
                     "task",
                     "trial",
                     "attempt",
+                    "hand",
+                    "accommodations",
                     "feature",
                     "value",
                     "refusal",
@@ -452,10 +480,13 @@ class FeatureTable:
                         (
                             row.participant,
                             row.session,
+                            row.administration,
                             row.device,
                             row.task,
                             row.trial,
                             row.attempt,
+                            row.hand,
+                            ";".join(row.accommodations),
                             name,
                             "" if refused else cell,
                             cell.code if refused else "",
@@ -473,13 +504,22 @@ def feature_table(
     policy: QcPolicy = DEFAULT_QC,
     settings: Preprocessing = DEFAULT_PREPROCESSING,
 ) -> FeatureTable:
+    """One row per measured trial. Practice trials and qualification sessions never enter the table.
+
+    `administration` is "unknown" and `hand` is "unknown" when the source format does not record them.
+    """
     rows: list[FeatureRow] = []
     hashes: set[str] = set()
     profiles: set[str] = set()
     for recording in recordings:
+        session = recording.context
+        if session is not None and session.purpose == "qualification":
+            continue
         hashes.update(recording.source_hashes)
         profiles.add(recording.reader_profile)
         for trial in recording.trials:
+            if trial.context is not None and trial.context.practice:
+                continue
             qc = assess(trial, policy)
             if isinstance(qc, Rejected):
                 cells: dict[str, Cell] = {f.name: qc.refusals[0] for f in CATALOG}
@@ -489,10 +529,13 @@ def feature_table(
                 FeatureRow(
                     recording.participant,
                     recording.session_id,
+                    session.administration if session else "unknown",
                     trial.device.model,
                     trial.task.id,
                     trial.index,
                     trial.attempt,
+                    trial.context.hand if trial.context else "unknown",
+                    trial.context.accommodations if trial.context else (),
                     cells,
                 )
             )

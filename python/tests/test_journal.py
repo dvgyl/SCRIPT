@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import copy
 import json
 import os
@@ -8,36 +9,55 @@ from typing import Any
 
 import numpy as np
 import pytest
+from conftest import CONTRACT, FIXTURES, write_encrypted_export, write_export
+from conftest import fixture_lines as lines
 from jsonschema import Draft202012Validator
 
 from scriptkin import Channel, PenState
-from scriptkin.contract import FORCE, JournalBuilder, encode_line, manifest_bytes
-from scriptkin.formats.journal import JournalError, fold, read_journal, summarize
-
-CONTRACT = Path(__file__).resolve().parents[2] / "contract"
-FIXTURES = CONTRACT / "fixtures"
-
-
-def lines(name: str = "basic") -> list[dict[str, Any]]:
-    return [json.loads(s) for s in (FIXTURES / "journal" / f"{name}.jsonl").read_bytes().splitlines()]
-
-
-def write_export(folder: Path, rows: list[dict[str, Any]]) -> None:
-    folder.mkdir(exist_ok=True)
-    data = b"".join(map(encode_line, rows))
-    (folder / "journal.jsonl").write_bytes(data)
-    (folder / "manifest.json").write_bytes(manifest_bytes(rows[0].get("sessionID", "invalid"), data))
-
-
-@pytest.mark.parametrize(
-    "path",
-    sorted(p for p in (FIXTURES / "journal").glob("*.jsonl") if not p.name.startswith("._")),
-    ids=lambda p: p.stem,
+from scriptkin.contract import FORCE, JournalBuilder
+from scriptkin.formats.export import load_export, read_journal
+from scriptkin.formats.journal import JournalError, fold, summarize
+from scriptkin.recording import (
+    BlockOutcome,
+    EndReason,
+    LocalizedRef,
+    ModelTableScale,
+    ReferenceScale,
+    TrialOutcome,
 )
+
+FOLD_CASES = sorted(
+    p for p in (FIXTURES / "journal").glob("*.jsonl") if not p.name.startswith("._")
+) + sorted(p for p in (FIXTURES / "export").glob("*/journal.jsonl") if not p.parent.name.startswith("._"))
+
+
+def oracle(path: Path) -> Path:
+    """The .fold.json beside a journal fixture, or beside the folder of an export fixture."""
+    return (
+        path.with_suffix(".fold.json")
+        if path.parent.name == "journal"
+        else path.parent.with_suffix(".fold.json")
+    )
+
+
+def renumber(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    for i, row in enumerate(rows):
+        row["seq"] = i
+    return rows
+
+
+def move(rows: list[dict[str, Any]], kind: str, after: str) -> list[dict[str, Any]]:
+    """Move the first line of `kind` to just after the first line of kind `after`."""
+    row = rows.pop(next(i for i, r in enumerate(rows) if r["kind"] == kind))
+    rows.insert(next(i for i, r in enumerate(rows) if r["kind"] == after) + 1, row)
+    return renumber(rows)
+
+
+@pytest.mark.parametrize("path", FOLD_CASES, ids=lambda p: p.stem if p.parent.name == "journal" else "export")
 def test_fold_matches_independent_builder(path: Path) -> None:
     # Detects a Python summary or Recording that differs from the builder's .fold.json summary.
     raw = path.read_bytes().splitlines(keepends=True)
-    expected = json.loads(path.with_suffix(".fold.json").read_bytes())
+    expected = json.loads(oracle(path).read_bytes())
     assert summarize(raw) == expected
     folded = []
     for trial in fold(raw).trials:
@@ -67,6 +87,66 @@ def test_export_reader_checks_and_converts() -> None:
     # The spiral starts 8 mm right of the centre of its 104 mm frame. The frame origin is its top-left.
     assert trial.task.paths[0][0].tolist() == [60.0, -52.0]
     assert len(recording.source_hashes[0]) == 64
+
+
+def test_reader_keeps_session_context() -> None:
+    # Detects a reader that drops or mixes up the session context in the journal header.
+    from scriptkin.contract import demo_config_sha256
+
+    context = fold(lines("supervised_minor_safety")).context
+    assert context is not None
+    assert (context.purpose, context.administration, context.age_band) == ("study", "supervised", "13-17")
+    assert (context.jurisdiction, context.locale, context.device_asset) == ("GB", "en", "IPAD-01")
+    assert (context.visit.id, context.visit.number) == ("V1", 1)
+    assert context.study.config_sha256 == demo_config_sha256()
+    assert (context.consent.model, context.consent.attested_role) == ("guardianAndAssent", "operator")
+    assert [d.id for d in context.consent.documents] == ["demo-guardian-permission", "demo-assent"]
+    assert context.ethics.approval_id == "DEMO-NOT-APPROVED"
+    assert (context.surface.protector, context.surface.nib) == ("none", "new")
+    assert isinstance(context.scale, ModelTableScale) and context.scale.ppi == 264.0
+    assert context.qualification is None
+    self_context = fold(lines("self_administered")).context
+    assert self_context is not None and self_context.administration == "self"
+    assert self_context.consent.attested_role == "enrolment"
+    assert self_context.scale == ReferenceScale("idCard", 0.1925, 85.6, 444.67532467532465)
+
+
+def test_reader_keeps_trial_context_begin_time_and_end_reason() -> None:
+    # Detects a trial that loses its practice flag, position, hand, accommodations, Begin time, or end reason.
+    trials = fold(lines("multi_trial")).trials
+    contexts = [t.context for t in trials]
+    assert all(c is not None for c in contexts)
+    assert [c.practice for c in contexts if c] == [True, False, False, False, False, False]
+    assert [c.position for c in contexts if c] == [1, 2, 3, 4, 5, 6]
+    assert [c.accommodations for c in contexts if c][5] == ("readAloud",)
+    assert [c.instruction for c in contexts if c][1] == LocalizedRef("spiral-trace", "1.0", "en")
+    assert [t.began for t in trials] == [1005.5, 1010.4, 1013.1, 1016.2, None, 1147.0]
+    assert [t.end_reason for t in trials] == [
+        EndReason.PARTICIPANT_DONE,
+        EndReason.PARTICIPANT_DONE,
+        EndReason.PARTICIPANT_DONE,
+        EndReason.TIME_LIMIT,
+        EndReason.DECLINED,
+        EndReason.UNABLE,
+    ]
+    assert trials[4].outcome == TrialOutcome.DECLINED
+    left = fold(lines("usbc_no_force")).trials[0].context
+    assert left is not None and left.hand == "left"
+
+
+def test_questionnaire_blocks_stay_apart_from_strokes() -> None:
+    # Detects responses lost, mixed into pen strokes, or attached to the wrong block.
+    rec = fold(lines("supervised_minor_safety"))
+    phq9, gad7 = rec.questionnaires
+    assert (phq9.instrument.id, gad7.instrument.id) == ("phq9", "gad7")
+    assert len(phq9.responses) == 10 and phq9.flagged_items == ("phq9-9",)
+    assert next(r for r in gad7.responses if r.item == "gad7-4").value is None
+    assert (phq9.outcome, gad7.outcome) == (BlockOutcome.COMPLETED, BlockOutcome.COMPLETED)
+    assert phq9.started == 1020.0 and phq9.ended == 1031.0
+    assert sum(len(s.t) for t in rec.trials for s in t.strokes) == 6
+    interrupted = fold(lines("recovered_in_questionnaire")).questionnaires
+    assert [b.outcome for b in interrupted] == [BlockOutcome.INTERRUPTED, BlockOutcome.COMPLETED]
+    assert interrupted[0].boot != interrupted[1].boot
 
 
 @pytest.mark.parametrize("corrected", [True, False])
@@ -145,6 +225,45 @@ def test_i5_rejects_manifest_mismatch(tmp_path: Path, field: str) -> None:
         read_journal(tmp_path)
 
 
+@pytest.mark.parametrize(
+    ("kind", "after"),
+    [
+        ("response", "trialEnded"),
+        ("response", "questionnaireEnded"),
+        ("trialBegan", "trialEnded"),
+        ("safetyFlagged", "questionnaireEnded"),
+        ("trialEnded", "questionnaireStarted"),
+    ],
+)
+def test_i6_rejects_lines_outside_their_trial_or_block(kind: str, after: str) -> None:
+    # Detects a response, Begin tap, or safety flag outside its trial or block, or a block inside a trial.
+    rows = move(lines("supervised_minor_safety"), kind, after)
+    with pytest.raises(JournalError, match="I6, line"):
+        summarize(rows)
+
+
+def test_i6_rejects_a_second_begin_and_a_begin_for_another_trial() -> None:
+    # Detects a trialBegan that repeats or names a trial that is not the open one.
+    for change in ("repeat", "other"):
+        rows = lines()
+        index = next(i for i, r in enumerate(rows) if r["kind"] == "trialBegan")
+        if change == "repeat":
+            rows.insert(index + 1, copy.deepcopy(rows[index]))
+            rows[-1]["counts"]["trialBegan"] += 1
+        else:
+            rows[index]["trial"] = 7
+        with pytest.raises(JournalError, match="I6, line"):
+            summarize(renumber(rows))
+
+
+def test_i6_rejects_recovery_that_names_the_wrong_block() -> None:
+    # Detects a recovered line whose interrupted block is not the block that was open.
+    rows = lines("recovered_in_questionnaire")
+    next(r for r in rows if r["kind"] == "recovered")["interruptedBlock"] = 3
+    with pytest.raises(JournalError, match="I6, line"):
+        summarize(rows)
+
+
 @pytest.mark.parametrize("change", ["sample", "end", "overlap", "contact", "close"])
 def test_i6_rejects_invalid_nesting(change: str) -> None:
     # Detects samples, contacts, or trial boundaries outside their parent lifecycle.
@@ -183,13 +302,14 @@ def test_corrections_join_original_contact_and_keep_last_values() -> None:
     # Detects a correction applied to the current trial instead of its source contact.
     rows = lines("multi_trial")
     recording = fold(rows)
-    s = recording.trials[0].strokes[0]
+    spiral, loops = recording.trials[1:3]
+    s = spiral.strokes[0]
     assert s.channels[Channel.FORCE][0] == 0.37
     assert s.channels[Channel.ALTITUDE][0] == 1.1
     assert s.unresolved.tolist() == [0, 1, 0]
-    assert recording.trials[0].finger_contacts == 0
-    assert recording.trials[1].finger_contacts == 1
-    assert recording.trials[0].strokes[1].state == "in_air"
+    assert spiral.finger_contacts == 0
+    assert loops.finger_contacts == 1
+    assert spiral.strokes[1].state == "in_air"
 
 
 def test_location_correction_uses_origin_and_scale() -> None:
@@ -209,12 +329,22 @@ def test_unknown_scale_keeps_relative_source_coordinates() -> None:
     np.testing.assert_array_equal(rec.trials[0].strokes[0].xy[0], [152.5, -200])
 
 
-def test_swift_exports_match_schema_and_summary() -> None:
-    # Detects empty Swift output or disagreement with a Swift-produced summary.
+def contract_out() -> Path:
     configured = os.environ.get("SCRIPT_CONTRACT_OUT")
     if configured is None:
         pytest.skip("SCRIPT_CONTRACT_OUT is not set.")
-    paths = sorted(Path(configured).rglob("journal.jsonl"))
+    return Path(configured)
+
+
+def swift_summary(folder: Path) -> Any:
+    """The Swift summary of an export folder, written beside it as `<export name>.summary.json`."""
+    return json.loads((contract_out() / f"{folder.name}.summary.json").read_bytes())
+
+
+def test_swift_exports_match_schema_and_summary() -> None:
+    # Detects empty Swift output or disagreement with a Swift-produced summary.
+    root = contract_out()
+    paths = sorted(p for p in root.glob("*/journal.jsonl") if not p.parent.name.startswith("._"))
     assert paths, "SCRIPT_CONTRACT_OUT is set but has no exports."
     schema = Draft202012Validator(json.loads((CONTRACT / "journal.schema.json").read_bytes()))
     for path in paths:
@@ -222,7 +352,21 @@ def test_swift_exports_match_schema_and_summary() -> None:
         for line in raw:
             schema.validate(json.loads(line))
         read_journal(path.parent)
-        assert summarize(raw) == json.loads((path.parent / "summary.json").read_bytes())
+        assert summarize(raw) == swift_summary(path.parent)
+
+
+def test_swift_encrypted_exports_open_to_the_plaintext_export() -> None:
+    # Detects a Swift encrypted export that does not open with the study key or differs from its plaintext.
+    root = contract_out() / "encrypted"
+    manifests = sorted(p for p in root.glob("*/manifest.json") if not p.parent.name.startswith("._"))
+    assert manifests, "SCRIPT_CONTRACT_OUT is set but has no encrypted exports."
+    key = base64.b64decode((root / "private_key.txt").read_text().strip(), validate=True)
+    for manifest in manifests:
+        folder = manifest.parent
+        read_journal(folder, private_key=key)
+        _, data = load_export(folder, key)
+        assert data == (contract_out() / folder.name / "journal.jsonl").read_bytes()
+        assert summarize(data.splitlines(keepends=True)) == swift_summary(folder)
 
 
 def test_delayed_sample_is_not_compared_with_callback_clock() -> None:
@@ -236,26 +380,51 @@ def test_delayed_sample_is_not_compared_with_callback_clock() -> None:
     assert summarize(rows)["unmatchedCorrections"] == 1
 
 
-def test_swift_export_check_fails_for_empty_configured_folder(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    "check",
+    [test_swift_exports_match_schema_and_summary, test_swift_encrypted_exports_open_to_the_plaintext_export],
+)
+def test_swift_export_checks_fail_for_empty_configured_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, check: Any
 ) -> None:
     # Detects a Swift export check that silently skips an empty configured folder.
     monkeypatch.setenv("SCRIPT_CONTRACT_OUT", str(tmp_path))
-    with pytest.raises(AssertionError, match="has no exports"):
-        test_swift_exports_match_schema_and_summary()
+    (tmp_path / "encrypted").mkdir()
+    with pytest.raises(AssertionError, match="has no"):
+        check()
 
 
 def test_export_check_runs_schema_reader_and_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Detects a configured export check that does not compare the independent summary.
-    write_export(tmp_path, lines())
+    write_export(tmp_path / "P0001_3f2a9c1e", lines())
     oracle = json.loads((FIXTURES / "journal" / "basic.fold.json").read_bytes())
-    (tmp_path / "summary.json").write_text(json.dumps(oracle))
+    summary = tmp_path / "P0001_3f2a9c1e.summary.json"
+    summary.write_text(json.dumps(oracle))
     monkeypatch.setenv("SCRIPT_CONTRACT_OUT", str(tmp_path))
     test_swift_exports_match_schema_and_summary()
     oracle["unmatchedCorrections"] = 99
-    (tmp_path / "summary.json").write_text(json.dumps(oracle))
+    summary.write_text(json.dumps(oracle))
     with pytest.raises(AssertionError):
         test_swift_exports_match_schema_and_summary()
+
+
+def test_encrypted_export_check_decrypts_and_compares(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Detects a configured encrypted-export check that does not compare the plaintext with its export.
+    rows = lines()
+    data = write_export(tmp_path / "P0001_3f2a9c1e", rows)
+    oracle = json.loads((FIXTURES / "journal" / "basic.fold.json").read_bytes())
+    (tmp_path / "P0001_3f2a9c1e.summary.json").write_text(json.dumps(oracle))
+    key = bytes(range(32))
+    write_encrypted_export(tmp_path / "encrypted" / "P0001_3f2a9c1e", data, rows[0]["sessionID"], key)
+    (tmp_path / "encrypted" / "private_key.txt").write_text(base64.b64encode(key).decode() + "\n")
+    monkeypatch.setenv("SCRIPT_CONTRACT_OUT", str(tmp_path))
+    test_swift_encrypted_exports_open_to_the_plaintext_export()
+    rows[3]["t"] += 0.001
+    write_export(tmp_path / "P0001_3f2a9c1e", rows)
+    with pytest.raises(AssertionError):
+        test_swift_encrypted_exports_open_to_the_plaintext_export()
 
 
 def test_fold_records_source_hash() -> None:
@@ -280,5 +449,5 @@ def test_hover_stroke_survives_interleaved_correction() -> None:
         row["seq"] = i
     rows[-1]["counts"]["correction"] += 1
     rows[-1]["counts"]["hover"] += 1
-    air = [s for s in fold(rows).trials[0].strokes if s.state == "in_air"]
+    air = [s for s in fold(rows).trials[1].strokes if s.state == "in_air"]
     assert len(air) == 1 and len(air[0].t) == 2

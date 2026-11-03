@@ -251,19 +251,26 @@ Documents/Damaged/<uuid>.jsonl                       journals with damage before
 
 ## 6. Python shape
 
-Package `scriptkin`. Runtime dependencies: numpy, scipy, scikit-learn. Python 3.12 or later.
+Package `scriptkin`. Runtime dependencies: numpy, scipy, scikit-learn, cryptography. Python 3.12 or later.
 
 ```
 python/src/scriptkin/
   __init__.py        public surface
-  recording.py       Recording, Trial, Stroke, Channel, Device, TaskRef
+  recording.py       Recording, Trial, Stroke, Channel, Device, TaskRef, session and trial context, questionnaire blocks
   battery.py         stimulus geometry and battery.json
-  formats/journal.py read_journal, fold, summarize
+  instruments.py     questionnaire text and scoring rules, instruments.json
+  studyconfig.py     the demo configuration and the configuration rules
+  formats/journal.py fold, summarize: line checks and the session state machine
+  formats/export.py  read_journal (manifest and encrypted exports), pen_only
+  formats/checks.py  value checks for the journal and manifest readers
   formats/svc.py     SvcReader
   formats/parkinsonhw.py
+  hpke.py            HPKE base mode for the export suite (RFC 9180)
   quality.py         QcPolicy, Refusal, Segment, Accepted, Rejected, assess
   signal.py          resampling, kinematics, Welch band power, entropy counts, micro-movement spikes, Gamma fit
   features.py        the feature catalog and extract, feature_table
+  labels.py          questionnaire scores or refusals, and the safety flag count for audit
+  qualification.py   the device qualification report
   synthetic.py       traits, device models, journals, cohorts
   evaluate/          screening, metrics, reliability, report
   contract.py        regenerate and verify the shared contract
@@ -273,13 +280,20 @@ python/src/scriptkin/
 Key decisions:
 
 - **Library frame.** Millimetres, x to the right, y up. Readers convert units and flip y at the boundary. When the source scale is unknown, coordinates stay in source units, `Device.spatial_unit` is `"source"`, and features that need millimetres refuse with `unknown_scale`.
-- **Readers** parse one source into a `Recording`. The journal reader applies matched corrections to the last value received and keeps a mask of unresolved estimates. The journal keeps the originals.
+- **Readers** parse one source into a `Recording`. The journal reader applies matched corrections to the last value received and keeps a mask of unresolved estimates. The journal keeps the originals. The journal reader also keeps the session context from the header, the trial context, the Begin time, and the end reason. Questionnaire blocks and their responses stay in `Recording.questionnaires`. They never enter strokes.
 - **QC.** `assess` is the only function that builds a `Segment`. A segment is a run inside one stroke with strictly increasing time, no step longer than `max_gap_s`, finite positions, and at least `min_segment_s` duration. A gap splits a stroke. Nothing bridges a gap. `Accepted` has a private constructor.
+- **Timing QC for each pen state.** Duplicate times, decreasing times, or a low rate in a contact stroke reject the trial. The same defects in an in-air stroke refuse only the in-air features, for example `timing.in_air_s`. The contact features stay.
 - **Refusals.** A failed requirement returns `Refusal(code, detail)`, never a silent number. Structural errors in a file raise `JournalError` or `FormatError`.
 - **Kernels** work on one segment, or count across segments without joining them. Sample entropy sums template matches over all segments. Templates never cross a segment end, and self-matches are excluded. Coarse-graining stays inside each segment.
 - **Pooling.** Each per-segment feature declares a pool rule and `min_values`. Fewer finite segment values give `Refusal(too_few_values)`.
-- **Feature families.** Kinematic, timing, pressure, tilt and roll, spatial error, spectral band power, entropy, and micro-movement spikes with a Gamma fit (Torres method: speed peaks normalized by the peak plus the mean speed between its neighbouring minima; location fixed at 0; maximum likelihood; intervals from the observed information).
-- **Provenance.** A `FeatureTable` carries the library version, the QC policy, the preprocessing settings, the catalog digest, and the source hashes.
+- **Spectral pooling by Welch windows.** The spectral feature averages the Welch spectra of all segments, weighted by the number of windows in each segment, and then integrates the band. Its `min_values` counts Welch windows, not segments. A segment shorter than one window adds no window. The window length never shrinks.
+- **Feature families.** Kinematic, timing, pressure, tilt and roll, spatial error, spectral band power, entropy, and micro-movement spikes with a Gamma fit (Torres method: speed peaks normalized by the peak plus the mean speed between its neighbouring minima; location fixed at 0; maximum likelihood; intervals from the observed information). `timing.initiation_latency_s` is the time of the first contact sample minus the time of the Begin tap. A trial without a Begin tap gives a refusal.
+- **Feature table.** Practice trials and qualification sessions never enter `feature_table`. Each row has `administration`, `hand`, and `accommodations`, so that an analysis can stratify. A source without this context gives `unknown` and no accommodations.
+- **Provenance.** A `FeatureTable` carries the library version, the QC policy, the preprocessing settings, the catalog digest, the source hashes, and the reader profiles. A reader profile is canonical JSON that names the reader and its unit conversions (for example the tablet resolution of an SVC file). Two tables from different reader settings therefore have different provenance.
+- **Labels.** `labels.labels(recording)` scores each questionnaire block with the scoring rule in `contract/instruments.json`. A `sum` rule adds the scored items. A DASS-21 subscale is its sum times 2. One missing item in a subscale is prorated (sum times 7/6). More missing items than the rule allows give a refusal, never a score of zero. Unscored items, such as `difficulty`, never enter a score. Each label has the instrument, version, locale, administration, block time, and score or refusal. `labels.safety_flag_count` counts safety flags for audit. It is never a label.
+- **Pen-only copy.** `pen_only(export, target)` writes a copy without questionnaire, response, and safety lines, and without `recovered.interruptedBlock`. It renumbers `seq`, recounts `sessionClosed.counts`, writes a new manifest, and writes `derivation.json` with the source session identifier and the SHA-256 of the source journal. The copy must pass I1 to I7 before the function returns.
+- **Encrypted exports.** `read_journal(path, private_key=...)` reads an export whose manifest has an `encryption` block (section 17). The key is the study's raw 32-byte X25519 private key. The reader checks the ciphertext size and SHA-256, opens the ciphertext, checks the plaintext size, line count, and SHA-256, and then applies I1 to I7. A ciphertext that does not open gives `JournalError` with rule I5.
+- **Qualification.** `qualification.qualify(recording)` accepts only a session with `purpose: qualification`. It reports the sample intervals inside contact strokes (median, 5th and 95th percentile, and the share of intervals longer than 30 ms), the jitter during the still hold (root mean square distance from the mean position of each stroke, in millimetres), the straight-line deviation (root mean square orthogonal distance from the total-least-squares line of each stroke, in millimetres), the scale source, and the planned and observed channels. A value that the data cannot support is a refusal.
 
 ## 7. Evaluation
 

@@ -1,0 +1,144 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+
+import pytest
+from conftest import fixture_lines, write_encrypted_export, write_export
+
+from scriptkin import hpke
+from scriptkin.contract import KINDS
+from scriptkin.formats.export import pen_only, read_journal
+from scriptkin.formats.journal import QUESTIONNAIRE_KINDS, JournalError, summarize
+
+# RFC 9180 Appendix A.2.1: DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, ChaCha20Poly1305, base mode.
+VECTOR = {
+    "info": "4f6465206f6e2061204772656369616e2055726e",
+    "skEm": "f4ec9b33b792c372c1d2c2063507b684ef925b8c75a42dbcbf57d63ccd381600",
+    "pkRm": "4310ee97d88cc1f088a5576c77ab0cf5c3ac797f3d95139c6c84b5429c59662a",
+    "skRm": "8057991eef8f1f1af18f4a9491d16a1ce333f695d4db8e38da75975c4478e0fb",
+    "enc": "1afa08d3dec047a643885163f1180476fa7ddb54c6a8029ea33f95796bf2ac4a",
+    "pt": "4265617574792069732074727574682c20747275746820626561757479",
+    "aad": "436f756e742d30",
+    "ct": "1c5250d8034ec2b784ba2cfd69dbdb8af406cfe3ff938e131f0def8c8b60b4db21993c62ce81883d2dd1b51a28",
+}
+KEY = bytes(range(1, 33))
+
+
+def vector(name: str) -> bytes:
+    return bytes.fromhex(VECTOR[name])
+
+
+def test_rfc9180_vector_seals_and_opens() -> None:
+    # Detects an HPKE KEM, key schedule, nonce, or AEAD step that differs from RFC 9180 A.2.1.
+    assert hpke.public_key(vector("skRm")) == vector("pkRm")
+    enc, ct = hpke.seal(vector("pkRm"), vector("info"), vector("aad"), vector("pt"), ephemeral=vector("skEm"))
+    assert (enc, ct) == (vector("enc"), vector("ct"))
+    assert hpke.open_sealed(
+        vector("skRm"), vector("enc"), vector("info"), vector("aad"), vector("ct")
+    ) == vector("pt")
+
+
+def encrypted_basic(tmp_path: Path) -> tuple[Path, Path]:
+    rows = fixture_lines()
+    data = write_export(tmp_path / "plain", rows)
+    write_encrypted_export(tmp_path / "sealed", data, rows[0]["sessionID"], KEY)
+    return tmp_path / "plain", tmp_path / "sealed"
+
+
+def test_encrypted_export_reads_like_its_plaintext(tmp_path: Path) -> None:
+    # Detects an encrypted export reader that loses, alters, or skips checking the decrypted journal.
+    plain, sealed = encrypted_basic(tmp_path)
+    expected = read_journal(plain)
+    actual = read_journal(sealed, private_key=KEY)
+    assert actual.source_hashes == expected.source_hashes
+    assert [len(s.t) for t in actual.trials for s in t.strokes] == [
+        len(s.t) for t in expected.trials for s in t.strokes
+    ]
+
+
+def reseal_manifest(folder: Path) -> None:
+    """Make the manifest agree with a changed ciphertext, so that only the AEAD tag can refuse it."""
+    ciphertext = (folder / "journal.jsonl.hpke").read_bytes()
+    manifest = json.loads((folder / "manifest.json").read_text())
+    manifest["encryption"]["ciphertext"] = {
+        "bytes": len(ciphertext),
+        "sha256": hashlib.sha256(ciphertext).hexdigest(),
+    }
+    (folder / "manifest.json").write_text(json.dumps(manifest))
+
+
+@pytest.mark.parametrize("change", ["ciphertext", "key", "session", "manifest", "absent key"])
+def test_tampered_or_misaddressed_ciphertext_is_refused(tmp_path: Path, change: str) -> None:
+    # Detects a reader that accepts changed ciphertext, wrong manifest facts, a wrong key, or no key.
+    _, sealed = encrypted_basic(tmp_path)
+    key: bytes | None = KEY
+    path = sealed / "journal.jsonl.hpke"
+    if change == "ciphertext":
+        data = bytearray(path.read_bytes())
+        data[100] ^= 1
+        path.write_bytes(bytes(data))
+        reseal_manifest(sealed)
+    elif change == "key":
+        key = bytes(32)
+    elif change == "session":
+        session = fixture_lines()[0]["sessionID"]
+        data = (tmp_path / "plain" / "journal.jsonl").read_bytes()
+        write_encrypted_export(sealed, data, "3F2A9C1E-0000-4000-8000-000000000099", KEY)
+        manifest = json.loads((sealed / "manifest.json").read_text())
+        manifest["sessionID"] = session
+        (sealed / "manifest.json").write_text(json.dumps(manifest))
+    elif change == "manifest":
+        manifest = json.loads((sealed / "manifest.json").read_text())
+        manifest["encryption"]["ciphertext"]["bytes"] += 1
+        (sealed / "manifest.json").write_text(json.dumps(manifest))
+    else:
+        key = None
+    with pytest.raises(JournalError, match="I5, line 0"):
+        read_journal(sealed, private_key=key)
+
+
+@pytest.mark.parametrize(
+    "name", ["supervised_minor_safety", "self_with_remote_review", "recovered_in_questionnaire"]
+)
+def test_pen_only_copy_passes_integrity_and_has_no_response(tmp_path: Path, name: str) -> None:
+    # Detects a pen-only copy with label lines, broken I1 to I7 rules, changed pen data, or no derivation.
+    rows = fixture_lines(name)
+    data = write_export(tmp_path / "source", rows)
+    copy = pen_only(tmp_path / "source", tmp_path / "copy")
+    lines = [json.loads(s) for s in (copy / "journal.jsonl").read_bytes().splitlines()]
+    assert not {r["kind"] for r in lines} & set(QUESTIONNAIRE_KINDS)
+    assert all("interruptedBlock" not in r for r in lines)
+    recount = dict.fromkeys(KINDS[:-1], 0)
+    for r in lines[:-1]:
+        recount[r["kind"]] += 1
+    assert lines[-1]["counts"] == recount
+    recording = read_journal(copy)
+    assert recording.questionnaires == ()
+    source = read_journal(tmp_path / "source")
+    assert [s.t.tolist() for t in recording.trials for s in t.strokes] == [
+        s.t.tolist() for t in source.trials for s in t.strokes
+    ]
+    assert summarize(lines)["trials"] == summarize(rows)["trials"]
+    derivation = json.loads((copy / "derivation.json").read_text())
+    assert derivation["sourceSessionID"] == rows[0]["sessionID"]
+    assert derivation["sourceJournalSHA256"] == hashlib.sha256(data).hexdigest()
+
+
+def test_pen_only_reads_an_encrypted_source(tmp_path: Path) -> None:
+    # Detects a pen-only copy that records the ciphertext digest instead of the source journal digest.
+    rows = fixture_lines("supervised_minor_safety")
+    data = write_export(tmp_path / "plain", rows)
+    write_encrypted_export(tmp_path / "sealed", data, rows[0]["sessionID"], KEY)
+    copy = pen_only(tmp_path / "sealed", tmp_path / "copy", private_key=KEY)
+    derivation = json.loads((copy / "derivation.json").read_text())
+    assert derivation["sourceJournalSHA256"] == hashlib.sha256(data).hexdigest()
+
+
+def test_pen_only_refuses_to_overwrite_its_source(tmp_path: Path) -> None:
+    # Detects a pen-only copy that would replace the original export.
+    data = write_export(tmp_path / "source", fixture_lines("supervised_minor_safety"))
+    with pytest.raises(ValueError, match="own folder"):
+        pen_only(tmp_path / "source", tmp_path / "source")
+    assert (tmp_path / "source" / "journal.jsonl").read_bytes() == data

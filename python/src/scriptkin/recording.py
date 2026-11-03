@@ -13,6 +13,12 @@ from numpy.typing import NDArray
 FloatArray = NDArray[np.float64]
 IntArray = NDArray[np.int64]
 
+Purpose = Literal["study", "qualification"]
+Administration = Literal["supervised", "self"]
+AgeBand = Literal["13-17", "18-24"]
+Hand = Literal["left", "right", "unknown"]
+Accommodation = Literal["readAloud", "largerText", "extraTime", "positionAssist", "other"]
+
 
 class Channel(StrEnum):
     FORCE = "force"
@@ -30,7 +36,27 @@ class PenState(StrEnum):
 class TrialOutcome(StrEnum):
     COMPLETED = "completed"
     TIME_LIMIT = "timeLimit"
+    DECLINED = "declined"
+    UNABLE = "unable"
     ABORTED = "aborted"
+    INTERRUPTED = "interrupted"
+    TECHNICAL_FAILURE = "technicalFailure"
+    OPEN = "open"
+
+
+class EndReason(StrEnum):
+    PARTICIPANT_DONE = "participantDone"
+    TIME_LIMIT = "timeLimit"
+    DECLINED = "declined"
+    UNABLE = "unable"
+    OPERATOR_ABORT = "operatorAbort"
+    BACKGROUNDED = "backgrounded"
+    TECHNICAL_FAILURE = "technicalFailure"
+
+
+class BlockOutcome(StrEnum):
+    COMPLETED = "completed"
+    DECLINED = "declined"
     INTERRUPTED = "interrupted"
     OPEN = "open"
 
@@ -73,6 +99,24 @@ class Stroke:
 
 
 @dataclass(frozen=True)
+class LocalizedRef:
+    """A versioned text in one locale: a task instruction or a questionnaire instrument."""
+
+    id: str
+    version: str
+    locale: str
+
+
+@dataclass(frozen=True)
+class TrialContext:
+    practice: bool
+    position: int
+    hand: Hand
+    instruction: LocalizedRef
+    accommodations: tuple[Accommodation, ...] = ()
+
+
+@dataclass(frozen=True)
 class Trial:
     index: int
     task: TaskRef
@@ -86,6 +130,124 @@ class Trial:
     finger_contacts: int = 0
     unmatched_corrections: int = 0
     marks: tuple[str, ...] = ()
+    context: TrialContext | None = None
+    began: float | None = None
+    end_reason: EndReason | None = None
+
+
+@dataclass(frozen=True)
+class Response:
+    """One answered item, or a skipped item when `value` is None."""
+
+    item: str
+    value: int | None
+    t: float
+
+
+@dataclass(frozen=True)
+class QuestionnaireBlock:
+    block: int
+    instrument: LocalizedRef
+    started: float
+    ended: float | None
+    outcome: BlockOutcome
+    boot: str
+    responses: tuple[Response, ...]
+    flagged_items: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ModelTableScale:
+    mm_per_point: float
+    ppi: float
+    native_scale: float
+
+
+@dataclass(frozen=True)
+class ReferenceScale:
+    object: Literal["steelRule", "idCard"]
+    mm_per_point: float
+    length_mm: float
+    drawn_points: float
+
+
+@dataclass(frozen=True)
+class UnknownScale:
+    pass
+
+
+ScaleSource = ModelTableScale | ReferenceScale | UnknownScale
+
+
+@dataclass(frozen=True)
+class Study:
+    id: str
+    site: str
+    config_id: str
+    config_version: str
+    config_sha256: str
+    protocol_version: str
+
+
+@dataclass(frozen=True)
+class Visit:
+    id: str
+    number: int
+
+
+@dataclass(frozen=True)
+class DocumentRef:
+    id: str
+    version: str
+
+
+@dataclass(frozen=True)
+class Consent:
+    model: Literal["adult", "guardianAndAssent", "waiver"]
+    attested_by: str
+    attested_role: Literal["operator", "enrolment"]
+    attested_at: str
+    documents: tuple[DocumentRef, ...]
+    waiver_reference: str | None = None
+
+
+@dataclass(frozen=True)
+class Ethics:
+    approval_id: str
+    protocol_version: str
+    safety_protocol_version: str
+    monitoring_disclosure_version: str | None = None
+
+
+@dataclass(frozen=True)
+class Surface:
+    protector: Literal["none", "glossy", "matte", "paperlike", "unknown"]
+    nib: Literal["new", "used", "unknown"]
+
+
+@dataclass(frozen=True)
+class QualificationRef:
+    session_id: str
+    at: str
+
+
+@dataclass(frozen=True)
+class SessionContext:
+    """What a SCRIPT journal header records about the session. Public tablet formats have none."""
+
+    purpose: Purpose
+    administration: Administration
+    study: Study
+    visit: Visit
+    age_band: AgeBand
+    jurisdiction: str
+    locale: str
+    consent: Consent
+    ethics: Ethics
+    device_asset: str
+    surface: Surface
+    scale: ScaleSource
+    qualification: QualificationRef | None = None
 
 
 def reader_profile(reader: str, **conversions: Any) -> str:
@@ -102,3 +264,5 @@ class Recording:
     reader_profile: str
     source_hashes: tuple[str, ...] = ()
     unmatched_corrections: int = 0
+    context: SessionContext | None = None
+    questionnaires: tuple[QuestionnaireBlock, ...] = ()
