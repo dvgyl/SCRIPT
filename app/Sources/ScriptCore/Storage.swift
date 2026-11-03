@@ -450,7 +450,8 @@ extension Manifest.Facts {
 ///     <applicationSupport>/Damaged/<uuid>.jsonl    journals with damage before the last line, in Files only as a
 ///                                                  package that `publishDamaged` writes
 ///     <applicationSupport>/Deletions.jsonl         one line for each withdrawal
-///     <applicationSupport>/ExportIndex.jsonl       the keyed hash of the participant code of each export name
+///     <applicationSupport>/ExportIndex.jsonl       the keyed hash of the participant code of each export name,
+///                                                  without the bench exports, which name no person
 ///     <documents>/Exports/<name>/                  verified exports, visible in Files
 public struct Storage: Sendable {
     public let sessions: URL
@@ -787,7 +788,8 @@ public struct Storage: Sendable {
         let data: Data
         let facts: Manifest.Facts
         let damagedLine: Int?
-        /// Nil when line 0 of a damaged journal does not decode. The export index then cannot name it.
+        /// Nil for a bench session, which has no person, and when line 0 of a damaged journal does not decode. The
+        /// export index then has no entry for the export.
         let participant: ParticipantCode?
     }
 

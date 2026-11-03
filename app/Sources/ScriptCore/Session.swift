@@ -85,7 +85,7 @@ public enum TrialOutcome: String, Hashable, Sendable {
 
     init(_ reason: TrialEndReason) {
         switch reason {
-        case .participantDone: self = .completed
+        case .participantDone, .operatorDone: self = .completed
         case .timeLimit: self = .timeLimit
         case .declined: self = .declined
         case .unable: self = .unable
@@ -192,6 +192,10 @@ public struct FoldError: Error, Hashable, Sendable {
         case unknownTrial(TrialIndex)
         case interruptedMismatch
         case countsMismatch
+        /// A questionnaire, safety, or handoff line in a bench session, which has no person.
+        case noParticipant(LineKind)
+        /// A bench trial in a session with a participant, or a participant trial in a bench session.
+        case subjectMismatch
     }
 }
 
@@ -212,6 +216,7 @@ extension SessionState {
         let notAllowed = fail(.notAllowed(kind, in: status))
         guard entry.seq == session.lines else { throw fail(.seq(expected: session.lines)) }
         if case .closed = phase { throw notAllowed }
+        if case .bench = session.opened.subject, Self.participantKinds.contains(kind) { throw fail(.noParticipant(kind)) }
 
         switch entry.event {
         case .sessionOpened:
@@ -225,6 +230,10 @@ extension SessionState {
             let expected = TrialIndex(count: session.trials.count)
             guard e.trial.index == expected else { throw fail(.trialIndex(expected: expected)) }
             guard e.trial.task == e.spec.id else { throw fail(.taskMismatch) }
+            switch (session.opened.subject, e.subject) {
+            case (.participant, .participant), (.bench, .bench): break
+            case (.participant, .bench), (.bench, .participant): throw fail(.subjectMismatch)
+            }
             session.trials.append(TrialRecord(index: e.trial.index, task: e.trial.task, attempt: e.trial.attempt,
                                               practice: e.practice))
             phase = .drawing(OpenTrial(index: e.trial.index, task: e.trial.task,
@@ -352,6 +361,11 @@ extension SessionState {
         session.lines += 1
     }
 
+    /// The kinds that need a person. A bench session has none of them.
+    static let participantKinds: Set<LineKind> = [
+        .handoff, .questionnaireStarted, .response, .questionnaireEnded, .safetyFlagged, .safetyShown, .safetyAction,
+    ]
+
     /// `ready` or `suspended`: no trial and no questionnaire block is open.
     private var isBetweenActivities: Bool {
         switch phase {
@@ -371,26 +385,43 @@ extension SessionState {
 
 // MARK: - Decide
 
-/// What the app plans for one trial. `decide` adds the index, the attempt, and the task specification.
+/// What the app plans for one bench run. It carries no trajectory digest: `decide` copies the digest from the
+/// programs file, so an operator cannot type a wrong one.
+public struct BenchRunPlan: Hashable, Sendable {
+    public var program: ProgramID
+    /// The protocol's run index, from 1.
+    public var run: Int
+    public var clip: ClipName?
+
+    public init(program: ProgramID, run: Int, clip: ClipName? = nil) {
+        self.program = program
+        self.run = run
+        self.clip = clip
+    }
+}
+
+/// What the app plans for one trial. `decide` adds the index, the attempt, the task specification, and the trajectory
+/// digest of a bench run.
 public struct TrialPlan: Hashable, Sendable {
+    /// Who or what draws the trial. It must match the session's subject.
+    public enum Subject: Hashable, Sendable {
+        case participant(ParticipantTrialFacts)
+        case bench(BenchRunPlan)
+    }
+
     public var task: TaskID
     public var practice: Bool
     /// The 1-based position of the task in the session order.
     public var position: Int
-    public var hand: Hand
-    public var instruction: InstructionRef
-    public var accommodations: [Accommodation]
+    public var subject: Subject
     public var view: ViewSize
     public var stimulusOrigin: Point
 
-    public init(task: TaskID, practice: Bool, position: Int, hand: Hand, instruction: InstructionRef,
-                accommodations: [Accommodation] = [], view: ViewSize, stimulusOrigin: Point) {
+    public init(task: TaskID, practice: Bool, position: Int, subject: Subject, view: ViewSize, stimulusOrigin: Point) {
         self.task = task
         self.practice = practice
         self.position = position
-        self.hand = hand
-        self.instruction = instruction
-        self.accommodations = accommodations
+        self.subject = subject
         self.view = view
         self.stimulusOrigin = stimulusOrigin
     }
@@ -445,8 +476,18 @@ public enum Rejection: Error, Hashable, Sendable {
     /// The rules hold a battery that differs from the one in `sessionOpened`.
     case otherBattery
     case unknownTask(TaskID)
-    /// A qualification task in a study session, or a study task in a qualification session.
+    /// A task outside the set that the session's purpose allows, for example a bench task in a study session.
     case taskNotForPurpose(TaskID)
+    /// A command that needs a person, in a bench session.
+    case noParticipant
+    /// A bench run plan in a session with a participant.
+    case notABenchSession
+    /// A program that the programs file of the rules does not hold.
+    case unknownProgram(ProgramID)
+    /// The plan's task differs from the task of its program.
+    case programNotForTask(ProgramID)
+    /// A run index below 1. Runs are numbered from 1.
+    case invalidRun(Int)
     case unknownInstrument(InstrumentID)
     case unverifiedInstrument(InstrumentID)
     /// The instrument's lowest validated age is above the lowest age of the session's age band.
@@ -483,20 +524,37 @@ extension SessionState {
         let opened = session.opened
         switch command {
         case .handoff(let to, let t):
+            guard case .participant = opened.subject else { return .failure(.noParticipant) }
             return .success([.handoff(Handoff(t: t, to: to))])
 
         case .startTrial(let plan, let t):
             if let busy = busyRejection { return .failure(busy) }
             guard rules.battery.sha256 == opened.battery.sha256 else { return .failure(.otherBattery) }
             guard let spec = rules.battery.task(plan.task) else { return .failure(.unknownTask(plan.task)) }
-            let qualificationTask = Battery.qualificationTasks.contains(plan.task)
-            guard qualificationTask == (opened.purpose == .qualification) else {
+            guard rules.battery.tasks(for: opened.purpose).contains(plan.task) else {
                 return .failure(.taskNotForPurpose(plan.task))
             }
             guard plan.position >= 1 else { return .failure(.invalidPosition(plan.position)) }
-            var seen = Set<Accommodation>()
-            for accommodation in plan.accommodations where !seen.insert(accommodation).inserted {
-                return .failure(.repeatedAccommodation(accommodation))
+            let subject: TrialSubject
+            switch (opened.subject, plan.subject) {
+            case (.participant, .participant(let facts)):
+                var seen = Set<Accommodation>()
+                for accommodation in facts.accommodations where !seen.insert(accommodation).inserted {
+                    return .failure(.repeatedAccommodation(accommodation))
+                }
+                subject = .participant(facts)
+            case (.bench, .bench(let run)):
+                guard let program = rules.benchPrograms?.program(run.program) else {
+                    return .failure(.unknownProgram(run.program))
+                }
+                guard program.task == plan.task else { return .failure(.programNotForTask(run.program)) }
+                guard run.run >= 1 else { return .failure(.invalidRun(run.run)) }
+                subject = .bench(BenchRun(program: run.program, run: run.run, trajectorySHA256: program.trajectorySHA256,
+                                          clip: run.clip))
+            case (.bench, .participant):
+                return .failure(.noParticipant)
+            case (.participant, .bench):
+                return .failure(.notABenchSession)
             }
             guard plan.stimulusOrigin.x.isFinite, plan.stimulusOrigin.y.isFinite else {
                 return .failure(.invalidStimulusOrigin)
@@ -504,9 +562,8 @@ extension SessionState {
             let attempt = session.trials.count { $0.task == plan.task } + 1
             let trial = TrialRef(index: TrialIndex(count: session.trials.count), task: plan.task, attempt: attempt)
             return .success([.trialStarted(TrialStarted(
-                t: t, trial: trial, spec: spec, practice: plan.practice, position: plan.position, hand: plan.hand,
-                instruction: plan.instruction, accommodations: plan.accommodations, view: plan.view,
-                stimulusOrigin: plan.stimulusOrigin
+                t: t, trial: trial, spec: spec, practice: plan.practice, position: plan.position, subject: subject,
+                view: plan.view, stimulusOrigin: plan.stimulusOrigin
             ))])
 
         case .beginTrial(let t):
@@ -521,11 +578,12 @@ extension SessionState {
 
         case .startQuestionnaire(let id, let t):
             if let busy = busyRejection { return .failure(busy) }
+            guard case .participant(let person) = opened.subject else { return .failure(.noParticipant) }
             guard let instrument = rules.instruments.instrument(id) else { return .failure(.unknownInstrument(id)) }
             guard instrument.isVerified else { return .failure(.unverifiedInstrument(id)) }
-            guard opened.ageBand.lowestAge >= instrument.minimumAge else { return .failure(.instrumentNotForAgeBand(id)) }
+            guard person.ageBand.lowestAge >= instrument.minimumAge else { return .failure(.instrumentNotForAgeBand(id)) }
             guard rules.crisisList != nil else { return .failure(.noCrisisList) }
-            if opened.administration == .selfAdministered, instrument.hasSafetyItem, rules.remoteReview == nil {
+            if person.administration == .selfAdministered, instrument.hasSafetyItem, rules.remoteReview == nil {
                 return .failure(.safetyItemNeedsRemoteReview(id))
             }
             let block = BlockIndex(count: session.blocks.count)
@@ -535,6 +593,7 @@ extension SessionState {
             ))])
 
         case .respond(let itemID, let value, let t):
+            guard case .participant(let person) = opened.subject else { return .failure(.noParticipant) }
             guard case .answering(let open) = phase else { return .failure(.noOpenBlock) }
             guard let item = rules.instruments.instrument(open.instrument)?.item(itemID) else {
                 return .failure(.unknownItem(itemID))
@@ -545,7 +604,7 @@ extension SessionState {
             var events: [Event] = [.response(Response(t: t, block: open.block, item: itemID, value: value))]
             if item.safety, value.map({ $0 >= 1 }) ?? true {
                 events.append(.safetyFlagged(SafetyFlagged(t: t, block: open.block, item: itemID, value: value)))
-                if opened.administration == .selfAdministered {
+                if person.administration == .selfAdministered {
                     guard let list = rules.crisisList else { return .failure(.noCrisisList) }
                     events.append(.safetyShown(SafetyShown(t: t, what: .crisisList, listVersion: list.version)))
                 }
@@ -553,9 +612,10 @@ extension SessionState {
             return .success(events)
 
         case .endQuestionnaire(let reason, let t):
+            guard case .participant(let person) = opened.subject else { return .failure(.noParticipant) }
             guard case .answering(let open) = phase else { return .failure(.noOpenBlock) }
             var events = Self.unreachedFlags(open, instruments: rules.instruments, t: t)
-            if !events.isEmpty, opened.administration == .selfAdministered {
+            if !events.isEmpty, person.administration == .selfAdministered {
                 guard let list = rules.crisisList else { return .failure(.noCrisisList) }
                 events.append(.safetyShown(SafetyShown(t: t, what: .crisisList, listVersion: list.version)))
             }
@@ -563,15 +623,18 @@ extension SessionState {
             return .success(events)
 
         case .show(.crisisList, let t):
+            guard case .participant = opened.subject else { return .failure(.noParticipant) }
             guard let list = rules.crisisList else { return .failure(.noCrisisList) }
             return .success([.safetyShown(SafetyShown(t: t, what: .crisisList, listVersion: list.version))])
 
         case .show(.operatorAlert, let t):
-            guard opened.administration == .supervised else { return .failure(.noOperator) }
+            guard case .participant(let person) = opened.subject else { return .failure(.noParticipant) }
+            guard person.administration == .supervised else { return .failure(.noOperator) }
             return .success([.safetyShown(SafetyShown(t: t, what: .operatorAlert, listVersion: nil))])
 
         case .recordAction(let code, let t):
-            guard opened.administration == .supervised else { return .failure(.noOperator) }
+            guard case .participant(let person) = opened.subject else { return .failure(.noParticipant) }
+            guard person.administration == .supervised else { return .failure(.noOperator) }
             guard rules.actionCodes.contains(code) else { return .failure(.unknownActionCode(code)) }
             guard session.safety.unactionedFlags > 0 else { return .failure(.noUnactionedFlag) }
             return .success([.safetyAction(SafetyAction(t: t, code: code, role: .operator))])
@@ -582,14 +645,16 @@ extension SessionState {
 
         case .close(let t):
             if let busy = busyRejection { return .failure(busy) }
-            if opened.administration == .supervised, session.safety.unactionedFlags > 0 {
+            if case .participant(let person) = opened.subject, person.administration == .supervised,
+               session.safety.unactionedFlags > 0 {
                 return .failure(.unactionedFlag)
             }
             if session.safety.crisisListDue { return .failure(.crisisListNotShown) }
             return .success([.sessionClosed(SessionClosed(t: t, counts: session.counts))])
 
         case .expire(let at, let t):
-            guard opened.administration == .selfAdministered else { return .failure(.notSelfAdministered) }
+            guard case .participant(let person) = opened.subject else { return .failure(.noParticipant) }
+            guard person.administration == .selfAdministered else { return .failure(.notSelfAdministered) }
             guard case .suspended = phase else { return .failure(.notInterrupted) }
             guard let start = opened.openedAt.date, let now = at.date,
                   now.timeIntervalSince(start) >= rules.resumeWithinHours * 3600 else {
@@ -671,7 +736,8 @@ public struct FoldSummary: Hashable, Sendable {
 
     public let sessionID: String
     public let purpose: Purpose
-    public let administration: Administration
+    /// Absent for a bench session. The summary omits the key, as the journal omits an absent value.
+    public let administration: Administration?
     public let state: SessionState.Status
     public let counts: KindCounts
     public let trials: [Trial]
@@ -681,10 +747,9 @@ public struct FoldSummary: Hashable, Sendable {
     public let truncatedBytes: Int
 
     var json: JSON {
-        .object([
-            ("sessionID", .string(sessionID)),
-            ("purpose", .string(purpose.rawValue)),
-            ("administration", .string(administration.rawValue)),
+        var pairs: [(key: String, value: JSON)] = [("sessionID", .string(sessionID)), ("purpose", .string(purpose.rawValue))]
+        if let administration { pairs.append(("administration", .string(administration.rawValue))) }
+        return .object(pairs + [
             ("state", .string(state.rawValue)),
             ("counts", counts.json()),
             ("trials", .array(trials.map { t in
@@ -720,10 +785,14 @@ extension SessionState {
         for estimate in session.pending.values where !estimate.remaining.isEmpty {
             unresolved[estimate.trial.rawValue] += estimate.samples
         }
+        let administration: Administration? = switch session.opened.subject {
+        case .participant(let facts): facts.administration
+        case .bench: nil
+        }
         return FoldSummary(
             sessionID: session.opened.sessionID.description,
             purpose: session.opened.purpose,
-            administration: session.opened.administration,
+            administration: administration,
             state: status,
             counts: session.counts,
             trials: session.trials.map { t in

@@ -29,6 +29,7 @@ enum Contract {
     static func battery() throws -> Battery { try Battery(data: try data("battery.json")) }
     static func instruments() throws -> InstrumentSet { try InstrumentSet(data: try data("instruments.json")) }
     static func demoConfiguration() throws -> StudyConfiguration { try StudyConfiguration(data: try data("configs/demo.json")) }
+    static func benchPrograms() throws -> BenchPrograms { try BenchPrograms(data: try data("bench_programs.json")) }
 
     /// The shipped instruments plus one test instrument, so a test never depends on the status of a shipped instrument.
     static func instrumentsWithProbe(textStatus: String, minimumAge: Int) throws -> InstrumentSet {
@@ -70,27 +71,61 @@ enum Fixed {
     static let launch = Storage.Launch(boot: laterBoot, uptime: 5.0, at: WallTime(text: "2026-11-03T10:30:00Z"))
 }
 
-/// Builds the `sessionOpened` line for a session under a configuration.
+/// Builds the `sessionOpened` line for a session with a participant under a configuration.
 func makeOpened(
     id: SessionID = SessionID(), participant: ParticipantCode = "P0001", purpose: Purpose = .study,
     administration: Administration = .supervised, ageBand: AgeBand = .youngAdult, jurisdiction: Jurisdiction = "US",
     pencil: PencilModel = .pro, configuration: StudyConfiguration, battery: Battery
 ) -> SessionOpened {
     let consent = configuration.consentModel[ageBand.rawValue]!
+    let facts = ParticipantFacts(
+        participant: participant, administration: administration, study: configuration.studyRef(site: "DEMO"),
+        visit: Visit(id: "V1", number: 1)!, ageBand: ageBand, jurisdiction: jurisdiction, locale: "en",
+        consent: Consent(model: consent.model,
+                         attestedBy: Attestor(code: "OP1", role: administration == .supervised ? .operator : .enrolment),
+                         attestedAt: Fixed.at, documents: consent.documents),
+        ethics: configuration.ethics
+    )
     return SessionOpened(
-        purpose: purpose, sessionID: id, participant: participant, openedAt: Fixed.at, openedUptime: 100,
+        purpose: purpose, sessionID: id, openedAt: Fixed.at, openedUptime: 100,
         boot: Fixed.boot, app: AppInfo(version: "1.0.0", build: "1", sourceRevision: "test"),
         device: DeviceInfo(model: "iPad16,3", os: "iPadOS 27.0", nativeScale: 2, asset: "IPAD-01"),
         surface: Surface(protector: .none, nib: .new), qualification: nil,
         scale: MillimetreScale.lookup(model: "iPad16,3", nativeScale: 2)!, pencil: pencil,
         channels: ChannelPlan.plan(pencil: pencil, hoverSupported: true), input: .pencil,
-        administration: administration, study: configuration.studyRef(site: "DEMO"), visit: Visit(id: "V1", number: 1)!,
-        ageBand: ageBand, jurisdiction: jurisdiction, locale: "en",
-        consent: Consent(model: consent.model,
-                         attestedBy: Attestor(code: "OP1", role: administration == .supervised ? .operator : .enrolment),
-                         attestedAt: Fixed.at, documents: consent.documents),
-        ethics: configuration.ethics, battery: battery.reference
+        subject: .participant(facts), battery: battery.reference
     )
+}
+
+/// Builds the `sessionOpened` line of a bench session: the iPad with the Pencil for role P, the Wacom tablet on the
+/// Mac for role W.
+func makeBenchOpened(id: SessionID = SessionID(), role: BenchRole = .tablet, programs: BenchPrograms,
+                     battery: Battery) -> SessionOpened {
+    let facts = BenchFacts(role: role, mounting: "M3", motion: DocumentRef(id: "nextdraw-8511", version: "unknown")!,
+                           protocol: programs.protocol)
+    let tablet = TabletTable.geometry(model: "Wacom Intuos Pro Medium (2025)")!
+    return switch role {
+    case .pencil:
+        SessionOpened(
+            purpose: .bench, sessionID: id, openedAt: Fixed.at, openedUptime: 100, boot: Fixed.boot,
+            app: AppInfo(version: "1.0.0", build: "1", sourceRevision: "test"),
+            device: DeviceInfo(model: "iPad16,3", os: "iPadOS 27.0", nativeScale: 2, asset: "IPAD-02"),
+            surface: Surface(protector: .none, nib: .new), qualification: nil,
+            scale: MillimetreScale.lookup(model: "iPad16,3", nativeScale: 2)!, pencil: .pro,
+            channels: ChannelPlan.plan(pencil: .pro, hoverSupported: true), input: .pencil,
+            subject: .bench(facts), battery: battery.reference
+        )
+    case .tablet:
+        SessionOpened(
+            purpose: .bench, sessionID: id, openedAt: Fixed.at, openedUptime: 100, boot: Fixed.boot,
+            app: AppInfo(version: "1.0.0", build: "1", sourceRevision: "test"),
+            device: DeviceInfo(model: "Mac16,1", os: "macOS 26.1", nativeScale: 2, asset: "MAC-01"),
+            tablet: TabletInfo(model: tablet.model, asset: "WACOM-01", driver: "6.4.10-3", pen: .proPen3),
+            surface: Surface(protector: .none, nib: .new), qualification: nil, scale: tablet.scale, pencil: .none,
+            channels: ChannelPlan.plan(tabletPen: .proPen3), input: .tablet, subject: .bench(facts),
+            battery: battery.reference
+        )
+    }
 }
 
 /// Drives a session as the app does: `decide` for intents, `InkRecorder` for ink, and an optional writer.
@@ -133,10 +168,18 @@ struct Driver {
         try writer?.append(entries)
     }
 
-    static func plan(_ task: TaskID, position: Int = 1) -> TrialPlan {
-        TrialPlan(task: task, practice: task == "practice", position: position, hand: .right,
-                  instruction: InstructionRef(id: task.rawValue, version: "1.0", locale: "en"),
-                  view: ViewSize(width: 834, height: 1210)!, stimulusOrigin: Point(x: 147.5, y: 200))
+    static func plan(_ task: TaskID, position: Int = 1, accommodations: [Accommodation] = []) -> TrialPlan {
+        let facts = ParticipantTrialFacts(hand: .right, instruction: InstructionRef(id: task.rawValue, version: "1.0", locale: "en"),
+                                          accommodations: accommodations)
+        return TrialPlan(task: task, practice: task == "practice", position: position, subject: .participant(facts),
+                         view: ViewSize(width: 834, height: 1210)!, stimulusOrigin: Point(x: 147.5, y: 200))
+    }
+
+    /// A bench run of `program` on `task`, in the tablet's active area.
+    static func benchPlan(_ program: ProgramID, task: TaskID, run: Int = 1, position: Int = 1, clip: ClipName? = nil) -> TrialPlan {
+        TrialPlan(task: task, practice: false, position: position,
+                  subject: .bench(BenchRunPlan(program: program, run: run, clip: clip)),
+                  view: ViewSize(width: 52600, height: 29600)!, stimulusOrigin: Point(x: 0, y: 0))
     }
 
     /// One Pencil contact of `n` samples. The first sample can leave estimates pending under `update`.
@@ -167,8 +210,14 @@ struct Driver {
 }
 
 func rules(for opened: SessionOpened, configuration: StudyConfiguration) throws -> SessionRules {
-    SessionRules(battery: try Contract.battery(), instruments: try Contract.instruments(), configuration: configuration,
-                 jurisdiction: opened.jurisdiction, locale: opened.locale)
+    guard case .participant(let facts) = opened.subject else { throw DecodeError.missing("participant") }
+    return SessionRules(battery: try Contract.battery(), instruments: try Contract.instruments(), configuration: configuration,
+                        jurisdiction: facts.jurisdiction, locale: facts.locale)
+}
+
+func benchRules() throws -> SessionRules {
+    SessionRules(battery: try Contract.battery(), instruments: try Contract.instruments(),
+                 benchPrograms: try Contract.benchPrograms())
 }
 
 /// A new empty folder that the caller removes.

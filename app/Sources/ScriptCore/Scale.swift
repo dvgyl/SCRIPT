@@ -9,15 +9,18 @@ public enum ReferenceObject: String, Hashable, Sendable {
     public static let idCardWidthMM = 85.60
 }
 
-/// How many millimetres one view point covers. An unknown scale makes the library refuse millimetre features.
+/// How many millimetres one journal coordinate unit covers: a view point on the iPad, a tablet line on a tablet. An
+/// unknown scale makes the library refuse millimetre features.
 public enum MillimetreScale: Hashable, Sendable {
     case modelTable(mmPerPoint: Double, ppi: Double, nativeScale: Double)
     case reference(object: ReferenceObject, mmPerPoint: Double, lengthMM: Double, drawnPoints: Double)
+    /// The published tablet resolution. `mmPerPoint = 1 / linesPerMM`.
+    case tablet(linesPerMM: Double, mmPerPoint: Double)
     case unknown
 
     public var mmPerPoint: Double? {
         switch self {
-        case .modelTable(let mm, _, _), .reference(_, let mm, _, _): mm
+        case .modelTable(let mm, _, _), .reference(_, let mm, _, _), .tablet(_, let mm): mm
         case .unknown: nil
         }
     }
@@ -26,6 +29,12 @@ public enum MillimetreScale: Hashable, Sendable {
     public static func lookup(model: String, nativeScale: Double) -> MillimetreScale? {
         guard let entry = DeviceTable.density(model: model), nativeScale.isFinite, nativeScale > 0 else { return nil }
         return .modelTable(mmPerPoint: 25.4 * nativeScale / entry.ppi, ppi: entry.ppi, nativeScale: nativeScale)
+    }
+
+    /// The scale of a tablet with `linesPerMM` lines per millimetre. Nil unless the value is finite and positive.
+    public static func tablet(linesPerMM: Double) -> MillimetreScale? {
+        guard linesPerMM.isFinite, linesPerMM > 0 else { return nil }
+        return .tablet(linesPerMM: linesPerMM, mmPerPoint: 1 / linesPerMM)
     }
 
     /// The operator measured a bar of `drawnPoints` with a steel rule and read `measuredMM`.
@@ -120,6 +129,47 @@ public enum DeviceTable {
     public static func density(model: String) -> PixelDensity? { byModel[model] }
 }
 
+/// The geometry of one graphics tablet model: its resolution, its active area, and the direction of its y axis.
+public struct TabletGeometry: Hashable, Sendable {
+    /// The model text that `tablet.model` records, for example `Wacom Intuos Pro Medium (2025)`.
+    public let model: String
+    public let productCode: String
+    public let linesPerMM: Double
+    /// The active area in tablet lines, which a tablet trial records as `view`.
+    public let activeAreaLines: ViewSize
+    /// True when `absoluteY` grows downwards. The capture flips y when this is false, so every journal keeps the
+    /// one rule "origin top-left, y down".
+    public let yDown: Bool
+    /// False when no manufacturer source confirmed the resolution; the operator then measures a reference.
+    public let confirmed: Bool
+
+    public init(model: String, productCode: String, linesPerMM: Double, activeAreaLines: ViewSize, yDown: Bool,
+                confirmed: Bool) {
+        self.model = model
+        self.productCode = productCode
+        self.linesPerMM = linesPerMM
+        self.activeAreaLines = activeAreaLines
+        self.yDown = yDown
+        self.confirmed = confirmed
+    }
+
+    public var scale: MillimetreScale { MillimetreScale.tablet(linesPerMM: linesPerMM)! }
+}
+
+public enum TabletTable {
+    public static let entries: [TabletGeometry] = [
+        // 200 lines per mm (5080 lpi) and the 263 x 148 mm active area come from the Wacom product page that the
+        // bench protocol cites as W1. `yDown` is provisional until the device test confirms the direction of
+        // `absoluteY`, which Apple does not document.
+        TabletGeometry(model: "Wacom Intuos Pro Medium (2025)", productCode: "PTK670", linesPerMM: 200,
+                       activeAreaLines: ViewSize(width: 52600, height: 29600)!, yDown: false, confirmed: true),
+    ]
+
+    private static let byModel = Dictionary(uniqueKeysWithValues: entries.map { ($0.model, $0) })
+
+    public static func geometry(model: String) -> TabletGeometry? { byModel[model] }
+}
+
 // MARK: - JSON
 
 extension MillimetreScale {
@@ -131,6 +181,8 @@ extension MillimetreScale {
         case "reference":
             self = .reference(object: try f.enumeration("object"), mmPerPoint: try f.positive("mmPerPoint"),
                               lengthMM: try f.positive("lengthMM"), drawnPoints: try f.positive("drawnPoints"))
+        case "tablet":
+            self = .tablet(linesPerMM: try f.positive("linesPerMM"), mmPerPoint: try f.positive("mmPerPoint"))
         case "unknown":
             self = .unknown
         default:
@@ -152,6 +204,10 @@ extension MillimetreScale {
             try o.add("mmPerPoint", mm)
             try o.add("lengthMM", length)
             try o.add("drawnPoints", drawn)
+        case .tablet(let lines, let mm):
+            o.add("kind", "tablet")
+            try o.add("linesPerMM", lines)
+            try o.add("mmPerPoint", mm)
         case .unknown:
             o.add("kind", "unknown")
         }

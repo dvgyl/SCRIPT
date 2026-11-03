@@ -201,7 +201,7 @@ func reconcileConvergesFromEveryCrashPointAndASecondLaunchChangesNoByte(step: St
     let manifest = try Fields(try JSON.decodeDocument(try Data(contentsOf: folder.appendingPathComponent("manifest.json"))),
                               path: "")
     #expect(try manifest.string("format") == "script.journal")
-    #expect(try manifest.string("version") == "1.0")
+    #expect(try manifest.string("version") == "2.0")
     #expect(try manifest.string("sessionID") == "6E000000-0000-4000-8000-000000000001")
     #expect(!manifest.has("journal") && !manifest.has("demo"))
     let encryption = try manifest.object("encryption")

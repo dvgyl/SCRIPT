@@ -88,8 +88,7 @@ private func driver(administration: Administration = .supervised, configuration:
 
 private func plan(position: Int = 1, accommodations: [Accommodation] = [],
                   origin: Point = Point(x: 147.5, y: 200)) -> TrialPlan {
-    var plan = Driver.plan("spiral-trace", position: position)
-    plan.accommodations = accommodations
+    var plan = Driver.plan("spiral-trace", position: position, accommodations: accommodations)
     plan.stimulusOrigin = origin
     return plan
 }
@@ -126,7 +125,7 @@ func decideRefusesAValueThatTheDecoderRefuses(command: Command, rejection: Rejec
     for (band, expected) in [(AgeBand.adolescent, Rejection.instrumentNotForAgeBand("probe")), (.youngAdult, nil)] {
         let opened = makeOpened(ageBand: band, configuration: config, battery: try Contract.battery())
         let rules = SessionRules(battery: try Contract.battery(), instruments: instruments, configuration: config,
-                                 jurisdiction: opened.jurisdiction, locale: opened.locale)
+                                 jurisdiction: "US", locale: "en")
         let d = try Driver(opened: opened, rules: rules)
         #expect(d.state.decide(.startQuestionnaire("probe", t: 200), rules: rules).rejection == expected, "\(band)")
     }
@@ -187,6 +186,98 @@ func aBlockThatEndsBeforeItsSafetyItemFlagsTheItemFirst(reason: QuestionnaireEnd
                              instruments: d.rules.instruments) == [])
     try d.run(.show(.crisisList, t: 7))
     #expect(!d.state.session.safety.flaggedSinceCrisisList)
+}
+
+private func benchDriver(role: BenchRole = .tablet) throws -> Driver {
+    let opened = makeBenchOpened(role: role, programs: try Contract.benchPrograms(), battery: try Contract.battery())
+    return try Driver(opened: opened, rules: try benchRules())
+}
+
+@Test func aBenchSessionRefusesEveryParticipantCommand() throws {
+    // Detects a bench journal that can hold a questionnaire, a safety line, or a handoff, which name a person who
+    // is not there (DESIGN section 3.4, I6).
+    var d = try benchDriver()
+    let commands: [Command] = [
+        .handoff(to: .participant, t: 101), .startQuestionnaire("gad7", t: 101),
+        .respond(item: "gad7-1", value: 0, t: 101), .endQuestionnaire(reason: .completed, t: 101),
+        .show(.crisisList, t: 101), .show(.operatorAlert, t: 101), .recordAction("clinicianAssessment", t: 101),
+        .expire(at: WallTime(text: "2026-11-05T10:00:00Z"), t: 101),
+    ]
+    for command in commands {
+        #expect(d.state.decide(command, rules: d.rules).rejection == .noParticipant, "\(command)")
+    }
+    #expect(throws: FoldError(line: 1, violation: .noParticipant(.handoff))) {
+        try d.state.apply(Entry(seq: 1, event: .handoff(Handoff(t: 101, to: .participant))))
+    }
+    #expect(throws: FoldError(line: 1, violation: .noParticipant(.safetyShown))) {
+        try d.state.apply(Entry(seq: 1, event: .safetyShown(SafetyShown(t: 101, what: .crisisList, listVersion: nil))))
+    }
+
+    try d.run(.startTrial(Driver.benchPlan("loops-s1-v20", task: "bench-loops-l"), t: 102))
+    try d.run(.beginTrial(t: 102.5))
+    try d.run(.mark(trial: TrialIndex(count: 0), code: .cameraSync, t: 103))
+    try d.run(.endTrial(reason: .operatorDone, t: 104))
+    try d.run(.close(t: 105))
+    let summary = d.state.summary
+    #expect(summary.trials.map(\.outcome) == [.completed])
+    #expect(summary.administration == nil)
+    #expect(!String(decoding: summary.jsonData(), as: UTF8.self).contains("administration"))
+}
+
+@Test func aBenchRunNeedsAProgramFromTheProgramsFile() throws {
+    // Detects a run with a typed or absent trajectory digest, a program outside the programs file, or a program
+    // run on another task's geometry.
+    let d = try benchDriver()
+    let programs = try Contract.benchPrograms()
+    let events = try d.state.decide(.startTrial(Driver.benchPlan("fault-lift", task: "bench-loops-l", run: 2, clip: "CLIP-0003"), t: 101),
+                                    rules: d.rules).get()
+    guard case .trialStarted(let started) = try #require(events.first), case .bench(let run) = started.subject else {
+        Issue.record("no bench trial in \(events)")
+        return
+    }
+    #expect(run == BenchRun(program: "fault-lift", run: 2, trajectorySHA256: programs.program("fault-lift")!.trajectorySHA256,
+                            clip: "CLIP-0003"))
+    #expect(d.state.decide(.startTrial(Driver.benchPlan("loops-s9-v20", task: "bench-loops-l"), t: 101), rules: d.rules).rejection
+        == .unknownProgram("loops-s9-v20"))
+    #expect(d.state.decide(.startTrial(Driver.benchPlan("spiral-s1-v20", task: "bench-loops-l"), t: 101), rules: d.rules).rejection
+        == .programNotForTask("spiral-s1-v20"))
+    #expect(d.state.decide(.startTrial(Driver.benchPlan("loops-s1-v20", task: "bench-loops-l", run: 0), t: 101), rules: d.rules).rejection
+        == .invalidRun(0))
+    #expect(ProgramID("Loops-S1" as String) == nil && ProgramID(String(repeating: "a", count: 33)) == nil)
+    #expect(ClipName("" as String) == nil && ClipName(String(repeating: "c", count: 65)) == nil)
+}
+
+@Test func aStudySessionRefusesABenchTaskAndABenchSessionRefusesAStudyTask() throws {
+    // Detects a purpose gate that lost its table: a bench geometry in a participant session, or a participant task
+    // run by the robot.
+    let study = try driver()
+    #expect(study.state.decide(.startTrial(Driver.plan("bench-loops-l"), t: 101), rules: study.rules).rejection
+        == .taskNotForPurpose("bench-loops-l"))
+    #expect(study.state.decide(.startTrial(Driver.benchPlan("loops-s1-v20", task: "bench-loops-l"), t: 101), rules: study.rules).rejection
+        == .taskNotForPurpose("bench-loops-l"))
+    #expect(study.state.decide(.startTrial(Driver.benchPlan("loops-s1-v20", task: "loops"), t: 101), rules: study.rules).rejection
+        == .notABenchSession)
+
+    let bench = try benchDriver(role: .pencil)
+    #expect(bench.state.decide(.startTrial(Driver.benchPlan("loops-s1-v20", task: "loops"), t: 101), rules: bench.rules).rejection
+        == .taskNotForPurpose("loops"))
+    #expect(bench.state.decide(.startTrial(Driver.plan("qual-hold"), t: 101), rules: bench.rules).rejection
+        == .taskNotForPurpose("qual-hold"))
+    #expect(bench.state.decide(.startTrial(Driver.plan("bench-loops-l"), t: 101), rules: bench.rules).rejection
+        == .noParticipant)
+
+    let config = try Contract.demoConfiguration()
+    let qualification = makeOpened(purpose: .qualification, configuration: config, battery: try Contract.battery())
+    let q = try Driver(opened: qualification, rules: try rules(for: qualification, configuration: config))
+    #expect(q.state.decide(.startTrial(Driver.plan("bench-spiral-s"), t: 101), rules: q.rules).rejection
+        == .taskNotForPurpose("bench-spiral-s"))
+    #expect(throws: Never.self) { try q.state.decide(.startTrial(Driver.plan("qual-hold"), t: 101), rules: q.rules).get() }
+
+    var fold = study.state
+    let line = Contract.lines(try Contract.data("fixtures/journal/bench_wacom.jsonl"))[1]
+    #expect(throws: FoldError(line: 1, violation: .subjectMismatch)) {
+        try fold.apply(Entry(seq: 1, event: try LineCodec.decode(line).event))
+    }
 }
 
 @Test func anInterruptedSelfAdministeredSessionClosesOnlyAfterItsResumeWindow() throws {

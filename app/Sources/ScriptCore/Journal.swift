@@ -3,11 +3,15 @@ import Foundation
 
 /// The journal format this build writes and reads. See docs/DESIGN.md section 3.
 public enum JournalFormat {
-    public static let version = "1.0"
+    public static let version = "2.0"
 
-    /// A minor version adds optional keys only, so this build reads every 1.x journal.
+    /// The major versions this build reads. A minor version adds optional keys only. Every 1.0 journal is a 2.0
+    /// journal once the absent `channels` keys read as false, so the first device tests need no conversion.
+    static let readableMajors: Set<Substring> = ["1", "2"]
+
     static func isReadable(_ version: String) -> Bool {
-        version.split(separator: ".", omittingEmptySubsequences: false).first == "1"
+        guard let major = version.split(separator: ".", omittingEmptySubsequences: false).first else { return false }
+        return readableMajors.contains(major)
     }
 }
 
@@ -20,7 +24,8 @@ public enum DecodeError: Error, Hashable, Sendable {
     case missing(String)
     /// A value has the wrong type, is out of range, or does not match its pattern.
     case invalid(String)
-    /// A key that the schema does not allow. Only study configurations refuse unknown keys.
+    /// A key that the schema does not allow: an unknown configuration key, or a key of the other subject shape on a
+    /// `sessionOpened` or `trialStarted` line.
     case unexpected(String)
 }
 
@@ -42,6 +47,9 @@ enum Pattern {
     static func isCode(_ s: String) -> Bool {
         (1...32).contains(s.utf8.count) && s.utf8.allSatisfy { isUpper($0) || isLower($0) || isDigit($0) || $0 == dash }
     }
+
+    /// `^[a-z0-9-]{1,32}$`
+    static func isProgram(_ s: String) -> Bool { s.utf8.count <= 32 && isSlug(s) }
 
     /// `^[A-Z0-9-]{3,16}$`
     static func isParticipant(_ s: String) -> Bool {
@@ -156,6 +164,24 @@ public struct TaskID: PatternText {
     public let rawValue: String
     public init?(_ rawValue: String) {
         guard Pattern.isSlug(rawValue) else { return nil }
+        self.rawValue = rawValue
+    }
+}
+
+/// A bench program identifier from `contract/bench_programs.json`, for example `loops-s1-v20`.
+public struct ProgramID: PatternText {
+    public let rawValue: String
+    public init?(_ rawValue: String) {
+        guard Pattern.isProgram(rawValue) else { return nil }
+        self.rawValue = rawValue
+    }
+}
+
+/// The name of a camera clip, 1 to 64 characters, as the camera names it before a bench run begins.
+public struct ClipName: PatternText {
+    public let rawValue: String
+    public init?(_ rawValue: String) {
+        guard (1...64).contains(rawValue.unicodeScalars.count) else { return nil }
         self.rawValue = rawValue
     }
 }
@@ -278,7 +304,14 @@ public struct ViewSize: Hashable, Sendable {
     }
 }
 
-public enum Purpose: String, Hashable, Sendable { case study, qualification }
+public enum Purpose: String, Hashable, Sendable { case study, qualification, bench }
+/// The device arm of the bench protocol: `P` is the iPad with the Pencil, `W` is the Wacom tablet on the Mac.
+public enum BenchRole: String, Hashable, Sendable, CaseIterable {
+    case pencil = "P"
+    case tablet = "W"
+}
+/// The tablet pen the operator declares. No public API reports it.
+public enum TabletPen: String, Hashable, Sendable, CaseIterable { case proPen3, unknown }
 public enum Administration: String, Hashable, Sendable, CaseIterable {
     case supervised
     case selfAdministered = "self"
@@ -299,20 +332,21 @@ public enum Protector: String, Hashable, Sendable { case none, glossy, matte, pa
 public enum Nib: String, Hashable, Sendable { case new, used, unknown }
 public enum ConsentModel: String, Hashable, Sendable { case adult, guardianAndAssent, waiver }
 public enum AttestorRole: String, Hashable, Sendable { case `operator`, enrolment }
-public enum InputKind: String, Hashable, Sendable { case pencil, directTouchAsPen }
+public enum InputKind: String, Hashable, Sendable { case pencil, directTouchAsPen, tablet }
 public enum HandoffTarget: String, Hashable, Sendable { case participant, `operator` }
 public enum Hand: String, Hashable, Sendable { case left, right, unknown }
 public enum Accommodation: String, Hashable, Sendable { case readAloud, largerText, extraTime, positionAssist, other }
 public enum PenPhase: String, Hashable, Sendable { case began, moved, stationary, ended, cancelled }
 public enum FingerPhase: String, Hashable, Sendable { case began, ended, cancelled }
-public enum HoverClock: String, Hashable, Sendable { case callback }
+/// `callback` is a UIKit hover recognizer callback. `event` is an AppKit tablet event.
+public enum HoverClock: String, Hashable, Sendable { case callback, event }
 public enum TrialEndReason: String, Hashable, Sendable {
-    case participantDone, timeLimit, declined, unable, operatorAbort, backgrounded, technicalFailure
+    case participantDone, timeLimit, declined, unable, operatorAbort, backgrounded, technicalFailure, operatorDone
 }
 public enum QuestionnaireEndReason: String, Hashable, Sendable { case completed, declined, interrupted }
 public enum SafetyDisplay: String, Hashable, Sendable { case crisisList, operatorAlert }
 public enum ActionRole: String, Hashable, Sendable { case `operator` }
-public enum MarkCode: String, Hashable, Sendable { case repeatRequested, disturbance, deviceProblem, exclude }
+public enum MarkCode: String, Hashable, Sendable { case repeatRequested, disturbance, deviceProblem, exclude, cameraSync }
 
 public struct AppInfo: Hashable, Sendable {
     public var version: String
@@ -450,24 +484,52 @@ public struct BatteryRef: Hashable, Sendable {
     }
 }
 
-// MARK: - Line payloads
+/// The graphics tablet of a session whose `input` is `tablet`. `device` stays the host Mac.
+public struct TabletInfo: Hashable, Sendable {
+    /// The tablet model text, for example `Wacom Intuos Pro Medium (2025)`.
+    public var model: String
+    /// The pseudonymous asset code that the site gives the tablet.
+    public var asset: Code
+    /// The driver version as the operator reads it in the driver's own window.
+    public var driver: String
+    public var pen: TabletPen
+    public init(model: String, asset: Code, driver: String, pen: TabletPen) {
+        self.model = model
+        self.asset = asset
+        self.driver = driver
+        self.pen = pen
+    }
+}
 
-public struct SessionOpened: Hashable, Sendable {
-    public internal(set) var format = JournalFormat.version
-    public var purpose: Purpose
-    public var sessionID: SessionID
+/// The bench protocol version and the SHA-256 of the locked protocol file, copied from `contract/bench_programs.json`.
+public struct BenchProtocolRef: Hashable, Sendable {
+    public var version: String
+    public var sha256: SHA256Digest
+    public init(version: String, sha256: SHA256Digest) {
+        self.version = version
+        self.sha256 = sha256
+    }
+}
+
+/// The facts of a bench session: one mounting of one device under the bench protocol.
+public struct BenchFacts: Hashable, Sendable {
+    public var role: BenchRole
+    /// The mounting code from the protocol, for example `M3`.
+    public var mounting: Code
+    /// The motion system, as `{id, version}`, because the system is not decided.
+    public var motion: DocumentRef
+    public var `protocol`: BenchProtocolRef
+    public init(role: BenchRole, mounting: Code, motion: DocumentRef, protocol: BenchProtocolRef) {
+        self.role = role
+        self.mounting = mounting
+        self.motion = motion
+        self.protocol = `protocol`
+    }
+}
+
+/// The facts of a session with a person: a study or a qualification session.
+public struct ParticipantFacts: Hashable, Sendable {
     public var participant: ParticipantCode
-    public var openedAt: WallTime
-    public var openedUptime: Double
-    public var boot: BootID
-    public var app: AppInfo
-    public var device: DeviceInfo
-    public var surface: Surface
-    public var qualification: QualificationRef?
-    public var scale: MillimetreScale
-    public var pencil: PencilModel
-    public var channels: ChannelPlan
-    public var input: InputKind
     public var administration: Administration
     public var study: StudyRef
     public var visit: Visit
@@ -476,29 +538,9 @@ public struct SessionOpened: Hashable, Sendable {
     public var locale: LocaleTag
     public var consent: Consent
     public var ethics: Ethics
-    public var battery: BatteryRef
-
-    public init(
-        purpose: Purpose, sessionID: SessionID, participant: ParticipantCode, openedAt: WallTime,
-        openedUptime: Double, boot: BootID, app: AppInfo, device: DeviceInfo, surface: Surface,
-        qualification: QualificationRef?, scale: MillimetreScale, pencil: PencilModel, channels: ChannelPlan,
-        input: InputKind, administration: Administration, study: StudyRef, visit: Visit, ageBand: AgeBand,
-        jurisdiction: Jurisdiction, locale: LocaleTag, consent: Consent, ethics: Ethics, battery: BatteryRef
-    ) {
-        self.purpose = purpose
-        self.sessionID = sessionID
+    public init(participant: ParticipantCode, administration: Administration, study: StudyRef, visit: Visit,
+                ageBand: AgeBand, jurisdiction: Jurisdiction, locale: LocaleTag, consent: Consent, ethics: Ethics) {
         self.participant = participant
-        self.openedAt = openedAt
-        self.openedUptime = openedUptime
-        self.boot = boot
-        self.app = app
-        self.device = device
-        self.surface = surface
-        self.qualification = qualification
-        self.scale = scale
-        self.pencil = pencil
-        self.channels = channels
-        self.input = input
         self.administration = administration
         self.study = study
         self.visit = visit
@@ -507,13 +549,79 @@ public struct SessionOpened: Hashable, Sendable {
         self.locale = locale
         self.consent = consent
         self.ethics = ethics
+    }
+
+    /// The header keys of this shape, which a bench header must not have.
+    static let keys = ["participant", "administration", "study", "visit", "ageBand", "jurisdiction", "locale", "consent", "ethics"]
+}
+
+/// Who or what a session records. The purpose selects the shape: `study` and `qualification` have a participant,
+/// `bench` has a robot.
+public enum SessionSubject: Hashable, Sendable {
+    case participant(ParticipantFacts)
+    case bench(BenchFacts)
+}
+
+// MARK: - Line payloads
+
+public struct SessionOpened: Hashable, Sendable {
+    public internal(set) var format = JournalFormat.version
+    public var purpose: Purpose
+    public var sessionID: SessionID
+    public var openedAt: WallTime
+    public var openedUptime: Double
+    public var boot: BootID
+    public var app: AppInfo
+    public var device: DeviceInfo
+    /// Present exactly when `input` is `tablet`. The decoder refuses a header that breaks this.
+    public var tablet: TabletInfo?
+    public var surface: Surface
+    public var qualification: QualificationRef?
+    public var scale: MillimetreScale
+    public var pencil: PencilModel
+    public var channels: ChannelPlan
+    public var input: InputKind
+    public var subject: SessionSubject
+    public var battery: BatteryRef
+
+    public init(
+        purpose: Purpose, sessionID: SessionID, openedAt: WallTime, openedUptime: Double, boot: BootID, app: AppInfo,
+        device: DeviceInfo, tablet: TabletInfo? = nil, surface: Surface, qualification: QualificationRef?,
+        scale: MillimetreScale, pencil: PencilModel, channels: ChannelPlan, input: InputKind, subject: SessionSubject,
+        battery: BatteryRef
+    ) {
+        self.purpose = purpose
+        self.sessionID = sessionID
+        self.openedAt = openedAt
+        self.openedUptime = openedUptime
+        self.boot = boot
+        self.app = app
+        self.device = device
+        self.tablet = tablet
+        self.surface = surface
+        self.qualification = qualification
+        self.scale = scale
+        self.pencil = pencil
+        self.channels = channels
+        self.input = input
+        self.subject = subject
         self.battery = battery
     }
 
-    /// `SCRIPT_<study>_<site>_<first 8 hex digits of the session UUID>`, the export folder name. It never holds the
-    /// participant code, which stays inside the journal and, when encrypted, inside the ciphertext.
+    /// The participant code, or nil for a bench session.
+    public var participant: ParticipantCode? {
+        if case .participant(let facts) = subject { facts.participant } else { nil }
+    }
+
+    /// The export folder name. A participant session gives `SCRIPT_<study>_<site>_<first 8 hex digits of the
+    /// session UUID>`. The name never holds the participant code, which stays inside the journal and, when
+    /// encrypted, inside the ciphertext. A bench session gives `SCRIPT_BENCH_<role><mounting>_<8 hex digits>`.
     public var exportName: String {
-        "SCRIPT_\(study.id.rawValue)_\(study.site.rawValue)_\(sessionID.uuid.uuidString.prefix(8).lowercased())"
+        let session = sessionID.uuid.uuidString.prefix(8).lowercased()
+        switch subject {
+        case .participant(let facts): return "SCRIPT_\(facts.study.id.rawValue)_\(facts.study.site.rawValue)_\(session)"
+        case .bench(let facts): return "SCRIPT_BENCH_\(facts.role.rawValue)\(facts.mounting.rawValue)_\(session)"
+        }
     }
 }
 
@@ -539,6 +647,44 @@ public struct InstructionRef: Hashable, Sendable {
     }
 }
 
+/// The facts of a trial that a person draws.
+public struct ParticipantTrialFacts: Hashable, Sendable {
+    public var hand: Hand
+    public var instruction: InstructionRef
+    public var accommodations: [Accommodation]
+    public init(hand: Hand, instruction: InstructionRef, accommodations: [Accommodation] = []) {
+        self.hand = hand
+        self.instruction = instruction
+        self.accommodations = accommodations
+    }
+
+    /// The trial keys of this shape, which a bench trial must not have.
+    static let keys = ["hand", "instruction", "accommodations"]
+}
+
+/// One run of one bench program. The decider copies `trajectorySHA256` from the programs file, so an operator cannot
+/// type a wrong digest.
+public struct BenchRun: Hashable, Sendable {
+    public var program: ProgramID
+    /// The protocol's run index, from 1.
+    public var run: Int
+    public var trajectorySHA256: SHA256Digest
+    /// The camera's clip name, typed before Begin, when the camera names its clip in advance.
+    public var clip: ClipName?
+    public init(program: ProgramID, run: Int, trajectorySHA256: SHA256Digest, clip: ClipName? = nil) {
+        self.program = program
+        self.run = run
+        self.trajectorySHA256 = trajectorySHA256
+        self.clip = clip
+    }
+}
+
+/// Who or what draws a trial. A bench trial has no hand, instruction, or accommodations, because a robot has none.
+public enum TrialSubject: Hashable, Sendable {
+    case participant(ParticipantTrialFacts)
+    case bench(BenchRun)
+}
+
 public struct TrialStarted: Hashable, Sendable {
     public var t: Double
     public var trial: TrialRef
@@ -546,9 +692,7 @@ public struct TrialStarted: Hashable, Sendable {
     public var practice: Bool
     /// The 1-based position of the task in the session order.
     public var position: Int
-    public var hand: Hand
-    public var instruction: InstructionRef
-    public var accommodations: [Accommodation]
+    public var subject: TrialSubject
     public var view: ViewSize
     public var stimulusOrigin: Point
 }
@@ -579,9 +723,33 @@ public struct Sample: Hashable, Sendable {
     public var altitude: Double?
     public var azimuth: Double?
     public var roll: Double?
+    /// The two `NSEvent.tilt` components of a tablet pen, -1 to 1.
+    public var tiltX: Double?
+    public var tiltY: Double?
+    /// The tablet pen rotation in degrees.
+    public var rotation: Double?
     public var phase: PenPhase
     public var est: TouchProperties
     public var pending: Pending?
+
+    public init(contact: ContactID, t: Double, x: Double, y: Double, force: Double? = nil, altitude: Double? = nil,
+                azimuth: Double? = nil, roll: Double? = nil, tiltX: Double? = nil, tiltY: Double? = nil,
+                rotation: Double? = nil, phase: PenPhase, est: TouchProperties, pending: Pending? = nil) {
+        self.contact = contact
+        self.t = t
+        self.x = x
+        self.y = y
+        self.force = force
+        self.altitude = altitude
+        self.azimuth = azimuth
+        self.roll = roll
+        self.tiltX = tiltX
+        self.tiltY = tiltY
+        self.rotation = rotation
+        self.phase = phase
+        self.est = est
+        self.pending = pending
+    }
 }
 
 /// A late value for an estimated sample. `contact` is nil when no recorded sample expects this update.
@@ -610,11 +778,30 @@ public struct Hover: Hashable, Sendable {
     public var clock: HoverClock
     public var x: Double
     public var y: Double
-    /// 0 at contact, 1 at the maximum range.
-    public var z: Double
+    /// 0 at contact, 1 at the maximum range. Absent for a tablet, which reports no height.
+    public var z: Double?
     public var altitude: Double?
     public var azimuth: Double?
     public var roll: Double?
+    public var tiltX: Double?
+    public var tiltY: Double?
+    public var rotation: Double?
+
+    public init(t: Double, clock: HoverClock, x: Double, y: Double, z: Double? = nil, altitude: Double? = nil,
+                azimuth: Double? = nil, roll: Double? = nil, tiltX: Double? = nil, tiltY: Double? = nil,
+                rotation: Double? = nil) {
+        self.t = t
+        self.clock = clock
+        self.x = x
+        self.y = y
+        self.z = z
+        self.altitude = altitude
+        self.azimuth = azimuth
+        self.roll = roll
+        self.tiltX = tiltX
+        self.tiltY = tiltY
+        self.rotation = rotation
+    }
 }
 
 public struct Finger: Hashable, Sendable {
@@ -834,7 +1021,7 @@ extension Event {
             o.add("format", e.format)
             o.add("purpose", e.purpose.rawValue)
             o.add("sessionID", e.sessionID.description)
-            o.add("participant", e.participant.rawValue)
+            if let participant = e.participant { o.add("participant", participant.rawValue) }
             o.add("openedAt", e.openedAt.text)
             try o.add("openedUptime", e.openedUptime)
             o.add("boot", e.boot.description)
@@ -848,6 +1035,12 @@ extension Event {
             try device.add("nativeScale", e.device.nativeScale)
             device.add("asset", e.device.asset.rawValue)
             o.add("device", device.json)
+            if let tablet = e.tablet {
+                o.add("tablet", .object([
+                    ("model", .string(tablet.model)), ("asset", .string(tablet.asset.rawValue)),
+                    ("driver", .string(tablet.driver)), ("pen", .object([("declared", .string(tablet.pen.rawValue))])),
+                ]))
+            }
             o.add("surface", .object([
                 ("protector", .string(e.surface.protector.rawValue)), ("nib", .string(e.surface.nib.rawValue)),
             ]))
@@ -858,28 +1051,37 @@ extension Event {
             o.add("pencil", .object([("declared", .string(e.pencil.rawValue))]))
             o.add("channels", e.channels.json)
             o.add("input", e.input.rawValue)
-            o.add("administration", e.administration.rawValue)
-            o.add("study", .object([
-                ("id", .string(e.study.id.rawValue)), ("site", .string(e.study.site.rawValue)),
-                ("configID", .string(e.study.configID.rawValue)), ("configVersion", .string(e.study.configVersion)),
-                ("configSHA256", .string(e.study.configSHA256.hex)),
-                ("protocolVersion", .string(e.study.protocolVersion)),
-            ]))
-            o.add("visit", .object([("id", .string(e.visit.id.rawValue)), ("number", .int(e.visit.number))]))
-            o.add("ageBand", e.ageBand.rawValue)
-            o.add("jurisdiction", e.jurisdiction.rawValue)
-            o.add("locale", e.locale.rawValue)
-            var consent = ObjectBuilder()
-            consent.add("model", e.consent.model.rawValue)
-            consent.add("attestedBy", .object([
-                ("code", .string(e.consent.attestedBy.code.rawValue)),
-                ("role", .string(e.consent.attestedBy.role.rawValue)),
-            ]))
-            consent.add("attestedAt", e.consent.attestedAt.text)
-            consent.add("documents", .array(e.consent.documents.map(\.json)))
-            consent.add("waiverReference", optional: e.consent.waiverReference)
-            o.add("consent", consent.json)
-            o.add("ethics", e.ethics.json)
+            switch e.subject {
+            case .participant(let p):
+                o.add("administration", p.administration.rawValue)
+                o.add("study", .object([
+                    ("id", .string(p.study.id.rawValue)), ("site", .string(p.study.site.rawValue)),
+                    ("configID", .string(p.study.configID.rawValue)), ("configVersion", .string(p.study.configVersion)),
+                    ("configSHA256", .string(p.study.configSHA256.hex)),
+                    ("protocolVersion", .string(p.study.protocolVersion)),
+                ]))
+                o.add("visit", .object([("id", .string(p.visit.id.rawValue)), ("number", .int(p.visit.number))]))
+                o.add("ageBand", p.ageBand.rawValue)
+                o.add("jurisdiction", p.jurisdiction.rawValue)
+                o.add("locale", p.locale.rawValue)
+                var consent = ObjectBuilder()
+                consent.add("model", p.consent.model.rawValue)
+                consent.add("attestedBy", .object([
+                    ("code", .string(p.consent.attestedBy.code.rawValue)),
+                    ("role", .string(p.consent.attestedBy.role.rawValue)),
+                ]))
+                consent.add("attestedAt", p.consent.attestedAt.text)
+                consent.add("documents", .array(p.consent.documents.map(\.json)))
+                consent.add("waiverReference", optional: p.consent.waiverReference)
+                o.add("consent", consent.json)
+                o.add("ethics", p.ethics.json)
+            case .bench(let b):
+                o.add("bench", .object([
+                    ("role", .string(b.role.rawValue)), ("mounting", .string(b.mounting.rawValue)),
+                    ("motion", b.motion.json),
+                    ("protocol", .object([("version", .string(b.protocol.version)), ("sha256", .string(b.protocol.sha256.hex))])),
+                ]))
+            }
             o.add("battery", .object([
                 ("id", .string(e.battery.id)), ("version", .string(e.battery.version)),
                 ("sha256", .string(e.battery.sha256.hex)),
@@ -896,12 +1098,22 @@ extension Event {
             o.add("spec", e.spec.source)
             o.add("practice", e.practice)
             o.add("position", e.position)
-            o.add("hand", e.hand.rawValue)
-            o.add("instruction", .object([
-                ("id", .string(e.instruction.id)), ("version", .string(e.instruction.version)),
-                ("locale", .string(e.instruction.locale.rawValue)),
-            ]))
-            o.add("accommodations", .array(e.accommodations.map { .string($0.rawValue) }))
+            switch e.subject {
+            case .participant(let p):
+                o.add("hand", p.hand.rawValue)
+                o.add("instruction", .object([
+                    ("id", .string(p.instruction.id)), ("version", .string(p.instruction.version)),
+                    ("locale", .string(p.instruction.locale.rawValue)),
+                ]))
+                o.add("accommodations", .array(p.accommodations.map { .string($0.rawValue) }))
+            case .bench(let run):
+                var bench = ObjectBuilder()
+                bench.add("program", run.program.rawValue)
+                bench.add("run", run.run)
+                bench.add("trajectorySHA256", run.trajectorySHA256.hex)
+                bench.add("clip", optional: run.clip?.rawValue)
+                o.add("bench", bench.json)
+            }
             var view = ObjectBuilder()
             try view.add("width", e.view.width)
             try view.add("height", e.view.height)
@@ -926,6 +1138,9 @@ extension Event {
             try o.add("altitude", optional: e.altitude)
             try o.add("azimuth", optional: e.azimuth)
             try o.add("roll", optional: e.roll)
+            try o.add("tiltX", optional: e.tiltX)
+            try o.add("tiltY", optional: e.tiltY)
+            try o.add("rotation", optional: e.rotation)
             o.add("phase", e.phase.rawValue)
             o.add("est", e.est.rawValue)
             if let p = e.pending {
@@ -951,10 +1166,13 @@ extension Event {
             o.add("clock", e.clock.rawValue)
             try o.add("x", e.x)
             try o.add("y", e.y)
-            try o.add("z", e.z)
+            try o.add("z", optional: e.z)
             try o.add("altitude", optional: e.altitude)
             try o.add("azimuth", optional: e.azimuth)
             try o.add("roll", optional: e.roll)
+            try o.add("tiltX", optional: e.tiltX)
+            try o.add("tiltY", optional: e.tiltY)
+            try o.add("rotation", optional: e.rotation)
         case .finger(let e):
             try o.add("t", e.t)
             o.add("phase", e.phase.rawValue)
@@ -1025,17 +1243,37 @@ extension Event {
                 throw .invalid("view")
             }
             let origin = try f.object("stimulusOrigin")
-            let instruction = try f.object("instruction")
             let attempt = try trial.int("attempt")
             guard attempt >= 1 else { throw .invalid("trial.attempt") }
             let position = try f.int("position")
             guard position >= 1 else { throw .invalid("position") }
-            var accommodations: [Accommodation] = []
-            for (n, item) in try f.array("accommodations").enumerated() {
-                guard case .string(let text) = item, let code = Accommodation(rawValue: text),
-                      !accommodations.contains(code)
-                else { throw .invalid("accommodations[\(n)]") }
-                accommodations.append(code)
+            // The line decoder has no purpose, so a `bench` key selects the bench shape, which has no participant key.
+            let subject: TrialSubject
+            if f.has("bench") {
+                for key in ParticipantTrialFacts.keys where f.has(key) { throw .unexpected(key) }
+                let bench = try f.object("bench")
+                let run = try bench.int("run")
+                guard run >= 1 else { throw .invalid("bench.run") }
+                subject = .bench(BenchRun(
+                    program: try bench.text("program", ProgramID.init(_:)), run: run,
+                    trajectorySHA256: try bench.text("trajectorySHA256", SHA256Digest.init(hex:)),
+                    clip: bench.has("clip") ? try bench.text("clip", ClipName.init(_:)) : nil
+                ))
+            } else {
+                let instruction = try f.object("instruction")
+                var accommodations: [Accommodation] = []
+                for (n, item) in try f.array("accommodations").enumerated() {
+                    guard case .string(let text) = item, let code = Accommodation(rawValue: text),
+                          !accommodations.contains(code)
+                    else { throw .invalid("accommodations[\(n)]") }
+                    accommodations.append(code)
+                }
+                subject = .participant(ParticipantTrialFacts(
+                    hand: try f.enumeration("hand"),
+                    instruction: InstructionRef(id: try instruction.string("id"), version: try instruction.string("version"),
+                                                locale: try instruction.text("locale", LocaleTag.init(_:))),
+                    accommodations: accommodations
+                ))
             }
             return .trialStarted(TrialStarted(
                 t: try f.uptime("t"),
@@ -1044,10 +1282,7 @@ extension Event {
                 spec: try TaskSpec(try f.read("spec") { $0 }, path: "spec"),
                 practice: try f.bool("practice"),
                 position: position,
-                hand: try f.enumeration("hand"),
-                instruction: InstructionRef(id: try instruction.string("id"), version: try instruction.string("version"),
-                                            locale: try instruction.text("locale", LocaleTag.init(_:))),
-                accommodations: accommodations,
+                subject: subject,
                 view: size,
                 stimulusOrigin: Point(x: try origin.double("x"), y: try origin.double("y"))
             ))
@@ -1069,6 +1304,8 @@ extension Event {
                 contact: try f.contact("contact"), t: try f.uptime("t"), x: try f.double("x"), y: try f.double("y"),
                 force: try f.optionalForce("force"), altitude: try f.optionalDouble("altitude"),
                 azimuth: try f.optionalDouble("azimuth"), roll: try f.optionalDouble("roll"),
+                tiltX: try f.optionalTilt("tiltX"), tiltY: try f.optionalTilt("tiltY"),
+                rotation: try f.optionalDouble("rotation"),
                 phase: try f.enumeration("phase"), est: try f.bits("est"), pending: pending
             ))
         case .correction:
@@ -1085,12 +1322,12 @@ extension Event {
             return .contactEnded(ContactEnded(t: try f.uptime("t"), contact: try f.contact("contact"),
                                               cancelled: try f.bool("cancelled")))
         case .hover:
-            let z = try f.double("z")
-            guard z >= 0 else { throw .invalid("z") }
             return .hover(Hover(
                 t: try f.uptime("t"), clock: try f.enumeration("clock"), x: try f.double("x"), y: try f.double("y"),
-                z: z, altitude: try f.optionalDouble("altitude"), azimuth: try f.optionalDouble("azimuth"),
-                roll: try f.optionalDouble("roll")
+                z: f.has("z") ? try f.uptime("z") : nil,
+                altitude: try f.optionalDouble("altitude"), azimuth: try f.optionalDouble("azimuth"),
+                roll: try f.optionalDouble("roll"), tiltX: try f.optionalTilt("tiltX"),
+                tiltY: try f.optionalTilt("tiltY"), rotation: try f.optionalDouble("rotation")
             ))
         case .finger:
             return .finger(Finger(t: try f.uptime("t"), phase: try f.enumeration("phase"),
@@ -1148,13 +1385,10 @@ extension Event {
 
 extension SessionOpened {
     init(_ f: Fields) throws(DecodeError) {
+        let purpose: Purpose = try f.enumeration("purpose")
         let app = try f.object("app")
         let device = try f.object("device")
         let surface = try f.object("surface")
-        let study = try f.object("study")
-        let visit = try f.object("visit")
-        let consent = try f.object("consent")
-        let attestor = try consent.object("attestedBy")
         let battery = try f.object("battery")
         var qualification: QualificationRef?
         if f.has("qualification") {
@@ -1162,6 +1396,56 @@ extension SessionOpened {
             qualification = QualificationRef(sessionID: SessionID(try q.text("sessionID", UUID.init(uuidString:))),
                                              at: WallTime(text: try q.string("at")))
         }
+        let input: InputKind = try f.enumeration("input")
+        var tablet: TabletInfo?
+        if input == .tablet {
+            let t = try f.object("tablet")
+            tablet = TabletInfo(model: try t.nonEmptyString("model"), asset: try t.text("asset", Code.init(_:)),
+                                driver: try t.nonEmptyString("driver"), pen: try t.object("pen").enumeration("declared"))
+        } else if f.has("tablet") {
+            throw .unexpected("tablet")
+        }
+        let subject: SessionSubject
+        switch purpose {
+        case .study, .qualification:
+            if f.has("bench") { throw .unexpected("bench") }
+            subject = .participant(try ParticipantFacts(f))
+        case .bench:
+            for key in ParticipantFacts.keys where f.has(key) { throw .unexpected(key) }
+            subject = .bench(try BenchFacts(try f.object("bench")))
+        }
+        self.init(
+            purpose: purpose,
+            sessionID: SessionID(try f.text("sessionID", UUID.init(uuidString:))),
+            openedAt: WallTime(text: try f.string("openedAt")),
+            openedUptime: try f.uptime("openedUptime"),
+            boot: BootID(try f.text("boot", UUID.init(uuidString:))),
+            app: AppInfo(version: try app.string("version"), build: try app.string("build"),
+                         sourceRevision: try app.string("sourceRevision")),
+            device: DeviceInfo(model: try device.string("model"), os: try device.string("os"),
+                               nativeScale: try device.positive("nativeScale"), asset: try device.text("asset", Code.init(_:))),
+            tablet: tablet,
+            surface: Surface(protector: try surface.enumeration("protector"), nib: try surface.enumeration("nib")),
+            qualification: qualification,
+            scale: try MillimetreScale(try f.object("scale")),
+            pencil: try f.object("pencil").enumeration("declared"),
+            channels: try ChannelPlan(try f.object("channels")),
+            input: input,
+            subject: subject,
+            battery: BatteryRef(id: try battery.string("id"), version: try battery.string("version"),
+                                sha256: try battery.text("sha256", SHA256Digest.init(hex:)))
+        )
+        format = try f.string("format")
+    }
+}
+
+extension ParticipantFacts {
+    /// The participant keys of a `sessionOpened` line, read from the line's own fields.
+    init(_ f: Fields) throws(DecodeError) {
+        let study = try f.object("study")
+        let visit = try f.object("visit")
+        let consent = try f.object("consent")
+        let attestor = try consent.object("attestedBy")
         var documents: [DocumentRef] = []
         for (n, item) in try consent.array("documents").enumerated() {
             documents.append(try DocumentRef(try Fields(item, path: consent.keyPath("documents[\(n)]"))))
@@ -1170,22 +1454,7 @@ extension SessionOpened {
             throw .invalid("visit.number")
         }
         self.init(
-            purpose: try f.enumeration("purpose"),
-            sessionID: SessionID(try f.text("sessionID", UUID.init(uuidString:))),
             participant: try f.text("participant", ParticipantCode.init(_:)),
-            openedAt: WallTime(text: try f.string("openedAt")),
-            openedUptime: try f.uptime("openedUptime"),
-            boot: BootID(try f.text("boot", UUID.init(uuidString:))),
-            app: AppInfo(version: try app.string("version"), build: try app.string("build"),
-                         sourceRevision: try app.string("sourceRevision")),
-            device: DeviceInfo(model: try device.string("model"), os: try device.string("os"),
-                               nativeScale: try device.positive("nativeScale"), asset: try device.text("asset", Code.init(_:))),
-            surface: Surface(protector: try surface.enumeration("protector"), nib: try surface.enumeration("nib")),
-            qualification: qualification,
-            scale: try MillimetreScale(try f.object("scale")),
-            pencil: try f.object("pencil").enumeration("declared"),
-            channels: try ChannelPlan(try f.object("channels")),
-            input: try f.enumeration("input"),
             administration: try f.enumeration("administration"),
             study: StudyRef(id: try study.text("id", Code.init(_:)), site: try study.text("site", Code.init(_:)),
                             configID: try study.text("configID", Code.init(_:)),
@@ -1202,11 +1471,18 @@ extension SessionOpened {
                              attestedAt: WallTime(text: try consent.string("attestedAt")),
                              documents: documents,
                              waiverReference: consent.has("waiverReference") ? try consent.string("waiverReference") : nil),
-            ethics: try Ethics(try f.object("ethics")),
-            battery: BatteryRef(id: try battery.string("id"), version: try battery.string("version"),
-                                sha256: try battery.text("sha256", SHA256Digest.init(hex:)))
+            ethics: try Ethics(try f.object("ethics"))
         )
-        format = try f.string("format")
+    }
+}
+
+extension BenchFacts {
+    init(_ f: Fields) throws(DecodeError) {
+        let p = try f.object("protocol")
+        self.init(role: try f.enumeration("role"), mounting: try f.text("mounting", Code.init(_:)),
+                  motion: try DocumentRef(try f.object("motion")),
+                  protocol: BenchProtocolRef(version: try p.nonEmptyString("version"),
+                                             sha256: try p.text("sha256", SHA256Digest.init(hex:))))
     }
 }
 
@@ -1317,9 +1593,15 @@ struct Fields {
         has(key) ? try double(key) : nil
     }
 
-    /// `force` is never negative.
+    /// `force` is never negative. The closure's result type is written out so that `read` refuses a value outside
+    /// the range instead of reading it as absent.
     func optionalForce(_ key: String) throws(DecodeError) -> Double? {
-        has(key) ? try read(key) { $0.doubleValue.flatMap { $0 >= 0 ? $0 : nil } } : nil
+        has(key) ? try read(key) { json -> Double? in json.doubleValue.flatMap { $0 >= 0 ? $0 : nil } } : nil
+    }
+
+    /// A tablet tilt component, -1 to 1.
+    func optionalTilt(_ key: String) throws(DecodeError) -> Double? {
+        has(key) ? try read(key) { json -> Double? in json.doubleValue.flatMap { (-1...1).contains($0) ? $0 : nil } } : nil
     }
 
     func enumeration<T: RawRepresentable<String>>(_ key: String) throws(DecodeError) -> T {
