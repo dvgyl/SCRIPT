@@ -17,6 +17,8 @@ typealias SinkFactory = @Sendable (URL, @escaping @Sendable (JournalWriter.Write
 
 /// What the session shows now. `working` takes its screen from the plan and the fold.
 enum Stage: Hashable, Sendable {
+    /// The participant types their code again before a self-administered session resumes.
+    case confirmCode
     /// The participant taps Start.
     case ready
     /// The participant names the hand they write with, when a resumed session does not record it.
@@ -58,6 +60,8 @@ struct LiveSession {
     var trialGeometry: (index: TrialIndex, view: ViewSize, origin: Point)?
     /// True while the operator is on Home and the session stays open.
     var away = false
+    /// True after the operator ended the session early. The review follows the crisis list.
+    var endedEarly = false
     /// The close of the writer. Reconcile waits for it, because it must never read a journal that is open.
     var closing: Task<Void, Never>?
 }
@@ -85,6 +89,10 @@ struct Listed: Identifiable, Hashable {
     let administration: Administration?
     let openedAt: String?
     let encrypted: Bool?
+    /// The participant code of a session row. Home masks it until the operator unlocks with the PIN.
+    var participant: ParticipantCode?
+    /// The file name of a journal in `Damaged/`, which the operator can export as a damaged package.
+    var damagedFile: String?
 }
 
 /// An operator notice. It never names a participant or holds a response.
@@ -134,6 +142,8 @@ final class SessionStore {
     @ObservationIgnored private var reconciled: [SessionID: SessionState] = [:]
     /// The rebuild after a write failure, so a test can wait for it.
     @ObservationIgnored private(set) var rebuild: Task<Void, Never>?
+    /// True after the operator unlocked with the PIN in this launch. Home then shows participant codes in full.
+    private(set) var codesUnlocked = false
 
     init(contract: BundledContract, storage: Storage, device: DeviceFacts, configurations: ConfigurationLibrary,
          qualifications: QualificationRegistry = QualificationRegistry(),
@@ -166,14 +176,37 @@ final class SessionStore {
 
     // MARK: Launch and Home
 
-    /// Reconciles every journal and lists the sessions. A self-administered session that was interrupted opens
-    /// again for the participant, who has no operator to resume it.
+    /// Reconciles every journal and lists the sessions. An interrupted self-administered session whose resume window
+    /// has passed closes, so the operator can export it. The latest other one opens again for its participant, who
+    /// has no operator to resume it and confirms their code first.
     func launch(at launch: Storage.Launch = Clock.launch) {
         refresh(at: launch)
-        let waiting = listing.filter { $0.status == .interrupted && $0.administration == .selfAdministered }
+        var waiting: [Listed] { listing.filter { $0.status == .interrupted && $0.administration == .selfAdministered } }
+        let expired = waiting.compactMap(\.sessionID).filter { expireIfDue($0, at: launch) }
+        if !expired.isEmpty { refresh(at: launch) }
         if let latest = waiting.max(by: { ($0.openedAt ?? "") < ($1.openedAt ?? "") }), let id = latest.sessionID {
-            resume(id)
+            resume(id, at: launch)
         }
+    }
+
+    /// Closes an interrupted self-administered session whose resume window has passed. True when the window has
+    /// passed, so the session must not resume, even when the close could not be written; the next launch tries again.
+    private func expireIfDue(_ id: SessionID, at launch: Storage.Launch) -> Bool {
+        guard let state = reconciled[id], let configuration = configurations.configuration(
+            sha: state.session.opened.study.configSHA256.hex) else { return false }
+        let command = Command.expire(at: launch.at, t: launch.uptime)
+        guard case .success(let events) = state.decide(command, rules: rules(state.session.opened, configuration)) else {
+            return false
+        }
+        var closed = state
+        do {
+            try storage.append(try closed.record(events), to: id)
+            reconciled[id] = closed
+        } catch {
+            log.error("expiry failed: \(String(describing: error), privacy: .public)")
+            notice = .failed(String(localized: "A session past its resume time could not be closed."))
+        }
+        return true
     }
 
     /// Lists the sessions again. Reconcile never runs while a journal is open for writing.
@@ -186,7 +219,7 @@ final class SessionStore {
         } else {
             reconciled = [:]
             do {
-                let results = try storage.reconcile(launch) { [configurations] opened in
+                let results = try storage.reconcile(launch, instruments: contract.instruments) { [configurations] opened in
                     guard let config = configurations.configuration(sha: opened.study.configSHA256.hex) else {
                         throw ConfigurationLibrary.Refusal.unreadable
                     }
@@ -225,7 +258,19 @@ final class SessionStore {
         let opened = state.session.opened
         return Listed(id: opened.sessionID.description, status: status, title: opened.participant.rawValue,
                       sessionID: opened.sessionID, purpose: opened.purpose, administration: opened.administration,
-                      openedAt: opened.openedAt.text, encrypted: nil)
+                      openedAt: opened.openedAt.text, encrypted: nil, participant: opened.participant)
+    }
+
+    /// The name of a Home row. A participant code shows only its last 4 characters until the operator unlocks with
+    /// the PIN in this launch, so a configuration without a PIN always masks it.
+    func title(of row: Listed) -> String {
+        guard let code = row.participant, !codesUnlocked else { return row.title }
+        return "•••" + code.rawValue.suffix(4)
+    }
+
+    /// The operator entered the PIN of the configuration.
+    func unlockCodes() {
+        codesUnlocked = true
     }
 
     private func entries(in url: URL) -> [URL] {
@@ -247,7 +292,7 @@ final class SessionStore {
     private func damagedRows() -> [Listed] {
         entries(in: storage.damaged).filter { $0.pathExtension == "jsonl" }.map { file in
             Listed(id: file.lastPathComponent, status: .damaged, title: file.lastPathComponent, sessionID: nil,
-                   purpose: nil, administration: nil, openedAt: nil, encrypted: nil)
+                   purpose: nil, administration: nil, openedAt: nil, encrypted: nil, damagedFile: file.lastPathComponent)
         }
     }
 
@@ -311,10 +356,16 @@ final class SessionStore {
     }
 
     /// Opens an interrupted journal again with a new writer. The configuration that the session recorded must be on
-    /// this device, because a configuration is frozen for the life of a session.
-    func resume(_ id: SessionID) {
-        guard live == nil, let state = reconciled[id], !state.session.isClosed, hasRoom() else { return }
+    /// this device, because a configuration is frozen for the life of a session. A self-administered session past its
+    /// resume window closes instead, and one inside it waits for its participant code.
+    func resume(_ id: SessionID, at launch: Storage.Launch = Clock.launch) {
+        guard live == nil, let state = reconciled[id], !state.session.isClosed else { return }
         let opened = state.session.opened
+        if opened.administration == .selfAdministered, expireIfDue(id, at: launch) {
+            refresh(at: launch)
+            return
+        }
+        guard hasRoom() else { return }
         guard let configuration = configurations.configuration(sha: opened.study.configSHA256.hex) else {
             notice = .configurationMissing
             return
@@ -328,7 +379,9 @@ final class SessionStore {
             var stage = Stage.ready
             if opened.purpose == .qualification {
                 stage = .working
-            } else if opened.administration == .supervised, plan.next(state.session) == .done {
+            } else if opened.administration == .selfAdministered {
+                stage = .confirmCode
+            } else if plan.next(state.session) == .done {
                 stage = .review
             }
             core = Core(state: state, recorder: InkRecorder(resuming: state.session), digest: digest)
@@ -432,6 +485,17 @@ final class SessionStore {
 
     // MARK: Participant
 
+    /// The participant types their code to resume a self-administered session. False when it is not the code of the
+    /// session, and the screen asks again.
+    @discardableResult
+    func confirmCode(_ text: String) -> Bool {
+        guard let live, live.stage == .confirmCode,
+              ParticipantCode(text.trimmingCharacters(in: .whitespaces).uppercased()) == live.opened.participant
+        else { return false }
+        self.live?.stage = .ready
+        return true
+    }
+
     func start() {
         guard let live, live.stage == .ready else { return }
         guard perform(.handoff(to: .participant, t: Clock.uptime)) else { return }
@@ -493,23 +557,37 @@ final class SessionStore {
     }
 
     /// Answers the current item, or skips it when `value` is nil. The last item ends the block.
-    func answer(_ value: Int?) {
+    func answer(_ value: Int?) async {
         guard live?.stage == .working, let current = currentItem, let before = core?.state.session.safety else { return }
         guard perform(.respond(item: current.item.id, value: value, t: Clock.uptime)) else { return }
         if current.number == current.count {
             guard perform(.endQuestionnaire(reason: .completed, t: Clock.uptime)) else { return }
         }
-        if let after = core?.state.session.safety, after.crisisListShown > before.crisisListShown {
+        guard await syncedFlags(since: before), live?.stage == .working,
+              let after = core?.state.session.safety else { return }
+        if after.crisisListShown > before.crisisListShown {
             live?.stage = .flagCrisisList
         } else {
             advance()
         }
     }
 
+    /// Waits until every new safety flag is on storage, so that no screen that follows a flag shows before the flag
+    /// is durable. False when the write failed, which stops the session.
+    private func syncedFlags(since before: SafetyRecord) async -> Bool {
+        guard let live, let after = core?.state.session.safety, after.flags > before.flags else { return true }
+        do {
+            try await live.sink.sync()
+            return true
+        } catch {
+            return false
+        }
+    }
+
     func continueAfterCrisisList() {
         switch live?.stage {
         case .flagCrisisList:
-            advance()
+            if live?.endedEarly == true { live?.stage = .review } else { advance() }
         case .closingCrisisList:
             close()
         default:
@@ -517,9 +595,14 @@ final class SessionStore {
         }
     }
 
-    /// Moves to the next step of the plan: a trial, the disclosure, a block, or the end of the session.
+    /// Moves to the next step of the plan: a trial, the disclosure, a block, or the end of the session. A
+    /// self-administered session first shows the crisis list for a flag that has not had it, as after a recovery.
     func advance() {
         guard let live, live.stage != .stopped, let state = core?.state else { return }
+        if live.opened.administration == .selfAdministered, state.session.safety.flaggedSinceCrisisList {
+            if perform(.show(.crisisList, t: Clock.uptime)) { self.live?.stage = .flagCrisisList }
+            return
+        }
         switch live.plan.next(state.session) {
         case .task, .block(_, open: true):
             self.live?.stage = .working
@@ -594,8 +677,10 @@ final class SessionStore {
 
     // MARK: Operator
 
-    /// The operator passed the operator control. The participant stage is kept for the return.
-    func operatorTookOver() {
+    /// The operator passed the operator control, with the PIN when the configuration has one. The participant stage
+    /// is kept for the return.
+    func operatorTookOver(withPIN: Bool = false) {
+        if withPIN { codesUnlocked = true }
         guard let live else { return }
         switch live.stage {
         case .finished, .qualified, .stopped:
@@ -619,9 +704,11 @@ final class SessionStore {
         self.live?.stage = live.participantStage
     }
 
-    /// Ends the open trial or block for the operator and opens the review, which leads to the close.
-    func endEarly() {
+    /// Ends the open trial or block for the operator and opens the review, which leads to the close. A block that
+    /// ends before its safety item flags the item; a self-administered session then shows the crisis list first.
+    func endEarly() async {
         guard live?.stage == .paused, let state = core?.state else { return }
+        let before = state.session.safety
         switch state.phase {
         case .drawing:
             let t = Clock.uptime
@@ -633,8 +720,15 @@ final class SessionStore {
         default:
             break
         }
-        live?.stage = .review
-        showOperatorAlert()
+        guard await syncedFlags(since: before), live?.stage == .paused,
+              let after = core?.state.session.safety else { return }
+        live?.endedEarly = true
+        if after.crisisListShown > before.crisisListShown {
+            live?.stage = .flagCrisisList
+        } else {
+            live?.stage = .review
+            showOperatorAlert()
+        }
     }
 
     /// Records one neutral alert line when the review shows flags that have no action yet.
@@ -649,9 +743,12 @@ final class SessionStore {
         perform(.recordAction(code, t: Clock.uptime))
     }
 
-    /// The operator gives the iPad back for the crisis list, which every session with a block ends with.
+    /// The operator gives the iPad back for the crisis list, which every session with a block ends with. A supervised
+    /// flag needs its action first; a self-administered flag goes to the study reviewer after export.
     func showSupportList() {
-        guard live?.stage == .review, let state = core?.state, state.session.safety.unactionedFlags == 0 else { return }
+        guard let live, live.stage == .review, let state = core?.state,
+              state.session.safety.unactionedFlags == 0 || live.opened.administration == .selfAdministered
+        else { return }
         guard perform(.handoff(to: .participant, t: Clock.uptime)) else { return }
         showClosingCrisisList()
     }
@@ -726,6 +823,31 @@ final class SessionStore {
             return ExportResult(url: url, encrypted: false)
         } catch {
             log.error("export failed: \(String(describing: error), privacy: .public)")
+            notice = .exportFailed
+            return nil
+        }
+    }
+
+    /// Publishes a journal from `Damaged/` as found, so its flags reach the study, under the export policy of the
+    /// configuration that its first line names, or of the active configuration when that line does not decode.
+    func exportDamaged(_ file: String) async -> ExportResult? {
+        let configuration = if let opened = storage.opened(damaged: file) {
+            configurations.configuration(sha: opened.study.configSHA256.hex)
+        } else {
+            activeConfiguration
+        }
+        guard let configuration, let policy = try? ExportPolicy(configuration: configuration) else {
+            notice = .configurationMissing
+            return nil
+        }
+        let storage = storage
+        do {
+            let url = try await Task.detached { try storage.publishDamaged(file, policy: policy) }.value
+            if live == nil || live?.away == true { refresh() }
+            if case .encrypted = policy { return ExportResult(url: url, encrypted: true) }
+            return ExportResult(url: url, encrypted: false)
+        } catch {
+            log.error("damaged export failed: \(String(describing: error), privacy: .public)")
             notice = .exportFailed
             return nil
         }

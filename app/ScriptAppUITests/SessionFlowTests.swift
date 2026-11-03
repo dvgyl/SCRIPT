@@ -43,7 +43,8 @@ final class SessionFlowTests: XCTestCase {
         snap("13-thank-you")
 
         app.buttons["operatorControl"].press(forDuration: 2.5)
-        let export = app.buttons["export-UIT-SUP-01"]
+        // Home shows only the last 4 characters of a participant code without the PIN.
+        let export = app.buttons["export-•••P-01"]
         XCTAssertTrue(export.waitForExistence(timeout: 10))
         snap("14-home-closed")
         export.tap()
@@ -70,6 +71,30 @@ final class SessionFlowTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["exportName"].label.hasPrefix("SCRIPT_DEMO_DEMO_"))
         snap("23-self-export")
         tap("exportDone")
+    }
+
+    @MainActor func testAnInterruptedSelfAdministeredSessionResumesOnlyForItsCode() {
+        // Detects a resumed self-administered session that a person without its code can continue, or a code screen
+        // that hides its refusal.
+        launch()
+        setUpSession(code: "UIT-RES-01", selfAdministered: true)
+        tap("start")
+        XCTAssertTrue(app.buttons["begin"].waitForExistence(timeout: 10))
+        app.terminate()
+        launch()
+        let field = app.textFields["confirmCode"]
+        replace(field, with: "UIT-OTHER")
+        tap("continue")
+        XCTAssertTrue(app.staticTexts["codeWrong"].waitForExistence(timeout: 10))
+        snap("50-code-wrong")
+        replace(field, with: "UIT-RES-01")
+        tap("continue")
+        XCTAssertTrue(app.buttons["start"].waitForExistence(timeout: 10))
+
+        app.buttons["operatorControl"].press(forDuration: 2.5)
+        tap("endSession")
+        tap("closeSession")
+        XCTAssertTrue(app.buttons["newSession"].waitForExistence(timeout: 10))
     }
 
     @MainActor func testQualificationFromAMeasuredScaleShowsTheSampleTiming() {

@@ -73,6 +73,11 @@ public struct OpenTrial: Hashable, Sendable {
 public struct OpenBlock: Hashable, Sendable {
     public let block: BlockIndex
     public let instrument: InstrumentID
+    /// The items with a response or a safety flag in this block. A safety item outside this set gets a flag when the
+    /// block ends, and a flag that a torn recovery left is never repeated.
+    public internal(set) var settled: Set<ItemID> = []
+    /// The uptime of the block's latest `questionnaireStarted` or `response` line.
+    public internal(set) var last: Double
 }
 
 public enum TrialOutcome: String, Hashable, Sendable {
@@ -123,6 +128,9 @@ public struct SafetyRecord: Hashable, Sendable {
     public internal(set) var unactionedFlags = 0
     /// True from the end of a questionnaire block until the next crisis-list display.
     public internal(set) var crisisListDue = false
+    /// True from a safety flag until the next crisis-list display. A self-administered session shows the list at
+    /// once after a flag, so after a recovery it shows the list before anything else.
+    public internal(set) var flaggedSinceCrisisList = false
 }
 
 /// Everything the fold knows about one session.
@@ -277,10 +285,13 @@ extension SessionState {
             let expected = BlockIndex(count: session.blocks.count)
             guard e.block == expected else { throw fail(.blockIndex(expected: expected)) }
             session.blocks.append(BlockRecord(block: e.block, instrument: e.instrument.id))
-            phase = .answering(OpenBlock(block: e.block, instrument: e.instrument.id))
+            phase = .answering(OpenBlock(block: e.block, instrument: e.instrument.id, last: e.t))
 
         case .response(let e):
-            let open = try openBlock(e.block, notAllowed: notAllowed, fail: fail)
+            var open = try openBlock(e.block, notAllowed: notAllowed, fail: fail)
+            open.settled.insert(e.item)
+            open.last = e.t
+            phase = .answering(open)
             if e.skipped {
                 session.blocks[open.block.rawValue].skipped += 1
             } else {
@@ -294,15 +305,19 @@ extension SessionState {
             phase = .ready
 
         case .safetyFlagged(let e):
-            _ = try openBlock(e.block, notAllowed: notAllowed, fail: fail)
+            var open = try openBlock(e.block, notAllowed: notAllowed, fail: fail)
+            open.settled.insert(e.item)
+            phase = .answering(open)
             session.safety.flags += 1
             session.safety.unactionedFlags += 1
+            session.safety.flaggedSinceCrisisList = true
 
         case .safetyShown(let e):
             switch e.what {
             case .crisisList:
                 session.safety.crisisListShown += 1
                 session.safety.crisisListDue = false
+                session.safety.flaggedSinceCrisisList = false
             case .operatorAlert:
                 session.safety.operatorAlerts += 1
             }
@@ -398,13 +413,16 @@ public enum Command: Hashable, Sendable {
     case recordAction(Code, t: Double)
     case mark(trial: TrialIndex, code: MarkCode, t: Double)
     case close(t: Double)
+    /// Closes an interrupted self-administered session whose resume window has passed at the wall time `at`. No
+    /// participant is present, so the closing crisis list cannot be shown.
+    case expire(at: WallTime, t: Double)
 
     /// The uptime of the intent, which every event it gives carries.
     var t: Double {
         switch self {
         case .handoff(_, let t), .startTrial(_, let t), .beginTrial(let t), .endTrial(_, let t),
              .startQuestionnaire(_, let t), .respond(_, _, let t), .endQuestionnaire(_, let t), .show(_, let t),
-             .recordAction(_, let t), .mark(_, _, let t), .close(let t):
+             .recordAction(_, let t), .mark(_, _, let t), .close(let t), .expire(_, let t):
             t
         }
     }
@@ -448,6 +466,12 @@ public enum Rejection: Error, Hashable, Sendable {
     case unactionedFlag
     /// The session had a questionnaire block, and the crisis list has not been shown since the last one.
     case crisisListNotShown
+    /// A resume window closes self-administered sessions only.
+    case notSelfAdministered
+    /// Only an interrupted session expires. A live session is with its participant.
+    case notInterrupted
+    /// The session is still inside its resume window, or a wall time does not parse.
+    case resumeWindowOpen
 }
 
 extension SessionState {
@@ -530,7 +554,13 @@ extension SessionState {
 
         case .endQuestionnaire(let reason, let t):
             guard case .answering(let open) = phase else { return .failure(.noOpenBlock) }
-            return .success([.questionnaireEnded(QuestionnaireEnded(t: t, block: open.block, reason: reason))])
+            var events = Self.unreachedFlags(open, instruments: rules.instruments, t: t)
+            if !events.isEmpty, opened.administration == .selfAdministered {
+                guard let list = rules.crisisList else { return .failure(.noCrisisList) }
+                events.append(.safetyShown(SafetyShown(t: t, what: .crisisList, listVersion: list.version)))
+            }
+            events.append(.questionnaireEnded(QuestionnaireEnded(t: t, block: open.block, reason: reason)))
+            return .success(events)
 
         case .show(.crisisList, let t):
             guard let list = rules.crisisList else { return .failure(.noCrisisList) }
@@ -557,6 +587,24 @@ extension SessionState {
             }
             if session.safety.crisisListDue { return .failure(.crisisListNotShown) }
             return .success([.sessionClosed(SessionClosed(t: t, counts: session.counts))])
+
+        case .expire(let at, let t):
+            guard opened.administration == .selfAdministered else { return .failure(.notSelfAdministered) }
+            guard case .suspended = phase else { return .failure(.notInterrupted) }
+            guard let start = opened.openedAt.date, let now = at.date,
+                  now.timeIntervalSince(start) >= rules.resumeWithinHours * 3600 else {
+                return .failure(.resumeWindowOpen)
+            }
+            return .success([.sessionClosed(SessionClosed(t: t, counts: session.counts))])
+        }
+    }
+
+    /// A flag for each safety item of the open block's instrument that has no response. An unreached safety item
+    /// counts as a flag, as a skipped one does (docs/DESIGN.md section 15.2).
+    private static func unreachedFlags(_ open: OpenBlock, instruments: InstrumentSet, t: Double) -> [Event] {
+        let items = instruments.instrument(open.instrument)?.items ?? []
+        return items.filter { $0.safety && !open.settled.contains($0.id) }.map { item in
+            .safetyFlagged(SafetyFlagged(t: t, block: open.block, item: item.id, value: nil))
         }
     }
 
@@ -569,19 +617,28 @@ extension SessionState {
         }
     }
 
-    /// The `recovered` line for a relaunch that adopts this open journal, or nil when there is nothing to record:
-    /// the session is closed, or it is already suspended in this boot and no bytes were removed.
-    public func recovery(t: Double, at: WallTime, boot: BootID, truncatedBytes: Int) -> Event? {
+    /// The lines for a relaunch that adopts this open journal, or none when there is nothing to record: the session
+    /// is closed, or it is already suspended in this boot and no bytes were removed. An interrupted block first flags
+    /// each safety item that has no response. The flag carries the time of the block's latest line, so it stays in
+    /// the boot of its block, and the `recovered` line follows.
+    public func recovery(t: Double, at: WallTime, boot: BootID, truncatedBytes: Int,
+                         instruments: InstrumentSet) -> [Event] {
         switch phase {
         case .closed:
-            return nil
+            return []
         case .suspended where boot == session.boot && truncatedBytes == 0:
-            return nil
+            return []
         default:
             let trial: TrialIndex? = if case .drawing(let open) = phase { open.index } else { nil }
-            let block: BlockIndex? = if case .answering(let open) = phase { open.block } else { nil }
-            return .recovered(Recovered(t: t, at: at, boot: boot, truncatedBytes: truncatedBytes,
-                                        interrupted: trial, interruptedBlock: block))
+            var events: [Event] = []
+            var block: BlockIndex?
+            if case .answering(let open) = phase {
+                block = open.block
+                events = Self.unreachedFlags(open, instruments: instruments, t: open.last)
+            }
+            events.append(.recovered(Recovered(t: t, at: at, boot: boot, truncatedBytes: truncatedBytes,
+                                               interrupted: trial, interruptedBlock: block)))
+            return events
         }
     }
 }

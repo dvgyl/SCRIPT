@@ -131,6 +131,13 @@ public struct StudyConfiguration: Hashable, Sendable {
         public var waiverReference: String?
     }
 
+    public struct SelfAdministered: Hashable, Sendable {
+        /// The hours after `openedAt` in which an interrupted self-administered session can resume.
+        public var resumeWithinHours: Double
+        /// The window when the configuration has no `selfAdministered` member.
+        public static let defaultResumeWithinHours = 24.0
+    }
+
     public struct Export: Hashable, Sendable {
         /// The raw 32-byte X25519 public key of the study, or nil for the demo configuration.
         public var recipientPublicKey: Data?
@@ -153,13 +160,15 @@ public struct StudyConfiguration: Hashable, Sendable {
     public var ethics: Ethics
     public var export: Export
     public var operatorPin: OperatorPin?
+    public var selfAdministered: SelfAdministered
     /// SHA-256 of the imported file, recorded as `study.configSHA256` in every session.
     public let sha256: SHA256Digest
 
     public init(data: Data) throws(DecodeError) {
         let f = try Fields(try JSON.decodeDocument(data), path: "")
         try f.only(["format", "version", "demo", "study", "sites", "jurisdictions", "administration", "battery", "tasks",
-                    "questionnaires", "locales", "safety", "consentModel", "ethics", "export", "operatorPin"])
+                    "questionnaires", "locales", "safety", "consentModel", "ethics", "export", "operatorPin",
+                    "selfAdministered"])
         guard try f.string("format") == "script.config" else { throw .invalid("format") }
         guard try f.string("version") == "1.0" else { throw .invalid("version") }
         demo = try f.bool("demo")
@@ -277,6 +286,13 @@ public struct StudyConfiguration: Hashable, Sendable {
             let key = try pin.text("pbkdf2Sha256", SHA256Digest.init(hex:))
             operatorPin = OperatorPin(salt: salt, iterations: iterations, key: key.bytes)
         }
+        if f.has("selfAdministered") {
+            let selfAdministered = try f.object("selfAdministered")
+            try selfAdministered.only(["resumeWithinHours"])
+            self.selfAdministered = SelfAdministered(resumeWithinHours: try selfAdministered.positive("resumeWithinHours"))
+        } else {
+            selfAdministered = SelfAdministered(resumeWithinHours: SelfAdministered.defaultResumeWithinHours)
+        }
         sha256 = SHA256Digest(of: data)
     }
 
@@ -376,6 +392,7 @@ public enum ConfigProblem: Error, Hashable, Sendable, CustomStringConvertible {
     case imminentReviewTooLong
     case routineReviewTooLong
     case exportIntervalTooLong
+    case resumeWindowTooLong
     case noCrisisList(Jurisdiction)
     case noConsentModel(AgeBand)
     case noExportKey
@@ -395,6 +412,7 @@ public enum ConfigProblem: Error, Hashable, Sendable, CustomStringConvertible {
         case .imminentReviewTooLong: "safety.remoteReview.imminentReviewWithinHours exceeds 24"
         case .routineReviewTooLong: "safety.remoteReview.routineReviewWithinWeekdays exceeds 1"
         case .exportIntervalTooLong: "safety.remoteReview.exportEveryHours is longer than the review interval"
+        case .resumeWindowTooLong: "selfAdministered.resumeWithinHours is longer than the review interval"
         case .noCrisisList(let j): "no crisis list for jurisdiction \(j)"
         case .noConsentModel(let band): "consentModel has no entry for age band \(band.rawValue)"
         case .noExportKey: "a study configuration needs export.recipientPublicKey"
@@ -432,6 +450,9 @@ public func validate(config: StudyConfiguration, battery: Battery, instruments: 
                 if review.imminentReviewWithinHours > 24 { problems.append(.imminentReviewTooLong) }
                 if review.routineReviewWithinWeekdays > 1 { problems.append(.routineReviewTooLong) }
                 if review.exportEveryHours > review.imminentReviewWithinHours { problems.append(.exportIntervalTooLong) }
+                if config.selfAdministered.resumeWithinHours > review.imminentReviewWithinHours {
+                    problems.append(.resumeWindowTooLong)
+                }
             }
         }
     }
@@ -462,6 +483,8 @@ public struct SessionRules: Sendable {
     public let crisisList: CrisisList?
     public let actionCodes: [Code]
     public let remoteReview: StudyConfiguration.RemoteReview?
+    /// The hours after `openedAt` in which an interrupted self-administered session can resume.
+    public let resumeWithinHours: Double
 
     public init(battery: Battery, instruments: InstrumentSet, configuration: StudyConfiguration,
                 jurisdiction: Jurisdiction, locale: LocaleTag) {
@@ -471,6 +494,7 @@ public struct SessionRules: Sendable {
         crisisList = lists.first { $0.locale == locale.rawValue } ?? lists.first
         actionCodes = configuration.safety.actionCodes
         remoteReview = configuration.safety.remoteReview
+        resumeWithinHours = configuration.selfAdministered.resumeWithinHours
     }
 }
 

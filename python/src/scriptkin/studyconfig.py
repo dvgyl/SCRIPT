@@ -16,6 +16,9 @@ from scriptkin import battery, hpke, instruments
 AGE_BANDS = ("13-17", "18-24")
 ADMINISTRATIONS = ("supervised", "self")
 CRISIS_LISTS_VERIFIED_ON = "2026-11-03"
+# Hours after `openedAt` in which an interrupted self-administered session can resume, when the configuration
+# has no `selfAdministered` member.
+DEFAULT_RESUME_WITHIN_HOURS = 24
 
 
 def _crisis(jurisdiction: str, entries: list[dict[str, str]]) -> dict[str, Any]:
@@ -147,6 +150,7 @@ def demo_config() -> dict[str, Any]:
         },
         "export": {"recipientPublicKey": None, "keyID": None},
         "operatorPin": None,
+        "selfAdministered": {"resumeWithinHours": DEFAULT_RESUME_WITHIN_HOURS},
     }
 
 
@@ -164,6 +168,11 @@ def _key_id_problems(export: dict[str, Any]) -> list[str]:
     if hpke.key_id(public) != export["keyID"]:
         return ["export.keyID is not the SHA-256 of export.recipientPublicKey"]
     return []
+
+
+def resume_within_hours(config: dict[str, Any]) -> float:
+    """How long an interrupted self-administered session can resume, in hours after it opened."""
+    return config.get("selfAdministered", {}).get("resumeWithinHours", DEFAULT_RESUME_WITHIN_HOURS)
 
 
 def validate(config: dict[str, Any]) -> list[str]:
@@ -206,6 +215,10 @@ def validate(config: dict[str, Any]) -> list[str]:
                     if review["exportEveryHours"] > review["imminentReviewWithinHours"]:
                         problems.append(
                             "safety.remoteReview.exportEveryHours is longer than the review interval"
+                        )
+                    if resume_within_hours(config) > review["imminentReviewWithinHours"]:
+                        problems.append(
+                            "selfAdministered.resumeWithinHours is longer than the review interval"
                         )
     lists = {c["jurisdiction"] for c in config["safety"]["crisisLists"]}
     if config["questionnaires"]:

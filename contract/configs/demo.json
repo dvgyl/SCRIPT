@@ -240,5 +240,8 @@
   "recipientPublicKey": null,
   "keyID": null
  },
- "operatorPin": null
+ "operatorPin": null,
+ "selfAdministered": {
+  "resumeWithinHours": 24
+ }
 }

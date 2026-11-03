@@ -49,6 +49,8 @@ from scriptkin.evaluate.plan import (
 from scriptkin.evaluate.reliability import Agreement, GateStatus, reliability_gate
 from scriptkin.evaluate.report import (
     AUC_STATEMENT,
+    COUNTS_STATEMENT,
+    DIGEST_STATEMENT,
     NORMS_STATEMENT,
     PPV_STATEMENT,
     TRIPOD_AI,
@@ -376,15 +378,18 @@ def crossfit(
 
 
 def witness_refusal(cross: CrossFit, splits: Splits, ids: Sequence[str]) -> Refused | None:
-    """Refuse when a test participant appears in any fit of its fold, or a fold has no witnessed final fit."""
+    """Refuse when a test participant appears in any fit of its fold, or a fold has no witnessed final fit.
+
+    The reason gives a count only. It goes into the report file, which must not name a participant.
+    """
     tests = [frozenset(ids[i] for i in fold.test) for folds in splits for fold in folds]
     for record in cross.log:
         overlap = record.participants & tests[record.fold]
         if overlap:
             return Refused(
                 RefusedCode.LEAKAGE,
-                f"Fold {record.fold}: {len(overlap)} test participants are in a {record.stage} fit,"
-                f" for example {min(overlap)}.",
+                f"Fold {record.fold}: the {record.stage} fit includes {len(overlap)} of the fold's test"
+                " participants.",
             )
     finals = {record.fold for record in cross.log if record.stage == "final"}
     if finals != set(range(len(tests))):
@@ -638,7 +643,7 @@ def _tripod(
     digest: str,
     used: Sequence[str],
     attrition: Attrition,
-    n: int,
+    tested: int,
     cases: int,
     auc_estimate: AucResult,
     cal: Calibration,
@@ -675,7 +680,8 @@ def _tripod(
         "18c": f"Analysis plan SHA-256 {digest}.",
         "20a": f"{attrition.participants} participants, {attrition.analysed} analysed,"
         f" excluded {attrition.excluded}.",
-        "21": f"{n} participants with {cases} cases in the evaluation.",
+        "21": f"{tested} tested participants with {cases} cases, of {attrition.analysed} in the analysis"
+        " set.",
         "23a": f"AUC {auc_estimate.point:.3f} ({auc_estimate.low:.3f} to {auc_estimate.high:.3f}),"
         f" permutation p {auc_estimate.p_value:.3g}; calibration slope {cal.slope:.3f}; subgroup results"
         " reported.",
@@ -966,7 +972,13 @@ def screening(
                 f" ({attrition.excluded_controls}), Fisher exact p < 0.05.",
             )
         )
-    statements = [AUC_STATEMENT, PPV_STATEMENT, *([NORMS_STATEMENT] if plan.norms else [])]
+    statements = [
+        AUC_STATEMENT,
+        PPV_STATEMENT,
+        COUNTS_STATEMENT,
+        DIGEST_STATEMENT,
+        *([NORMS_STATEMENT] if plan.norms else []),
+    ]
     cal = calibration(p, y_tested)
     digest = plan_digest(plan)
     return Screening(
@@ -975,7 +987,7 @@ def screening(
         seed=seed,
         columns=tuple(used),
         reliability=gates,
-        n=len(y_tested),
+        tested=len(y_tested),
         cases=cases_t,
         sample_prevalence=sample_prevalence,
         stated_prevalence=plan.prevalence,

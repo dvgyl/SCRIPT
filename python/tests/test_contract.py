@@ -203,6 +203,85 @@ def test_a_skipped_or_endorsed_safety_item_is_flagged_in_the_fixtures() -> None:
     assert remote["safety"]["flags"] == 1 and remote["safety"]["crisisListShown"] == 2
 
 
+def _fixture_rows(name: str) -> list[dict[str, Any]]:
+    return [
+        json.loads(line)
+        for line in (CONTRACT / "fixtures" / "journal" / f"{name}.jsonl").read_bytes().splitlines()
+    ]
+
+
+@pytest.mark.parametrize(
+    ("name", "end_kind", "crisis_list"),
+    [
+        ("declined_unreached_safety", "questionnaireEnded", True),
+        ("interrupted_unreached_safety", "recovered", False),
+    ],
+)
+def test_an_unreached_safety_item_is_flagged_inside_its_block(
+    name: str, end_kind: str, crisis_list: bool
+) -> None:
+    # Detects a block that ends declined or interrupted before PHQ-9 item 9 and leaves no safety flag.
+    rows = _fixture_rows(name)
+    started = next(i for i, r in enumerate(rows) if r["kind"] == "questionnaireStarted")
+    end = next(i for i, r in enumerate(rows) if r["kind"] == end_kind and i > started)
+    block = rows[started]["block"]
+    flags = [r for r in rows if r["kind"] == "safetyFlagged"]
+    assert flags == [r for r in rows[started:end] if r["kind"] == "safetyFlagged"]
+    assert [(f["block"], f["item"], f["skipped"], "value" in f) for f in flags] == [
+        (block, "phq9-9", True, False)
+    ]
+    assert not any(r["kind"] == "response" and r["item"] == "phq9-9" for r in rows[started:end])
+    shown_in_block = [r["what"] for r in rows[started:end] if r["kind"] == "safetyShown"]
+    assert shown_in_block == (["crisisList"] if crisis_list else [])
+    last = max(r["t"] for r in rows[started:end] if r["kind"] in ("questionnaireStarted", "response"))
+    if end_kind == "recovered":
+        assert flags[0]["t"] == last
+    fold = json.loads((CONTRACT / "fixtures" / "journal" / f"{name}.fold.json").read_text())
+    assert fold["safety"]["flags"] == 1
+
+
+def test_an_empty_source_revision_is_outside_the_schema() -> None:
+    # Detects a journal schema that accepts an empty app.sourceRevision, which names no build.
+    head = _fixture_rows("basic")[0]
+    assert not list(SCHEMA.iter_errors(head))
+    head["app"]["sourceRevision"] = ""
+    assert list(SCHEMA.iter_errors(head))
+
+
+def test_the_resume_window_has_a_default_and_a_schema_shape() -> None:
+    # Detects a demo configuration without the resume window, or a schema that accepts a window of zero hours.
+    config = _demo()
+    assert config["selfAdministered"] == {"resumeWithinHours": 24}
+    config["selfAdministered"]["resumeWithinHours"] = 0
+    assert list(CONFIG_SCHEMA.iter_errors(config))
+    del config["selfAdministered"]
+    assert not list(CONFIG_SCHEMA.iter_errors(config))
+
+
+def test_a_resume_window_longer_than_the_review_interval_is_refused() -> None:
+    # Detects a self-administered safety item whose flags wait in an interrupted session past the review.
+    config = _demo()
+    config["questionnaires"].append(
+        {"administration": "self", "ageBand": "13-17", "position": "afterTasks", "instruments": ["phq9"]}
+    )
+    config["safety"]["remoteReview"] = {
+        "reviewerRole": "study clinician",
+        "imminentReviewWithinHours": 12,
+        "routineReviewWithinWeekdays": 1,
+        "exportEveryHours": 12,
+        "monitoringDisclosureVersion": "1",
+    }
+    assert studyconfig.validate(config) == [
+        "selfAdministered.resumeWithinHours is longer than the review interval"
+    ]
+    config["selfAdministered"]["resumeWithinHours"] = 12
+    assert studyconfig.validate(config) == []
+    del config["selfAdministered"]
+    assert studyconfig.validate(config) == [
+        "selfAdministered.resumeWithinHours is longer than the review interval"
+    ]
+
+
 def test_one_correction_resolves_every_sample_that_shares_its_key() -> None:
     # Detects the summary rule for repeated (contact, update) keys drifting from DESIGN section 3.3.
     fold = json.loads((CONTRACT / "fixtures" / "journal" / "repeated_update_key.fold.json").read_text())

@@ -15,9 +15,9 @@ private func journal(_ store: SessionStore, _ id: SessionID) throws -> SessionSt
     try Journal.read(try Data(contentsOf: store.storage.journalURL(id)))
 }
 
-@Test @MainActor func aFlagInASupervisedSessionChangesNothingThatTheParticipantSees() throws {
+@Test @MainActor func aFlagInASupervisedSessionChangesNothingThatTheParticipantSees() async throws {
     // Detects a supervised flow that differs when a safety item is flagged, so the participant could infer the result.
-    func run(flag: Bool) throws -> (stages: [Stage], flags: Int, lists: Int) {
+    func run(flag: Bool) async throws -> (stages: [Stage], flags: Int, lists: Int) {
         let root = try temporaryFolder()
         defer { try? FileManager.default.removeItem(at: root) }
         let store = try makeStore(root: root)
@@ -26,14 +26,14 @@ private func journal(_ store: SessionStore, _ id: SessionID) throws -> SessionSt
         store.runTasks()
         var stages: [Stage] = []
         while let item = store.currentItem, stages.count < 40 {
-            store.answer(flag && item.item.id == "phq9-9" ? 1 : 0)
+            await store.answer(flag && item.item.id == "phq9-9" ? 1 : 0)
             stages.append(store.live!.stage)
         }
         let safety = store.state!.session.safety
         return (stages, safety.flags, safety.crisisListShown)
     }
-    let plain = try run(flag: false)
-    let flagged = try run(flag: true)
+    let plain = try await run(flag: false)
+    let flagged = try await run(flag: true)
     #expect(flagged.flags == 1 && plain.flags == 0)
     #expect(flagged.stages == plain.stages)
     #expect(flagged.stages.last == .handBack)
@@ -49,7 +49,7 @@ private func journal(_ store: SessionStore, _ id: SessionID) throws -> SessionSt
     let id = store.live!.opened.sessionID
     store.start()
     store.runTasks()
-    store.answerBlocks(["phq9-9": 2])
+    await store.answerBlocks(["phq9-9": 2])
     #expect(store.live?.stage == .handBack)
 
     store.operatorTookOver()
@@ -84,15 +84,15 @@ private func journal(_ store: SessionStore, _ id: SessionID) throws -> SessionSt
     store.acknowledgeDisclosure()
     for _ in 0..<20 {
         guard let item = store.currentItem, item.item.id != "phq9-9" else { break }
-        store.answer(0)
+        await store.answer(0)
     }
-    store.answer(1)
+    await store.answer(1)
     #expect(store.live?.stage == .flagCrisisList)
     #expect(store.state?.session.safety.crisisListShown == 1)
 
     store.continueAfterCrisisList()
     #expect(store.currentItem?.item.id == "difficulty")
-    store.answer(nil)
+    await store.answer(nil)
     #expect(store.live?.stage == .closingCrisisList)
     #expect(store.state?.session.safety.crisisListShown == 2)
     store.continueAfterCrisisList()
@@ -171,7 +171,7 @@ private func journal(_ store: SessionStore, _ id: SessionID) throws -> SessionSt
         let id = first.live!.opened.sessionID
         first.start()
         first.runTasks()
-        first.answerBlocks()
+        await first.answerBlocks()
         first.operatorTookOver()
         first.showSupportList()
         first.continueAfterCrisisList()
@@ -200,6 +200,8 @@ private func journal(_ store: SessionStore, _ id: SessionID) throws -> SessionSt
     #expect(statuses[.closed] == ["T-CLOSED"])
     #expect(statuses[.exported]?.count == 1 && statuses[.exported]?.first?.hasPrefix("SCRIPT_DEMO_DEMO_") == true)
     #expect(statuses[.damaged]?.count == 1)
+    #expect(second.live?.stage == .confirmCode)
+    #expect(second.confirmCode("t-home"))
     #expect(second.live?.stage == .ready)
     #expect(second.state?.summary.trials.map(\.outcome) == [.completed, .interrupted])
     second.start()
@@ -231,4 +233,212 @@ private func journal(_ store: SessionStore, _ id: SessionID) throws -> SessionSt
     #expect(facts("iPad16,3").tableScale != nil)
     #expect(facts("iPad99,9").tableScale == nil)
     #expect(facts("iPad17,2").tableScale == MillimetreScale.lookup(model: "iPad17,2", nativeScale: 2))
+}
+
+/// A self-administered session under the remote-review configuration, imported into the store, at its first item.
+@MainActor
+private func openSelfAtFirstItem(_ store: SessionStore, participant: ParticipantCode = "T-0001") throws {
+    let config = try store.importConfiguration(try remoteReviewConfigurationData()).get()
+    store.open(opened(.selfAdministered, participant: participant, configuration: config, battery: store.contract.battery),
+               configuration: config, dominant: .left)
+    store.start()
+    store.runTasks()
+    store.acknowledgeDisclosure()
+}
+
+@MainActor
+private func answerUntil(_ item: ItemID, in store: SessionStore) async {
+    var guardCount = 0
+    while let current = store.currentItem, current.item.id != item, guardCount < 20 {
+        await store.answer(0)
+        guardCount += 1
+    }
+}
+
+@Test @MainActor func aSelfAdministeredFlagStillClosesAndExportsWhenTheOperatorEndsTheSession() async throws {
+    // Detects a self-administered session with a flag that Review cannot close or export, because Review waits for
+    // an operator action that a self-administered session never takes.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try makeStore(root: root)
+    try openSelfAtFirstItem(store)
+    let id = store.live!.opened.sessionID
+    await answerUntil("phq9-9", in: store)
+    await store.answer(1)
+    store.continueAfterCrisisList()
+    store.operatorTookOver()
+    await store.endEarly()
+    #expect(store.live?.stage == .review)
+    store.recordAction("clinicianAssessment")
+    #expect(store.state?.session.safety.actions == 0)
+    store.showSupportList()
+    #expect(store.live?.stage == .closingCrisisList)
+    store.continueAfterCrisisList()
+    #expect(store.live?.stage == .finished)
+
+    let result = try #require(await store.export(id))
+    let saved = try Journal.read(try Data(contentsOf: result.url.appendingPathComponent("journal.jsonl")))
+    #expect(saved.status == .closed)
+    let safety = saved.summary.safety
+    #expect([safety.flags, safety.crisisListShown, safety.operatorAlerts, safety.actions] == [Int]([1, 2, 0, 0]))
+}
+
+@Test @MainActor func anOperatorEndOfASelfAdministeredBlockBeforeItsSafetyItemFlagsItAndShowsTheList() async throws {
+    // Detects an operator end of a self-administered PHQ-9 block before item 9 that leaves no flag, or a crisis-list
+    // display in the journal that the iPad never shows.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try makeStore(root: root)
+    try openSelfAtFirstItem(store)
+    await store.answer(0)
+    await store.answer(0)
+    store.operatorTookOver()
+    await store.endEarly()
+    #expect(store.live?.stage == .flagCrisisList)
+    let safety = try #require(store.state?.session.safety)
+    #expect(safety.flags == 1 && safety.crisisListShown == 1)
+    #expect(store.state?.summary.questionnaires.map(\.outcome) == [.declined])
+    store.continueAfterCrisisList()
+    #expect(store.live?.stage == .review)
+}
+
+@Test @MainActor func aResumedSelfAdministeredSessionShowsTheCrisisListForTheFlagOfItsInterruptedBlock() async throws {
+    // Detects a crash in a self-administered PHQ-9 block before item 9 after which the session raises no flag, or
+    // never shows the participant the crisis list for it.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let first = try makeStore(root: root)
+    try openSelfAtFirstItem(first, participant: "T-RESUME")
+    await first.answer(0)
+    try await first.live!.sink.close()
+
+    let second = try makeStore(root: root)
+    second.launch()
+    #expect(second.state?.summary.safety.flags == 1)
+    #expect(second.state?.summary.questionnaires.map(\.outcome) == [.interrupted])
+    #expect(second.confirmCode("T-RESUME"))
+    second.start()
+    #expect(second.live?.stage == .flagCrisisList)
+    #expect(second.state?.session.safety.crisisListShown == 1)
+    second.continueAfterCrisisList()
+    second.acknowledgeDisclosure()
+    #expect(second.currentItem?.item.id == "phq9-1")
+}
+
+@Test @MainActor func aResumedSelfAdministeredSessionWaitsForTheCodeOfItsParticipant() async throws {
+    // Detects a self-administered session that reopens for whoever holds the iPad, so that a second person's answers
+    // join the first person's code.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let first = try makeStore(root: root)
+    let demo = first.contract.demo
+    first.open(opened(.selfAdministered, participant: "T-OWNER", configuration: demo, battery: first.contract.battery),
+               configuration: demo, dominant: .left)
+    first.start()
+    try await first.live!.sink.close()
+
+    let second = try makeStore(root: root)
+    second.launch()
+    #expect(second.live?.stage == .confirmCode)
+    let lines = second.state?.session.lines
+    #expect(!second.confirmCode("T-OTHER"))
+    second.start()
+    #expect(second.live?.stage == .confirmCode)
+    #expect(second.state?.session.lines == lines)
+    #expect(second.confirmCode(" t-owner "))
+    #expect(second.live?.stage == .ready)
+}
+
+@Test @MainActor func aSelfAdministeredSessionPastItsResumeWindowClosesForExport() async throws {
+    // Detects an interrupted self-administered session that reopens a day after it started, or that stays
+    // interrupted, where no export can take its flags to the study.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let first = try makeStore(root: root)
+    let demo = first.contract.demo
+    first.open(opened(.selfAdministered, configuration: demo, battery: first.contract.battery,
+                      openedAt: Date(timeIntervalSinceNow: -25 * 3600)),
+               configuration: demo, dominant: .left)
+    let id = first.live!.opened.sessionID
+    first.start()
+    try await first.live!.sink.close()
+
+    let second = try makeStore(root: root)
+    second.launch()
+    #expect(second.live == nil)
+    #expect(second.listing.first { $0.sessionID == id }?.status == .closed)
+    let result = try #require(await second.export(id))
+    let saved = try Journal.read(try Data(contentsOf: result.url.appendingPathComponent("journal.jsonl")))
+    #expect(saved.summary.counts[.recovered] == 1 && saved.status == .closed)
+}
+
+@Test @MainActor func aSelfAdministeredFlagIsOnStorageBeforeTheCrisisListShows() async throws {
+    // Detects a crisis list that appears before the flag that caused it is synced to storage.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let gate = SyncGate()
+    let store = try makeStore(root: root) { _, _ in GatedSink(gate: gate) }
+    try openSelfAtFirstItem(store)
+    await answerUntil("phq9-9", in: store)
+    let answering = Task { await store.answer(1) }
+    #expect(await gate.waitForSync())
+    #expect(gate.flaggedBeforeSync)
+    #expect(store.live?.stage == .working)
+    gate.open()
+    await answering.value
+    #expect(store.live?.stage == .flagCrisisList)
+}
+
+@Test @MainActor func homeShowsOnlyTheLastFourCharactersOfACodeUntilThePINUnlocks() throws {
+    // Detects a Home list that shows each participant code in full to whoever holds the iPad without the PIN.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try makeStore(root: root)
+    openSupervised(store, participant: "T-0042")
+    store.leave()
+    let row = try #require(store.listing.first { $0.participant != nil })
+    #expect(store.title(of: row) == "•••0042")
+    store.operatorTookOver()
+    #expect(store.title(of: row) == "•••0042")
+    store.operatorTookOver(withPIN: true)
+    #expect(store.title(of: row) == "T-0042")
+}
+
+@Test @MainActor func aDamagedJournalOnHomeLeavesTheIPadAsADamagedPackage() async throws {
+    // Detects a damaged journal that Home lists with no way to take it, and the flags in it, off the iPad.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let first = try makeStore(root: root)
+    openSupervised(first, participant: "T-DAMAGE")
+    first.start()
+    let url = first.live!.url
+    try await first.live!.sink.close()
+    var lines = try Data(contentsOf: url).split(separator: 0x0A, omittingEmptySubsequences: false)
+    lines.insert(Data("{not json".utf8)[...], at: 1)
+    try Data(lines.joined(separator: [0x0A])).write(to: url)
+
+    let second = try makeStore(root: root)
+    second.launch()
+    let row = try #require(second.listing.first { $0.damagedFile != nil })
+    let result = try #require(await second.exportDamaged(row.damagedFile!))
+    #expect(result.name.hasPrefix("SCRIPT_DAMAGED_") && !result.encrypted)
+    #expect(!second.listing.contains { $0.status == .damaged })
+    #expect(second.listing.contains { $0.status == .exported && $0.title == result.name })
+}
+
+@Test func anEmptySourceRevisionIsRecordedAsUnknown() {
+    // Detects a journal that records an empty source revision from a build that did not stamp one.
+    #expect(DeviceFacts.sourceRevision("") == "unknown")
+    #expect(DeviceFacts.sourceRevision(nil) == "unknown")
+    #expect(DeviceFacts.sourceRevision("abc1234-dirty") == "abc1234-dirty")
+}
+
+@Test func theReviewIntervalReadsInWholeWorkingDays() throws {
+    // Detects a disclosure that reads "0 working day" for half a working day, or a count without its plural.
+    var config = try remoteReviewConfiguration()
+    for (weekdays, words) in [(0.5, "1 working day."), (1.0, "1 working day."), (1.5, "2 working days.")] {
+        config.safety.remoteReview?.routineReviewWithinWeekdays = weekdays
+        let review = try #require(config.safety.remoteReview)
+        #expect(String(review.disclosure.characters).hasSuffix("within \(words)"), "\(weekdays)")
+    }
 }

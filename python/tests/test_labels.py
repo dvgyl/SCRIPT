@@ -92,9 +92,17 @@ def test_label_records_carry_administration() -> None:
     assert {label.administration for label in labels(session("gad7", {}, administration="self"))} == {"self"}
 
 
-@pytest.mark.parametrize(("name", "flags"), [("supervised_minor_safety", 1), ("self_with_remote_review", 1)])
-def test_safety_flag_count_counts_endorsed_and_skipped_items(name: str, flags: int) -> None:
-    # Detects a safety audit count that misses an endorsed or a skipped safety item.
+@pytest.mark.parametrize(
+    ("name", "flags"),
+    [
+        ("supervised_minor_safety", 1),
+        ("self_with_remote_review", 1),
+        ("declined_unreached_safety", 1),
+        ("interrupted_unreached_safety", 1),
+    ],
+)
+def test_safety_flag_count_counts_endorsed_skipped_and_unreached_items(name: str, flags: int) -> None:
+    # Detects a safety audit count that misses an endorsed, a skipped, or an unreached safety item.
     rec = fold(fixture_lines(name))
     assert safety_flag_count(rec) == flags
     assert {label.scale for label in labels(rec)} == {"total"}

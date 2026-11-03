@@ -143,6 +143,10 @@ def pen_only(export: str | Path, target: str | Path, *, private_key: bytes | Non
     handled a safety flag. A session with no `trialEnded` keeps all its non-questionnaire lines and its
     `sessionClosed.t`.
 
+    The copy refuses a session with a questionnaire or safety line before the last `trialEnded`, for example
+    a `beforeTasks` block. The copy would keep the times on both sides of the dropped lines, and the gap
+    would show how long the block took. A session with no `trialEnded` must have no such line at all.
+
     The copy has new `seq` values, recounted closing counts, its own manifest, and `derivation.json`
     with the source session and the SHA-256 of the source journal. It is checked like any export.
     """
@@ -156,6 +160,13 @@ def pen_only(export: str | Path, target: str | Path, *, private_key: bytes | Non
     if ended:
         body = body[: ended[-1] + 1]
         closing["t"] = body[-1]["t"]
+    dropped = next((r for r in body if r["kind"] in QUESTIONNAIRE_KINDS), None)
+    if dropped is not None:
+        raise ValueError(
+            "A pen-only copy needs every questionnaire and safety line after the last trialEnded."
+            f" Line {dropped['seq']} ({dropped['kind']}) is not, and the time gap around it would show how"
+            " long the block took."
+        )
     kept: list[Line] = [dict(r) for r in body if r["kind"] not in QUESTIONNAIRE_KINDS] + [closing]
     for seq, row in enumerate(kept):
         row["seq"] = seq

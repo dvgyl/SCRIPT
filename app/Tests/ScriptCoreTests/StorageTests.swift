@@ -70,7 +70,7 @@ private let writerSteps: [Storage.Step] = [.journalWrite, .journalSync]
     let damage = try Contract.data("fixtures/recovery/damaged_interior.jsonl")
     try damage.write(to: broken)
 
-    let results = try s.reconcile(Fixed.launch, policy: .demo)
+    let results = try s.reconcile(Fixed.launch, instruments: try Contract.instruments(), policy: .demo)
     #expect(results.count == 2)
     let repaired = try Data(contentsOf: torn)
     let clean = try Contract.data("fixtures/recovery/clean.jsonl")
@@ -113,7 +113,7 @@ func publishConvergesFromEveryCrashPoint(step: Storage.Step, policy: ExportKind)
     #expect(throws: Storage.InjectedCrash(step: step)) { try crashing.publish(id, policy: exportPolicy) }
 
     let relaunched = storage(in: crashRoot, secret: secret)
-    let results = try relaunched.reconcile(Fixed.launch, policy: exportPolicy)
+    let results = try relaunched.reconcile(Fixed.launch, instruments: try Contract.instruments(), policy: exportPolicy)
     let folder = relaunched.exports.appendingPathComponent("SCRIPT_DEMO_DEMO_2b000000", isDirectory: true)
     switch step {
     case .stagingCleared:
@@ -138,7 +138,7 @@ func publishConvergesFromEveryCrashPoint(step: Storage.Step, policy: ExportKind)
         #expect(Set(converged.keys) == Set(expected.keys))
         #expect(try Storage.readExport(folder, privateKey: key).journal == journal)
     }
-    _ = try relaunched.reconcile(Fixed.launch, policy: exportPolicy)
+    _ = try relaunched.reconcile(Fixed.launch, instruments: try Contract.instruments(), policy: exportPolicy)
     #expect(try snapshot(crashRoot) == converged)
 }
 
@@ -170,16 +170,16 @@ func reconcileConvergesFromEveryCrashPointAndASecondLaunchChangesNoByte(step: St
         try? FileManager.default.removeItem(at: crashRoot)
     }
     try prepareLaunch(storage(in: referenceRoot))
-    _ = try storage(in: referenceRoot).reconcile(Fixed.launch, policy: .demo)
+    _ = try storage(in: referenceRoot).reconcile(Fixed.launch, instruments: try Contract.instruments(), policy: .demo)
     let expected = try snapshot(referenceRoot)
 
     try prepareLaunch(storage(in: crashRoot))
     #expect(throws: Storage.InjectedCrash(step: step)) {
-        try storage(in: crashRoot, stops: { $0 == step }).reconcile(Fixed.launch, policy: .demo)
+        try storage(in: crashRoot, stops: { $0 == step }).reconcile(Fixed.launch, instruments: try Contract.instruments(), policy: .demo)
     }
-    _ = try storage(in: crashRoot).reconcile(Fixed.launch, policy: .demo)
+    _ = try storage(in: crashRoot).reconcile(Fixed.launch, instruments: try Contract.instruments(), policy: .demo)
     #expect(try snapshot(crashRoot) == expected)
-    _ = try storage(in: crashRoot).reconcile(Fixed.launch, policy: .demo)
+    _ = try storage(in: crashRoot).reconcile(Fixed.launch, instruments: try Contract.instruments(), policy: .demo)
     #expect(try snapshot(crashRoot) == expected)
 }
 
@@ -347,7 +347,7 @@ func reconcileConvergesFromEveryCrashPointAndASecondLaunchChangesNoByte(step: St
     let open = SessionID(UUID(uuidString: "0A000000-0000-4000-8000-000000000003")!)
     try session(open, participant: "P0003", close: false).journal.write(to: s.journalURL(open))
 
-    let results = try s.reconcile(Fixed.launch, policy: .demo)
+    let results = try s.reconcile(Fixed.launch, instruments: try Contract.instruments(), policy: .demo)
     #expect(results.count == 3)
     guard results.count == 3 else { return }
     guard case .unreadable(unreadable.lastPathComponent, .system) = results[0] else {
@@ -396,7 +396,7 @@ func reconcileConvergesFromEveryCrashPointAndASecondLaunchChangesNoByte(step: St
     let root = try temporaryFolder()
     defer { try? FileManager.default.removeItem(at: root) }
     let s = storage(in: root)
-    _ = try s.reconcile(Fixed.launch, policy: .demo)
+    _ = try s.reconcile(Fixed.launch, instruments: try Contract.instruments(), policy: .demo)
     _ = try s.withdraw(participant: "WD-HOTEL", at: Fixed.at)
     let published = SessionID()
     try session(published, participant: "WD-INDIA").journal.write(to: s.journalURL(published))
@@ -433,7 +433,7 @@ func reconcileConvergesFromEveryCrashPointAndASecondLaunchChangesNoByte(step: St
         try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: folder.path)
     }
 
-    let results = try s.reconcile(Fixed.launch, policy: .demo)
+    let results = try s.reconcile(Fixed.launch, instruments: try Contract.instruments(), policy: .demo)
     guard results.count == 1, case .interrupted(let state) = results[0] else {
         Issue.record("unexpected results \(results)")
         return
@@ -461,7 +461,7 @@ func reconcileConvergesFromEveryCrashPointAndASecondLaunchChangesNoByte(step: St
     }
     let key = Curve25519.KeyAgreement.PrivateKey()
 
-    let results = try s.reconcile(Fixed.launch) { opened in
+    let results = try s.reconcile(Fixed.launch, instruments: try Contract.instruments()) { opened in
         opened.participant == "P0001" ? .encrypted(recipient: key.publicKey) : .demo
     }
     let files = results.map { result -> Set<String> in
@@ -503,7 +503,7 @@ func reconcileConvergesFromEveryCrashPointAndASecondLaunchChangesNoByte(step: St
     try s.createDirectories()
     try Contract.data("fixtures/recovery/damaged_interior.jsonl")
         .write(to: s.sessions.appendingPathComponent("0E000000-0000-4000-8000-000000000001.jsonl"))
-    let results = try s.reconcile(Fixed.launch, policy: .demo)
+    let results = try s.reconcile(Fixed.launch, instruments: try Contract.instruments(), policy: .demo)
     guard case .damaged? = results.first else {
         Issue.record("unexpected results \(results)")
         return
@@ -511,4 +511,103 @@ func reconcileConvergesFromEveryCrashPointAndASecondLaunchChangesNoByte(step: St
     let files = try snapshot(root).keys
     #expect(files.contains { $0.hasPrefix("Support/Damaged/") })
     #expect(!files.contains { $0.hasPrefix("Documents/") })
+}
+
+@Test func reconcileFlagsTheUnreachedSafetyItemOfAnInterruptedBlock() throws {
+    // Detects a crash in a PHQ-9 block before item 9 whose relaunch leaves the reviewer no flag in the journal.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let s = storage(in: root)
+    try s.createDirectories()
+    let config = try Contract.demoConfiguration()
+    let opened = makeOpened(configuration: config, battery: try Contract.battery())
+    var d = try Driver(opened: opened, rules: try rules(for: opened, configuration: config))
+    try d.run(.startQuestionnaire("phq9", t: 200))
+    try d.run(.respond(item: "phq9-1", value: 0, t: 201))
+    let url = s.journalURL(opened.sessionID)
+    try d.journal.write(to: url)
+
+    guard case .interrupted(let state) = try s.reconcile(Fixed.launch, instruments: try Contract.instruments(),
+                                                        policy: .demo).first else {
+        Issue.record("the relaunch did not adopt the open journal")
+        return
+    }
+    #expect(state.summary.safety.flags == 1)
+    #expect(state.summary.questionnaires.map(\.outcome) == [.interrupted])
+    let saved = try Data(contentsOf: url)
+    let events = try Contract.lines(saved).map { try LineCodec.decode($0).event }
+    #expect(Array(events.suffix(2)) == [
+        .safetyFlagged(SafetyFlagged(t: 201, block: BlockIndex(count: 0), item: "phq9-9", value: nil)),
+        .recovered(Recovered(t: 5, at: Fixed.launch.at, boot: Fixed.laterBoot, truncatedBytes: 0, interrupted: nil,
+                             interruptedBlock: BlockIndex(count: 0))),
+    ])
+    _ = try s.reconcile(Fixed.launch, instruments: try Contract.instruments(), policy: .demo)
+    #expect(try Data(contentsOf: url) == saved)
+}
+
+@Test(arguments: ExportKind.allCases)
+func aDamagedJournalLeavesTheDeviceAsFoundUnderTheExportPolicy(kind: ExportKind) throws {
+    // Detects a damaged journal whose flags can never reach the study, a package that changes the bytes or claims a
+    // fold, a study key that does not encrypt it, or a withdrawal that misses it.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let s = storage(in: root)
+    try s.createDirectories()
+    let damage = try Contract.data("fixtures/recovery/damaged_interior.jsonl")
+    let file = "3F2A9C1E-0000-4000-8000-000000000008.jsonl"
+    try damage.write(to: s.sessions.appendingPathComponent(file))
+    _ = try s.reconcile(Fixed.launch, instruments: try Contract.instruments(), policy: .demo)
+    let key = Curve25519.KeyAgreement.PrivateKey()
+    #expect(s.opened(damaged: file)?.participant == "P0008")
+    let folder = try s.publishDamaged(file, policy: kind == .demo ? .demo : .encrypted(recipient: key.publicKey))
+    #expect(folder.lastPathComponent == "SCRIPT_DAMAGED_3f2a9c1e-0000-4000-8000-000000000008")
+    #expect(!FileManager.default.fileExists(atPath: s.damaged.appendingPathComponent(file).path))
+
+    let manifest = try Fields(try JSON.decodeDocument(try Data(contentsOf: folder.appendingPathComponent("manifest.json"))),
+                              path: "")
+    #expect(try manifest.string("sessionID") == "3F2A9C1E-0000-4000-8000-000000000008")
+    #expect(try manifest.object("damaged").int("line") == 3)
+    let facts = kind == .demo ? try manifest.object("journal") : try manifest.object("encryption").object("plaintext")
+    #expect(try facts.int("bytes") == damage.count)
+    #expect(try facts.int("lines") == damage.count { $0 == 0x0A })
+    #expect(try facts.string("sha256") == SHA256.hash(data: damage).map { String(format: "%02x", $0) }.joined())
+    switch kind {
+    case .demo:
+        #expect(try manifest.bool("demo"))
+        #expect(try Data(contentsOf: folder.appendingPathComponent("journal.jsonl")) == damage)
+    case .encrypted:
+        let encryption = try manifest.object("encryption")
+        let encapsulatedKey = try #require(Data(base64Encoded: try encryption.string("encapsulatedKey")))
+        let ciphertext = try Data(contentsOf: folder.appendingPathComponent("journal.jsonl.hpke"))
+        #expect(try ExportCipher.open(ciphertext, sessionID: "3F2A9C1E-0000-4000-8000-000000000008",
+                                      encapsulatedKey: encapsulatedKey, privateKey: key) == damage)
+    }
+    #expect(throws: (any Error).self) { try Storage.readExport(folder, privateKey: key) }
+
+    #expect(try s.withdraw(participant: "P0008", at: Fixed.at).sessions.map(\.description)
+        == ["3F2A9C1E-0000-4000-8000-000000000008"])
+    #expect(!FileManager.default.fileExists(atPath: folder.path))
+}
+
+@Test func aRecoveryThatTearsAfterItsFlagDoesNotFlagTwice() throws {
+    // Detects a relaunch after a recovery that tore between its flag and its recovered line, which flags the same
+    // unreached safety item twice.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let s = storage(in: root)
+    try s.createDirectories()
+    let config = try Contract.demoConfiguration()
+    let opened = makeOpened(configuration: config, battery: try Contract.battery())
+    var d = try Driver(opened: opened, rules: try rules(for: opened, configuration: config))
+    try d.run(.startQuestionnaire("phq9", t: 200))
+    try d.write([.safetyFlagged(SafetyFlagged(t: 200, block: BlockIndex(count: 0), item: "phq9-9", value: nil))])
+    try (d.journal + Data(#"{"seq":3,"kind":"recovered","t":5.0"#.utf8)).write(to: s.journalURL(opened.sessionID))
+
+    guard case .interrupted(let state) = try s.reconcile(Fixed.launch, instruments: try Contract.instruments(),
+                                                        policy: .demo).first else {
+        Issue.record("the relaunch did not adopt the open journal")
+        return
+    }
+    #expect(state.summary.safety.flags == 1)
+    #expect(state.summary.counts[.recovered] == 1)
 }

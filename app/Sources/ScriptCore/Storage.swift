@@ -362,10 +362,14 @@ struct Manifest: Hashable, Sendable {
     }
 
     var sessionID: String
+    /// The first line that does not decode or fold, in a package of a damaged journal. Its facts describe the bytes
+    /// as found and claim nothing about a fold.
+    var damagedLine: Int?
     var content: Content
 
-    init(sessionID: String, content: Content) {
+    init(sessionID: String, damagedLine: Int? = nil, content: Content) {
         self.sessionID = sessionID
+        self.damagedLine = damagedLine
         self.content = content
     }
 
@@ -374,6 +378,11 @@ struct Manifest: Hashable, Sendable {
         guard try f.string("format") == "script.journal" else { throw .invalid("format") }
         guard JournalFormat.isReadable(try f.string("version")) else { throw .invalid("version") }
         sessionID = try f.string("sessionID")
+        if f.has("damaged") {
+            let damaged = try f.object("damaged")
+            try damaged.only(["line"])
+            damagedLine = try damaged.read("line") { $0.intValue.flatMap { $0 >= 0 ? $0 : nil } }
+        }
         if f.has("encryption") {
             let e = try f.object("encryption")
             guard try e.string("scheme") == ExportCipher.scheme else { throw .invalid("encryption.scheme") }
@@ -398,6 +407,7 @@ struct Manifest: Hashable, Sendable {
             ("format", .string("script.journal")), ("version", .string(JournalFormat.version)),
             ("sessionID", .string(sessionID)),
         ]
+        if let damagedLine { pairs.append(("damaged", .object([("line", .int(damagedLine))]))) }
         switch content {
         case .plaintext(let facts):
             pairs.append(("demo", .bool(true)))
@@ -423,6 +433,11 @@ extension Manifest.Facts {
         self.init(bytes: data.count, lines: state.session.lines, sha256: SHA256Digest(of: data))
     }
 
+    /// The facts of bytes that do not fold: `lines` counts LF bytes.
+    init(bytes data: Data) {
+        self.init(bytes: data.count, lines: data.count { $0 == 0x0A }, sha256: SHA256Digest(of: data))
+    }
+
     var json: JSON { .object([("bytes", .int(bytes)), ("lines", .int(lines)), ("sha256", .string(sha256.hex))]) }
 }
 
@@ -432,7 +447,8 @@ extension Manifest.Facts {
 ///
 ///     <applicationSupport>/Sessions/<uuid>.jsonl   journals not yet exported
 ///     <applicationSupport>/Staging/<name>/         publication in progress
-///     <applicationSupport>/Damaged/<uuid>.jsonl    journals with damage before the last line, never in Files
+///     <applicationSupport>/Damaged/<uuid>.jsonl    journals with damage before the last line, in Files only as a
+///                                                  package that `publishDamaged` writes
 ///     <applicationSupport>/Deletions.jsonl         one line for each withdrawal
 ///     <applicationSupport>/ExportIndex.jsonl       the keyed hash of the participant code of each export name
 ///     <documents>/Exports/<name>/                  verified exports, visible in Files
@@ -574,14 +590,16 @@ public struct Storage: Sendable {
     /// finishes it. A staging folder whose export exists and whose journal is gone is removed. An error in one
     /// journal becomes its result, so every other journal is still reconciled. A leftover `.recovering` file or
     /// staging folder that cannot be removed stays for the next launch.
-    public func reconcile(_ launch: Launch, policy: ExportPolicy) throws -> [Reconciled] {
-        try reconcile(launch, policy: { _ in policy })
+    public func reconcile(_ launch: Launch, instruments: InstrumentSet, policy: ExportPolicy) throws -> [Reconciled] {
+        try reconcile(launch, instruments: instruments, policy: { _ in policy })
     }
 
     /// `policy` gives the export format of each session, from the configuration that the session recorded, so a
     /// session never finishes its publication under the key of another configuration. When it throws, the result
-    /// is `publishFailed` and the journal stays.
-    public func reconcile(_ launch: Launch, policy: (SessionOpened) throws -> ExportPolicy) throws -> [Reconciled] {
+    /// is `publishFailed` and the journal stays. `instruments` names the safety items that an interrupted block flags
+    /// when they have no response.
+    public func reconcile(_ launch: Launch, instruments: InstrumentSet,
+                          policy: (SessionOpened) throws -> ExportPolicy) throws -> [Reconciled] {
         try guarded {
             try makeDirectories()
             for leftover in try contents(of: sessions) where leftover.pathExtension == "recovering" {
@@ -593,7 +611,8 @@ public struct Storage: Sendable {
             var names = Set<String>()
             for journal in try contents(of: sessions) where journal.pathExtension == "jsonl" {
                 do {
-                    results.append(try reconcile(journal, launch: launch, policy: policy, names: &names))
+                    results.append(try reconcile(journal, launch: launch, instruments: instruments, policy: policy,
+                                                 names: &names))
                 } catch let crash as InjectedCrash {
                     throw crash
                 } catch {
@@ -611,8 +630,8 @@ public struct Storage: Sendable {
     }
 
     /// Reconciles one journal and adds its export name to `names`.
-    private func reconcile(_ journal: URL, launch: Launch, policy: (SessionOpened) throws -> ExportPolicy,
-                           names: inout Set<String>) throws -> Reconciled {
+    private func reconcile(_ journal: URL, launch: Launch, instruments: InstrumentSet,
+                           policy: (SessionOpened) throws -> ExportPolicy, names: inout Set<String>) throws -> Reconciled {
         let data = try Data(contentsOf: journal)
         let scan = Journal.scan(data)
         guard var state = scan.state, scan.failure == nil else {
@@ -622,9 +641,9 @@ public struct Storage: Sendable {
         let name = state.session.opened.exportName
         names.insert(name)
         var addition = Data()
-        if let event = state.recovery(t: launch.uptime, at: launch.at, boot: launch.boot, truncatedBytes: scan.tailBytes) {
-            for entry in try state.record([event]) { addition.append(try LineCodec.encode(entry)) }
-        }
+        let events = state.recovery(t: launch.uptime, at: launch.at, boot: launch.boot, truncatedBytes: scan.tailBytes,
+                                    instruments: instruments)
+        for entry in try state.record(events) { addition.append(try LineCodec.encode(entry)) }
         if scan.tailBytes > 0 {
             try replace(journal, with: data.prefix(data.count - scan.tailBytes) + addition)
         } else if !addition.isEmpty {
@@ -672,6 +691,24 @@ public struct Storage: Sendable {
         try checkpoint(.movedToDamaged)
     }
 
+    // MARK: Append
+
+    /// Appends lines to a journal that no writer holds, and syncs them. The app closes an expired self-administered
+    /// session this way. Each line must decode, as in `JournalWriter.append`.
+    public func append(_ entries: [Entry], to id: SessionID) throws {
+        try guarded {
+            let url = journalURL(id)
+            guard exists(url) else { throw StorageError.noJournal(id) }
+            var data = Data()
+            for entry in entries {
+                let line = try LineCodec.encode(entry)
+                _ = try LineCodec.decode(line.dropLast())
+                data.append(line)
+            }
+            try appendAndSync(data, to: url)
+        }
+    }
+
     // MARK: Publish
 
     /// Clones or encrypts the closed journal into `Staging/<name>/`, writes the manifest, syncs, verifies the staged
@@ -697,41 +734,96 @@ public struct Storage: Sendable {
                                        error)
         }
         guard case .closed = state.phase else { throw StorageError.notClosed(state.status) }
-        let id = state.session.opened.sessionID
-        let name = state.session.opened.exportName
-        let target = exports.appendingPathComponent(name, isDirectory: true)
+        let opened = state.session.opened
+        let package = Package(name: opened.exportName, sessionID: opened.sessionID, source: source, data: data,
+                              facts: Manifest.Facts(journal: data, state: state), damagedLine: nil,
+                              participant: opened.participant)
+        return try publish(package, policy: policy) { folder in try Self.verify(folder, source: data, state: state) }
+    }
 
+    /// The name of the package of a damaged journal. The file name of a damaged journal is its session identifier,
+    /// so the name holds no participant code.
+    public static func damagedExportName(_ file: String) -> String {
+        "SCRIPT_DAMAGED_\((file as NSString).deletingPathExtension.lowercased())"
+    }
+
+    /// Line 0 of a journal in `Damaged/`, or nil when it does not decode. It names the configuration of the session.
+    public func opened(damaged file: String) -> SessionOpened? {
+        Self.firstLine(of: damaged.appendingPathComponent(file))
+    }
+
+    /// Publishes a journal from `Damaged/` as it was found, so that the safety flags in it reach the study. The
+    /// manifest names the damaged line and states the facts of the bytes only. The package goes through staging,
+    /// verification, the export index, and the rename, as `publish` does, and only then does the source go.
+    @discardableResult
+    public func publishDamaged(_ file: String, policy: ExportPolicy) throws -> URL {
+        try guarded {
+            try makeDirectories()
+            let source = damaged.appendingPathComponent(file)
+            let data = try Data(contentsOf: source)
+            let stem = (file as NSString).deletingPathExtension
+            guard let uuid = UUID(uuidString: String(stem.prefix(36))) else {
+                throw StorageError.verification(nil, "the damaged file name is not a session identifier")
+            }
+            let id = SessionID(uuid)
+            guard case .damaged(let line) = Journal.recover(data) else {
+                throw StorageError.verification(id, "the journal is not damaged")
+            }
+            let opened = Self.firstLine(of: source)
+            let package = Package(name: Self.damagedExportName(file), sessionID: id, source: source, data: data,
+                                  facts: Manifest.Facts(bytes: data), damagedLine: line,
+                                  participant: opened?.participant)
+            return try publish(package, policy: policy) { folder in
+                try Self.verifyDamaged(folder, package: package)
+            }
+        }
+    }
+
+    /// The bytes to publish and the facts of their manifest.
+    struct Package {
+        let name: String
+        let sessionID: SessionID
+        let source: URL
+        let data: Data
+        let facts: Manifest.Facts
+        let damagedLine: Int?
+        /// Nil when line 0 of a damaged journal does not decode. The export index then cannot name it.
+        let participant: ParticipantCode?
+    }
+
+    private func publish(_ package: Package, policy: ExportPolicy, verify: (URL) throws -> Void) throws -> URL {
+        let target = exports.appendingPathComponent(package.name, isDirectory: true)
         if exists(target) {
             do {
-                try Self.verify(target, source: data, state: state)
+                try verify(target)
             } catch {
-                throw StorageError.exportTaken(id)
+                throw StorageError.exportTaken(package.sessionID)
             }
         } else {
-            let stage = staging.appendingPathComponent(name, isDirectory: true)
+            let stage = staging.appendingPathComponent(package.name, isDirectory: true)
             if exists(stage) { try FileManager.default.removeItem(at: stage) }
             try checkpoint(.stagingCleared)
 
             try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: true)
-            let facts = Manifest.Facts(journal: data, state: state)
-            let sessionID = id.description
-            let manifest: Manifest
+            let sessionID = package.sessionID.description
+            let content: Manifest.Content
             let journalFile: URL
             switch policy {
             case .demo:
                 journalFile = stage.appendingPathComponent(Export.journal)
-                try FileManager.default.copyItem(at: source, to: journalFile)
-                manifest = Manifest(sessionID: sessionID, content: .plaintext(facts))
+                try FileManager.default.copyItem(at: package.source, to: journalFile)
+                content = .plaintext(package.facts)
             case .encrypted(let recipient):
                 journalFile = stage.appendingPathComponent(Export.encryptedJournal)
-                let sealed = try ExportCipher.seal(data, sessionID: sessionID, recipient: recipient)
+                let sealed = try ExportCipher.seal(package.data, sessionID: sessionID, recipient: recipient)
                 try sealed.ciphertext.write(to: journalFile)
-                manifest = Manifest(sessionID: sessionID, content: .encrypted(Manifest.Encryption(
+                content = .encrypted(Manifest.Encryption(
                     keyID: SHA256Digest(of: recipient.rawRepresentation).hex, encapsulatedKey: sealed.encapsulatedKey,
-                    plaintext: facts, ciphertextBytes: sealed.ciphertext.count,
+                    plaintext: package.facts, ciphertextBytes: sealed.ciphertext.count,
                     ciphertextSHA256: SHA256Digest(of: sealed.ciphertext)
-                )))
+                ))
             }
+            let manifest = Manifest(sessionID: sessionID, damagedLine: package.damagedLine, content: content)
             try checkpoint(.journalStaged)
 
             try manifest.data.write(to: stage.appendingPathComponent(Export.manifest))
@@ -743,10 +835,10 @@ public struct Storage: Sendable {
             try syncPath(staging)
             try checkpoint(.stagedSynced)
 
-            try Self.verify(stage, source: data, state: state)
+            try verify(stage)
             try checkpoint(.stagedVerified)
 
-            try index(name, participant: state.session.opened.participant)
+            if let participant = package.participant { try index(package.name, participant: participant) }
             try checkpoint(.indexed)
 
             try move(stage, to: target)
@@ -754,8 +846,8 @@ public struct Storage: Sendable {
             try syncPath(staging)
             try checkpoint(.renamed)
         }
-        try FileManager.default.removeItem(at: source)
-        try syncPath(sessions)
+        try FileManager.default.removeItem(at: package.source)
+        try syncPath(package.source.deletingLastPathComponent())
         try checkpoint(.sourceRemoved)
         return target
     }
@@ -786,6 +878,30 @@ public struct Storage: Sendable {
             }
         case .encrypted(let e):
             guard e.plaintext == facts else { throw fail("the manifest does not match the source journal") }
+            let ciphertext = try Data(contentsOf: folder.appendingPathComponent(Export.encryptedJournal))
+            guard ciphertext.count == e.ciphertextBytes, SHA256Digest(of: ciphertext) == e.ciphertextSHA256 else {
+                throw fail("the ciphertext does not match its manifest")
+            }
+        }
+    }
+
+    /// Checks the package of a damaged journal against its source bytes: the damaged line and the facts in the
+    /// manifest, and the copy or the ciphertext on disk. It never folds the journal.
+    static func verifyDamaged(_ folder: URL, package: Package) throws {
+        let id = package.sessionID
+        func fail(_ what: String) -> StorageError { .verification(id, what) }
+        let manifest = try readManifest(folder, session: id)
+        guard manifest.sessionID == id.description, manifest.damagedLine == package.damagedLine else {
+            throw fail("the manifest names another session or line")
+        }
+        switch manifest.content {
+        case .plaintext(let recorded):
+            guard recorded == package.facts,
+                  try Data(contentsOf: folder.appendingPathComponent(Export.journal)) == package.data else {
+                throw fail("the journal does not match its source")
+            }
+        case .encrypted(let e):
+            guard e.plaintext == package.facts else { throw fail("the manifest does not match the source journal") }
             let ciphertext = try Data(contentsOf: folder.appendingPathComponent(Export.encryptedJournal))
             guard ciphertext.count == e.ciphertextBytes, SHA256Digest(of: ciphertext) == e.ciphertextSHA256 else {
                 throw fail("the ciphertext does not match its manifest")

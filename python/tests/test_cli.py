@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from conftest import Analysed, fixture_lines, quick_plan, write_encrypted_export, write_export
 
 from scriptkin.cli import main
@@ -40,6 +41,24 @@ def test_evaluate_command_reports_the_digests_of_its_inputs(signal_cohort: Analy
     assert report["plan_digest"] == plan_digest(quick_plan(permutations=10, bootstrap=50))
     assert report["feature_digest"] == freeze_features(signal_cohort.table)
     assert report["cases"] == sum(bool(p.case) for p in signal_cohort.cohort.truth.participants)
+
+
+def test_evaluate_command_refuses_a_plan_whose_digest_differs_from_the_registered_digest(
+    signal_cohort: Analysed, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Detects an evaluate command that runs a changed plan against the labels although a digest was
+    # registered for the plan before the labels joined.
+    args = write_inputs(signal_cohort, tmp_path)
+    assert main(["plan-digest", str(tmp_path / "plan.json")]) == 0
+    registered = capsys.readouterr().out.strip()
+    assert main([*args, "--expect-plan-digest", registered.upper()]) == 0
+    assert json.loads((tmp_path / "report.json").read_text())["plan_digest"] == registered
+    (tmp_path / "report.json").unlink()
+    changed = write_inputs(signal_cohort, tmp_path, prevalence=0.2)
+    changed[changed.index("--labels") + 1] = str(tmp_path / "absent.csv")
+    assert main([*changed, "--expect-plan-digest", registered]) == 2
+    assert f"not the expected {registered}" in capsys.readouterr().err
+    assert not (tmp_path / "report.json").exists()
 
 
 def test_evaluate_command_writes_a_refusal(signal_cohort: Analysed, tmp_path: Path) -> None:

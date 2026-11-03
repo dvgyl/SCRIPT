@@ -142,3 +142,72 @@ func decideRefusesAValueThatTheDecoderRefuses(command: Command, rejection: Rejec
     #expect(d.state.decide(.startQuestionnaire("gad7", t: 200), rules: d.rules).rejection == .noCrisisList)
     #expect(d.state.decide(.show(.crisisList, t: 200), rules: d.rules).rejection == .noCrisisList)
 }
+
+@Test(arguments: [QuestionnaireEndReason.declined, .interrupted, .completed])
+func aBlockThatEndsBeforeItsSafetyItemFlagsTheItemFirst(reason: QuestionnaireEndReason) throws {
+    // Detects a PHQ-9 block that ends before item 9 without a flag, so a reviewer never follows up the unasked item.
+    let block = BlockIndex(count: 0)
+    let ended = Event.questionnaireEnded(QuestionnaireEnded(t: 210, block: block, reason: reason))
+    let flag = Event.safetyFlagged(SafetyFlagged(t: 210, block: block, item: "phq9-9", value: nil))
+    let list = Event.safetyShown(SafetyShown(t: 210, what: .crisisList, listVersion: "US-2026-11-03"))
+    for administration in [Administration.supervised, .selfAdministered] {
+        var d = try driver(administration: administration, configuration: try Contract.remoteReviewConfiguration())
+        try d.run(.startQuestionnaire("phq9", t: 200))
+        for n in 1...4 { try d.run(.respond(item: ItemID("phq9-\(n)")!, value: 1, t: 200 + Double(n))) }
+        let expected = administration == .supervised ? [flag, ended] : [flag, list, ended]
+        #expect(try d.state.decide(.endQuestionnaire(reason: reason, t: 210), rules: d.rules).get() == expected,
+                "\(administration)")
+        try d.run(.respond(item: "phq9-9", value: 0, t: 209))
+        #expect(try d.state.decide(.endQuestionnaire(reason: reason, t: 210), rules: d.rules).get() == [ended],
+                "\(administration)")
+    }
+    var gad = try driver()
+    try gad.run(.startQuestionnaire("gad7", t: 200))
+    #expect(try gad.state.decide(.endQuestionnaire(reason: reason, t: 210), rules: gad.rules).get() == [ended])
+}
+
+@Test func aRecoveryInsideABlockFlagsItsUnreachedSafetyItemInTheBoundsOfTheBlock() throws {
+    // Detects a crash in a PHQ-9 block before item 9 that leaves no flag, or a flag timed in the clock of the relaunch.
+    var d = try driver(administration: .selfAdministered, configuration: try Contract.remoteReviewConfiguration())
+    try d.run(.startQuestionnaire("phq9", t: 200))
+    try d.run(.respond(item: "phq9-1", value: 0, t: 201))
+    try d.run(.respond(item: "phq9-2", value: 0, t: 202))
+    let block = BlockIndex(count: 0)
+    let events = d.state.recovery(t: 5, at: Fixed.launch.at, boot: Fixed.laterBoot, truncatedBytes: 0,
+                                  instruments: d.rules.instruments)
+    #expect(events == [
+        .safetyFlagged(SafetyFlagged(t: 202, block: block, item: "phq9-9", value: nil)),
+        .recovered(Recovered(t: 5, at: Fixed.launch.at, boot: Fixed.laterBoot, truncatedBytes: 0, interrupted: nil,
+                             interruptedBlock: block)),
+    ])
+    try d.write(events)
+    #expect(d.state.summary.safety.flags == 1)
+    #expect(d.state.session.safety.flaggedSinceCrisisList)
+    #expect(d.state.recovery(t: 6, at: Fixed.launch.at, boot: Fixed.laterBoot, truncatedBytes: 0,
+                             instruments: d.rules.instruments) == [])
+    try d.run(.show(.crisisList, t: 7))
+    #expect(!d.state.session.safety.flaggedSinceCrisisList)
+}
+
+@Test func anInterruptedSelfAdministeredSessionClosesOnlyAfterItsResumeWindow() throws {
+    // Detects a self-administered session that a later holder of the iPad can resume after the window, or a live or
+    // supervised session that the window closes.
+    var config = try Contract.demoConfiguration()
+    config.selfAdministered.resumeWithinHours = 2
+    var d = try driver(administration: .selfAdministered, configuration: config)
+    try d.answerAll("gad7", t: 200)
+    let inside = WallTime(text: "2026-11-03T11:59:59Z")
+    let after = WallTime(text: "2026-11-03T12:00:00Z")
+    #expect(d.state.decide(.expire(at: after, t: 300), rules: d.rules).rejection == .notInterrupted)
+    try d.write(d.state.recovery(t: 5, at: Fixed.launch.at, boot: Fixed.laterBoot, truncatedBytes: 0,
+                                 instruments: d.rules.instruments))
+    #expect(d.state.decide(.expire(at: inside, t: 6), rules: d.rules).rejection == .resumeWindowOpen)
+    #expect(d.state.decide(.close(t: 6), rules: d.rules).rejection == .crisisListNotShown)
+    #expect(try d.state.decide(.expire(at: after, t: 6), rules: d.rules).get()
+        == [.sessionClosed(SessionClosed(t: 6, counts: d.state.session.counts))])
+
+    var supervised = try driver(configuration: config)
+    try supervised.write(supervised.state.recovery(t: 5, at: Fixed.launch.at, boot: Fixed.laterBoot, truncatedBytes: 0,
+                                                   instruments: supervised.rules.instruments))
+    #expect(supervised.state.decide(.expire(at: after, t: 6), rules: supervised.rules).rejection == .notSelfAdministered)
+}

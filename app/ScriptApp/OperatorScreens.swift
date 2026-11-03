@@ -17,7 +17,7 @@ struct PausedScreen: View {
                 Section {
                     Button("Return to the participant", action: store.returnToParticipant)
                         .accessibilityIdentifier("returnToParticipant")
-                    Button("End the session", role: .destructive, action: store.endEarly)
+                    Button("End the session", role: .destructive) { Task { await store.endEarly() } }
                         .accessibilityIdentifier("endSession")
                     Button("Leave the session open and go to Home", action: store.leave)
                 }
@@ -38,13 +38,14 @@ struct ReviewScreen: View {
     var body: some View {
         let digest = store.digest ?? JournalDigest()
         let session = store.state?.session
-        let open = session?.safety.unactionedFlags ?? 0
+        let supervised = live.opened.administration == .supervised
+        let open = supervised ? session?.safety.unactionedFlags ?? 0 : 0
         NavigationStack {
             List {
                 if !digest.flags.isEmpty {
                     Section("Safety follow-up") {
                         ForEach(Array(digest.flags.enumerated()), id: \.offset) { n, flag in
-                            flagRow(n, flag, actioned: n < digest.actions)
+                            flagRow(n, flag, actioned: n < digest.actions, supervised: supervised)
                         }
                     }
                 }
@@ -70,7 +71,7 @@ struct ReviewScreen: View {
     }
 
     @ViewBuilder
-    private func flagRow(_ n: Int, _ flag: JournalDigest.Flag, actioned: Bool) -> some View {
+    private func flagRow(_ n: Int, _ flag: JournalDigest.Flag, actioned: Bool, supervised: Bool) -> some View {
         let instrument = live.rules.instruments.instrument(flag.instrument)
         let number = (instrument?.items.firstIndex { $0.id == flag.item } ?? 0) + 1
         VStack(alignment: .leading, spacing: 12) {
@@ -80,7 +81,11 @@ struct ReviewScreen: View {
                 Image(systemName: "exclamationmark.circle").foregroundStyle(Palette.accent)
             }
             .accessibilityIdentifier("safetyAlert")
-            if actioned {
+            if !supervised {
+                Label("Reviewed by the study reviewer after export", systemImage: "arrow.up.doc")
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("remoteReview")
+            } else if actioned {
                 Label("Action recorded", systemImage: "checkmark.circle")
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("actionRecorded")

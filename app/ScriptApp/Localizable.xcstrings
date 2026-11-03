@@ -78,6 +78,9 @@
     "A session needs at least 500 MB of free storage. Free some storage on this iPad, and try again." : {
 
     },
+    "A session past its resume time could not be closed." : {
+
+    },
     "Action" : {
 
     },
@@ -199,6 +202,9 @@
 
     },
     "Export" : {
+
+    },
+    "Export damaged journal" : {
 
     },
     "Export failed" : {
@@ -424,6 +430,9 @@
     "Return to the participant" : {
 
     },
+    "Reviewed by the study reviewer after export" : {
+
+    },
     "Right" : {
 
     },
@@ -467,6 +476,9 @@
 
     },
     "Shorter by %lld points" : {
+
+    },
+    "Show participant codes" : {
 
     },
     "Show the support list to the participant" : {
@@ -582,10 +594,16 @@
     "This cannot be undone. Copies outside this iPad are not deleted." : {
 
     },
+    "This code is not the code of this session." : {
+
+    },
     "Time limit" : {
 
     },
     "Trials" : {
+
+    },
+    "Type your participant code to continue." : {
 
     },
     "Unable" : {
