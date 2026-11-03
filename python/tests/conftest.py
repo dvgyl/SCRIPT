@@ -3,13 +3,18 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pytest
 
-from scriptkin import Device, Stroke, TaskRef, Trial, hpke
+from scriptkin import Device, Stroke, TaskRef, Trial, feature_table, hpke
+from scriptkin import synthetic as syn
 from scriptkin.contract import encode_line, manifest_bytes
+from scriptkin.evaluate.plan import AnalysisPlan, ModelSpec, Target, column
+from scriptkin.features import FeatureTable
 from scriptkin.formats.export import HPKE_INFO, HPKE_SUITE
 from scriptkin.recording import FloatArray
 
@@ -73,3 +78,79 @@ def write_encrypted_export(folder: Path, data: bytes, session_id: str, private_k
         "encryption": encryption,
     }
     (folder / "manifest.json").write_text(json.dumps(manifest, indent=1) + "\n")
+
+
+SPIRAL = ("spiral-trace",)
+SIGNAL_EFFECT = {"speed_mm_s": -0.6, "tremor_mm": 0.6}
+FEATURES = tuple(
+    column("spiral-trace", f)
+    for f in (
+        "kinematic.speed_mean",
+        "kinematic.jerk_mean",
+        "timing.stroke_count",
+        "spatial.trace_rmse",
+        "pressure.force_mean",
+        "pressure.force_cv",
+    )
+)
+
+
+@dataclass(frozen=True)
+class Analysed:
+    cohort: syn.Cohort
+    table: FeatureTable
+
+
+def analysed(**kwargs: Any) -> Analysed:
+    cohort = syn.cohort(**kwargs)
+    return Analysed(cohort, feature_table(cohort.recordings))
+
+
+def quick_plan(**changes: Any) -> AnalysisPlan:
+    """A small plan that keeps the test run short: one repeat, two grid values, few permutations."""
+    plan = AnalysisPlan(
+        Target(),
+        FEATURES,
+        prevalence=0.3,
+        repeats=1,
+        model=ModelSpec(grid=(10.0, 100.0)),
+        permutations=10,
+        bootstrap=300,
+    )
+    return replace(plan, **changes)
+
+
+@pytest.fixture(scope="session")
+def null_cohort() -> Analysed:
+    return analysed(n=120, seed=21, scenario="null", tasks=SPIRAL)
+
+
+@pytest.fixture(scope="session")
+def signal_cohort() -> Analysed:
+    sites = (syn.Site("S1"), syn.Site("S2"), syn.Site("S3"))
+    return analysed(
+        n=150, seed=300, scenario="signal", outcome=syn.Outcome(0.3, SIGNAL_EFFECT), sites=sites, tasks=SPIRAL
+    )
+
+
+@pytest.fixture(scope="session")
+def device_cohort() -> Analysed:
+    devices = (syn.IPAD_PRO_PENCIL_PRO, syn.IPAD_AIR_PENCIL_USBC)
+    return analysed(n=150, seed=25, scenario="device_confounded", devices=devices, tasks=SPIRAL)
+
+
+@pytest.fixture(scope="session")
+def fingerprint_cohort() -> Analysed:
+    return analysed(n=60, seed=27, scenario="fingerprint", tasks=SPIRAL)
+
+
+@pytest.fixture(scope="session")
+def missing_cohort() -> Analysed:
+    return analysed(
+        n=120, seed=29, scenario="missingness", outcome=syn.Outcome(0.3, SIGNAL_EFFECT), tasks=SPIRAL
+    )
+
+
+@pytest.fixture(scope="session")
+def retest_cohort() -> Analysed:
+    return analysed(n=40, seed=31, scenario="null", visits=2, session_noise={"pressure": 1.0}, tasks=SPIRAL)
