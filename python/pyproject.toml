@@ -35,6 +35,8 @@ target-version = "py312"
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
 
 [tool.pyright]
+venvPath = "../build"
+venv = "venv"
 include = ["src", "tests"]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"

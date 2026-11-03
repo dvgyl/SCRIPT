@@ -522,6 +522,26 @@ def generated_files() -> dict[str, bytes]:
         "battery.json": battery.battery_bytes(),
         "fixtures/doubles.json": _doubles_bytes(),
     }
+    files["fixtures/svc/synthetic.svc"] = (
+        b"8\n"
+        b"100 200 1000 1 900 450 512\n"
+        b"200 300 1010 1 900 450 1024\n"
+        b"300 400 1020 1 900 450 256\n"
+        b"400 500 1030 1 900 450 512\n"
+        b"500 600 1040 0 1800 900 0\n"
+        b"600 700 1050 0 1800 900 0\n"
+        b"700 800 1060 0 1800 900 0\n"
+        b"800 900 1070 0 1800 900 0\n"
+    )
+    files["fixtures/parkinsonhw/synthetic.txt"] = (
+        b"X;Y;Z;Pressure;GripAngle;Timestamp;Test ID\n"
+        b"100;200;0;512;450;1000;0\n"
+        b"200;300;0;1023;450;1010;0\n"
+        b"300;400;1;0;450;1020;0\n"
+        b"400;500;2;0;450;1030;0\n"
+        b"500;600;0;256;450;0;1\n"
+        b"600;700;0;512;450;10;1\n"
+    )
     for name, build in JOURNAL_FIXTURES.items():
         b = build()
         files[f"fixtures/journal/{name}.jsonl"] = b.journal_bytes()
