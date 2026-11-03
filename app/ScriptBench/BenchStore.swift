@@ -385,12 +385,17 @@ final class BenchStore {
         }
     }
 
-    /// The run id that `decide` writes as the clip of a bench run, or nil when `decide` refuses the plan.
+    /// The run id that `decide` writes as the clip of a bench run.
     func runID(_ choice: RunChoice) -> String? {
-        guard let live, let state, let plan = plan(choice),
-              case .success(let events) = state.decide(.startTrial(plan, t: uptime()), rules: live.rules),
-              case .trialStarted(let trial)? = events.first, case .bench(let run) = trial.subject else { return nil }
-        return run.clip?.rawValue
+        guard case .bench(let run) = choice, case .bench(let facts)? = live?.opened.subject else { return nil }
+        return ClipName(runOf: run.program, run: run.run, in: facts).rawValue
+    }
+
+    /// Why `decide` refuses the bench run of `choice` in this session, or nil when Begin can start it.
+    func refusal(_ choice: RunChoice) -> Rejection? {
+        guard case .bench(let run) = choice, let live, let state,
+              case .failure(let rejection) = state.benchRun(run, rules: live.rules) else { return nil }
+        return rejection
     }
 
     /// Stores the pen's hover position as the stimulus origin of the next trials.

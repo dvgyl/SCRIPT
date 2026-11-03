@@ -103,8 +103,8 @@ public struct TrialRecord: Hashable, Sendable {
     public let task: TaskID
     public let attempt: Int
     public let practice: Bool
-    /// The program of a bench run, nil for a participant trial.
-    public let program: ProgramID?
+    /// The program and the run index of a bench run, nil for a participant trial.
+    public let bench: BenchRunPlan?
     public internal(set) var began = false
     public internal(set) var outcome: TrialOutcome = .open
     public internal(set) var contacts = 0
@@ -236,12 +236,12 @@ extension SessionState {
             case (.participant, .participant), (.bench, .bench): break
             case (.participant, .bench), (.bench, .participant): throw fail(.subjectMismatch)
             }
-            let program: ProgramID? = switch e.subject {
-            case .bench(let run): run.program
+            let bench: BenchRunPlan? = switch e.subject {
+            case .bench(let run): BenchRunPlan(program: run.program, run: run.run)
             case .participant: nil
             }
             session.trials.append(TrialRecord(index: e.trial.index, task: e.trial.task, attempt: e.trial.attempt,
-                                              practice: e.practice, program: program))
+                                              practice: e.practice, bench: bench))
             phase = .drawing(OpenTrial(index: e.trial.index, task: e.trial.task,
                                        deadline: e.spec.completion.deadline(startedAt: e.t)))
 
@@ -391,8 +391,9 @@ extension SessionState {
 
 // MARK: - Decide
 
-/// What the app plans for one bench run. It carries no trajectory digest and no clip: `decide` copies the digest from
-/// the programs file and writes the run id as the clip, so an operator types neither.
+/// What the app plans for one bench run, and what the fold keeps of each bench trial. It carries no trajectory digest
+/// and no clip: `decide` copies the digest from the programs file and writes the run id as the clip, so an operator
+/// types neither. In one session, the pair names one run id.
 public struct BenchRunPlan: Hashable, Sendable {
     public var program: ProgramID
     /// The protocol's run index. `decide` refuses a value outside `BenchRun.runs`.
@@ -492,6 +493,9 @@ public enum Rejection: Error, Hashable, Sendable {
     case programNotForTask(ProgramID)
     /// A run index outside `BenchRun.runs`.
     case invalidRun(Int)
+    /// A program and run index that an earlier trial of the session has, whatever its outcome. The run id names the
+    /// camera files of the run, so a rerun takes run index 6 or 7 (bench protocol sections 6.4 and 15).
+    case repeatedRun(ProgramID, Int)
     /// An `exclude` mark on a fault run. The quality gate needs every fault run as an ordinary trial (bench protocol
     /// section 5.3).
     case excludeOnFaultRun(ProgramID)
@@ -550,14 +554,17 @@ extension SessionState {
                     return .failure(.repeatedAccommodation(accommodation))
                 }
                 subject = .participant(facts)
-            case (.bench(let facts), .bench(let run)):
-                guard let program = rules.benchPrograms?.program(run.program) else {
-                    return .failure(.unknownProgram(run.program))
+            case (.bench, .bench(let run)):
+                let recorded: BenchRun
+                do throws(Rejection) {
+                    recorded = try benchRun(run, rules: rules).get()
+                } catch {
+                    return .failure(error)
                 }
-                guard program.task == plan.task else { return .failure(.programNotForTask(run.program)) }
-                guard BenchRun.runs.contains(run.run) else { return .failure(.invalidRun(run.run)) }
-                subject = .bench(BenchRun(program: run.program, run: run.run, trajectorySHA256: program.trajectorySHA256,
-                                          clip: ClipName(runOf: run.program, run: run.run, in: facts)))
+                guard rules.benchPrograms?.program(run.program)?.task == plan.task else {
+                    return .failure(.programNotForTask(run.program))
+                }
+                subject = .bench(recorded)
             case (.bench, .participant):
                 return .failure(.noParticipant)
             case (.participant, .bench):
@@ -648,7 +655,7 @@ extension SessionState {
 
         case .mark(let trial, let code, let t):
             guard trial.rawValue < session.trials.count else { return .failure(.unknownTrial(trial)) }
-            if code == .exclude, let program = session.trials[trial.rawValue].program,
+            if code == .exclude, let program = session.trials[trial.rawValue].bench?.program,
                rules.benchPrograms?.program(program)?.fault != nil {
                 return .failure(.excludeOnFaultRun(program))
             }
@@ -673,6 +680,21 @@ extension SessionState {
             }
             return .success([.sessionClosed(SessionClosed(t: t, counts: session.counts))])
         }
+    }
+
+    /// The run that `decide` records for `plan` in this bench session, or why it refuses the plan. A run screen asks
+    /// it before it offers the start of a run.
+    public func benchRun(_ plan: BenchRunPlan, rules: SessionRules) -> Result<BenchRun, Rejection> {
+        guard case .bench(let facts) = session.opened.subject else { return .failure(.notABenchSession) }
+        guard let program = rules.benchPrograms?.program(plan.program) else {
+            return .failure(.unknownProgram(plan.program))
+        }
+        guard BenchRun.runs.contains(plan.run) else { return .failure(.invalidRun(plan.run)) }
+        guard !session.trials.contains(where: { $0.bench == plan }) else {
+            return .failure(.repeatedRun(plan.program, plan.run))
+        }
+        return .success(BenchRun(program: plan.program, run: plan.run, trajectorySHA256: program.trajectorySHA256,
+                                 clip: ClipName(runOf: plan.program, run: plan.run, in: facts)))
     }
 
     /// A flag for each safety item of the open block's instrument that has no response. An unreached safety item

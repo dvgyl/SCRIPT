@@ -261,6 +261,25 @@ private func decidedRun(_ d: Driver, _ plan: TrialPlan) throws -> BenchRun? {
     #expect(ClipName("" as String) == nil && ClipName(String(repeating: "c", count: 65)) == nil)
 }
 
+@Test func aRunIDIsUsedOncePerSession() throws {
+    // Detects a session that records a second run with the program and run index of an earlier run, aborted or
+    // interrupted, so two runs share one run id and one camera file name (bench protocol sections 6.4 and 15).
+    var d = try benchDriver()
+    let loops = Driver.benchPlan("loops-l-v20", task: "bench-loops-l", run: 2)
+    try d.run(.startTrial(loops, t: 101))
+    try d.run(.endTrial(reason: .operatorAbort, t: 102))
+    try d.run(.startTrial(Driver.benchPlan("spiral-l-v20", task: "bench-spiral-l", position: 2), t: 103))
+    try d.write(d.state.recovery(t: 5, at: Fixed.launch.at, boot: Fixed.laterBoot, truncatedBytes: 0,
+                                 instruments: d.rules.instruments))
+    for (plan, run) in [(loops, BenchRunPlan(program: "loops-l-v20", run: 2)),
+                        (Driver.benchPlan("spiral-l-v20", task: "bench-spiral-l"), BenchRunPlan(program: "spiral-l-v20", run: 1))] {
+        #expect(d.state.decide(.startTrial(plan, t: 6), rules: d.rules).rejection == .repeatedRun(run.program, run.run))
+        #expect(d.state.benchRun(run, rules: d.rules).rejection == .repeatedRun(run.program, run.run))
+    }
+    #expect(try decidedRun(d, Driver.benchPlan("loops-l-v20", task: "bench-loops-l", run: 6))?.clip == "W-M3-loops-l-v20-r6")
+    #expect(try decidedRun(d, Driver.benchPlan("loops-l-v40", task: "bench-loops-l", run: 2))?.clip == "W-M3-loops-l-v40-r2")
+}
+
 @Test func anExcludeMarkOnAFaultRunIsRefused() throws {
     // Detects a fault run that an operator can exclude, which removes it from the quality gate of bench protocol
     // section 5.3, in either capture app.

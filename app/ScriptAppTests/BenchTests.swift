@@ -110,6 +110,30 @@ private func lines(_ store: SessionStore) async throws -> [[String: Any]] {
     #expect(store.currentRun?.marks == [.disturbance])
 }
 
+@Test @MainActor func aRunIDOfTheSessionCannotStartAgain() async throws {
+    // Detects a run screen that starts a run with the run id of an earlier run, for example after Stop the run ends
+    // a wrong pick, so two runs share one camera file name.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try makeStore(root: root)
+    try openBench(store)
+    let picked = BenchRunPlan(program: "loops-l-v20", run: 2)
+    store.chooseRun(picked)
+    store.startRun(view: ViewSize(width: 834, height: 1000)!)
+    store.stopRun()
+    #expect(store.runRefusal(picked) == .repeatedRun("loops-l-v20", 2))
+    store.chooseRun(picked)
+    #expect(store.currentRun == nil)
+    store.startRun(view: ViewSize(width: 834, height: 1000)!)
+    #expect(store.state?.session.trials.count == 1)
+
+    #expect(store.runRefusal(BenchRunPlan(program: "loops-l-v20", run: 6)) == nil)
+    record("loops-l-v20", run: 6, in: store)
+    let started = try await lines(store).filter { $0["kind"] as? String == "trialStarted" }
+    let clips = started.map { ($0["bench"] as? [String: Any])?["clip"] as? String }
+    #expect(clips == ["P-M3-loops-l-v20-r2", "P-M3-loops-l-v20-r6"])
+}
+
 @Test @MainActor func aBenchSessionRefusesEveryQuestionnaireSafetyAndHandoffStep() async throws {
     // Detects a bench session that reaches a handoff, a questionnaire, a safety screen, or the crisis list, which
     // name a person who is not there.

@@ -36,6 +36,7 @@ struct BenchRunScreen: View {
     var body: some View {
         let programs = store.contract.benchPrograms.listed
         let choice = BenchRunPlan(program: program, run: run)
+        let refusal = store.runRefusal(choice)
         let digest = store.digest ?? JournalDigest()
         NavigationStack {
             List {
@@ -66,7 +67,11 @@ struct BenchRunScreen: View {
                             .foregroundStyle(.secondary)
                             .accessibilityIdentifier("runID")
                     }
+                    if let line = refusal?.runLine {
+                        Text(line).foregroundStyle(.red).accessibilityIdentifier("runRefusal")
+                    }
                     Button("Start the run") { store.chooseRun(choice) }
+                        .disabled(refusal != nil)
                         .accessibilityIdentifier("startRun")
                 }
                 if !digest.trials.isEmpty {
@@ -174,6 +179,16 @@ struct BenchTaskScreen: View {
     private func start(_ size: CGSize) {
         guard run.trial == nil, let view = ViewSize(width: Double(size.width), height: Double(size.height)) else { return }
         store.startRun(view: view)
+    }
+}
+
+extension Rejection {
+    /// The line that the run screen shows for a run that the session refuses.
+    var runLine: LocalizedStringKey? {
+        switch self {
+        case .repeatedRun: "This session already has this run ID."
+        default: nil
+        }
     }
 }
 

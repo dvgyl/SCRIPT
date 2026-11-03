@@ -707,9 +707,17 @@ final class SessionStore {
         return ClipName(runOf: run.program, run: run.run, in: facts)
     }
 
+    /// Why `decide` refuses `run` in this bench session, or nil when the run screen can offer it.
+    func runRefusal(_ run: BenchRunPlan) -> Rejection? {
+        guard let live, let state, case .failure(let rejection) = state.benchRun(run, rules: live.rules) else {
+            return nil
+        }
+        return rejection
+    }
+
     /// The operator picked the next run on the run screen. The task screen starts it.
     func chooseRun(_ run: BenchRunPlan) {
-        guard live?.stage == .bench, openTrial == nil else { return }
+        guard live?.stage == .bench, openTrial == nil, runRefusal(run) == nil else { return }
         live?.chosenRun = run
     }
 

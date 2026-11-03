@@ -68,6 +68,9 @@ struct BenchRunScreen: View {
                         LabeledContent("Run id") {
                             Text(verbatim: store.runID(choice) ?? "").monospaced()
                         }
+                        if let line = store.refusal(choice)?.runLine {
+                            Text(line).foregroundStyle(.red)
+                        }
                     } else {
                         Picker("Task", selection: $task) {
                             ForEach(BenchContract.qualificationTasks, id: \.self) { Text(verbatim: $0.rawValue).tag($0) }
@@ -75,7 +78,7 @@ struct BenchRunScreen: View {
                     }
                     Button("Begin") { store.begin(choice) }
                         .keyboardShortcut(.defaultAction)
-                        .disabled(store.plan(choice) == nil || live.stopped)
+                        .disabled(store.plan(choice) == nil || live.stopped || store.refusal(choice) != nil)
                 }
             }
             Section("Origin") {
@@ -110,6 +113,16 @@ struct BenchRunScreen: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+extension Rejection {
+    /// The line that the run screen shows for a run that the session refuses.
+    var runLine: LocalizedStringKey? {
+        switch self {
+        case .repeatedRun: "This session already has this run id."
+        default: nil
+        }
     }
 }
 

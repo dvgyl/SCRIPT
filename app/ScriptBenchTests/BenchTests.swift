@@ -269,6 +269,30 @@ private func export(_ bench: TestBench, _ opened: SessionOpened) throws -> (fold
     #expect(marks.map { $0["code"] as? String } == ["deviceProblem"])
 }
 
+@Test @MainActor func aRunIDOfTheSessionCannotBeginAgain() async throws {
+    // Detects a run screen that begins a second run with the run id of an earlier run, for example when the run
+    // index stays the same from one run to the next, so two runs share one camera file name.
+    let bench = try TestBench()
+    defer { bench.remove() }
+    let store = bench.store
+    bench.enter()
+    #expect(store.open(try bench.opened(.bench)))
+    #expect(store.refusal(loops) == nil)
+    store.begin(loops)
+    bench.stroke(x0: 1000, y: 1000)
+    store.done()
+    #expect(store.refusal(loops) == .repeatedRun("loops-l-v20", 1))
+    #expect(store.runID(loops) == "W-M3-loops-l-v20-r1")
+    store.begin(loops)
+    #expect(store.state?.phase == .ready && store.state?.session.trials.count == 1)
+    let rerun: RunChoice = .bench(BenchRunPlan(program: "loops-l-v20", run: 6))
+    #expect(store.refusal(rerun) == nil)
+    store.begin(rerun)
+    store.done()
+    #expect(try await bench.lines().of("trialStarted").map { ($0["bench"] as? [String: Any])?["clip"] as? String }
+        == ["W-M3-loops-l-v20-r1", "W-M3-loops-l-v20-r6"])
+}
+
 @Test @MainActor func focusLossEndsAnOpenTrialAsBackgrounded() async throws {
     // Detects a trial that stays open after the window loses the keyboard focus, so a run could go on without the
     // capture (bench protocol section 2.4).
@@ -301,7 +325,7 @@ private func export(_ bench: TestBench, _ opened: SessionOpened) throws -> (fold
     first.store.begin(loops)
     first.stroke(x0: 7000, y: 20000)
     first.store.done()
-    first.store.begin(loops)
+    first.store.begin(.bench(BenchRunPlan(program: "loops-l-v20", run: 2)))
     first.point(.down, x: 7000, y: 20000)
     try await first.requireLive().writer.close()
 
@@ -313,8 +337,8 @@ private func export(_ bench: TestBench, _ opened: SessionOpened) throws -> (fold
     second.store.resume(opened.sessionID)
     let live = try second.requireLive()
     #expect(live.origin == Point(x: 7000, y: 9600))
-    #expect(live.labels == ["W-M3-loops-l-v20-r1", "W-M3-loops-l-v20-r1"])
-    second.store.begin(.bench(BenchRunPlan(program: "loops-l-v20", run: 2)))
+    #expect(live.labels == ["W-M3-loops-l-v20-r1", "W-M3-loops-l-v20-r2"])
+    second.store.begin(.bench(BenchRunPlan(program: "loops-l-v20", run: 3)))
     second.stroke(x0: 7000, y: 20000)
     second.store.done()
     #expect(try await second.lines().of("contactBegan").map { $0["contact"] as? Int } == [1, 2, 3])
