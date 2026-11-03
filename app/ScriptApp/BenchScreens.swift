@@ -157,8 +157,12 @@ struct BenchTaskScreen: View {
             Button {
                 store.mark(code)
             } label: {
-                Label(code.name, systemImage: marked ? "checkmark.circle.fill" : "flag")
-                    .contentTransition(.identity)
+                // Two views, so the marked state shows at once instead of through a symbol transition.
+                if marked {
+                    Label(code.name, systemImage: "checkmark.circle.fill")
+                } else {
+                    Label(code.name, systemImage: "flag")
+                }
             }
             .buttonStyle(.bordered)
             .disabled(run.trial == nil || marked)

@@ -159,3 +159,28 @@ private func lines(_ store: SessionStore) async throws -> [[String: Any]] {
     #expect(store.state?.summary.trials.map(\.contacts) == [1])
     #expect(store.currentRun == nil && store.live?.stage == .bench)
 }
+
+@Test @MainActor func anInterruptedBenchSessionResumesAtTheRunScreen() async throws {
+    // Detects a bench session that a crash leaves without a way back, that resumes into a participant stage, or that
+    // records its next run without the run of the interruption.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let first = try makeStore(root: root)
+    try openBench(first)
+    record("loops-l-v20", in: first)
+    first.chooseRun(BenchRunPlan(program: "spiral-l-v20", run: 1))
+    first.startRun(view: ViewSize(width: 834, height: 1000)!)
+    try await first.live!.sink.close()
+
+    let second = try makeStore(root: root)
+    second.launch()
+    let row = try #require(second.listing.first { $0.purpose == .bench })
+    #expect(row.status == .interrupted && second.title(of: row) == "P-M3")
+    second.resume(try #require(row.sessionID))
+    #expect(second.live?.stage == .bench && second.live?.participant == nil)
+    #expect(second.currentRun == nil)
+    record("spiral-l-v20", run: 6, in: second)
+    #expect(second.state?.summary.trials.map(\.outcome) == [.completed, .interrupted, .completed])
+    second.endBench()
+    #expect(second.live?.stage == .sampleTiming)
+}
