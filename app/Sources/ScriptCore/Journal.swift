@@ -508,9 +508,10 @@ public struct SessionOpened: Hashable, Sendable {
         self.battery = battery
     }
 
-    /// `<participant>_<first 8 hex digits of the session UUID>`, the export folder name.
+    /// `SCRIPT_<study>_<site>_<first 8 hex digits of the session UUID>`, the export folder name. It never holds the
+    /// participant code, which stays inside the journal and, when encrypted, inside the ciphertext.
     public var exportName: String {
-        "\(participant.rawValue)_\(sessionID.uuid.uuidString.prefix(8).lowercased())"
+        "SCRIPT_\(study.id.rawValue)_\(study.site.rawValue)_\(sessionID.uuid.uuidString.prefix(8).lowercased())"
     }
 }
 

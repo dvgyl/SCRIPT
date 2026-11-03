@@ -1,0 +1,141 @@
+import CryptoKit
+import Foundation
+import ScriptCore
+import Synchronization
+@testable import ScriptApp
+
+/// A store over new temporary folders. The caller removes `root`.
+@MainActor
+func makeStore(root: URL, makeSink: SinkFactory? = nil, freeBytes: Int64 = 50_000_000_000) throws -> SessionStore {
+    let contract = try BundledContract()
+    let defaults = UserDefaults(suiteName: "ScriptAppTests-\(UUID().uuidString)")!
+    let storage = Storage(applicationSupport: root.appendingPathComponent("Support"),
+                          documents: root.appendingPathComponent("Documents"), deviceSecret: MemorySecret())
+    let library = ConfigurationLibrary(folder: root.appendingPathComponent("Support/Configurations"), demo: contract.demo,
+                                       defaults: defaults)
+    let device = DeviceFacts(model: "iPad17,2", os: "iPadOS 27.0", nativeScale: 2,
+                             app: AppInfo(version: "0.1.0", build: "1", sourceRevision: "test"), input: .directTouchAsPen)
+    if let makeSink {
+        return SessionStore(contract: contract, storage: storage, device: device, configurations: library,
+                            qualifications: QualificationRegistry(defaults: defaults), makeSink: makeSink,
+                            freeSpace: { freeBytes })
+    }
+    return SessionStore(contract: contract, storage: storage, device: device, configurations: library,
+                        qualifications: QualificationRegistry(defaults: defaults), freeSpace: { freeBytes })
+}
+
+func temporaryFolder() throws -> URL {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("ScriptAppTests-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    return url
+}
+
+/// The `sessionOpened` line that Setup builds for a session under `configuration`.
+func opened(_ administration: Administration = .supervised, participant: ParticipantCode = "T-0001",
+            configuration: StudyConfiguration, battery: Battery, id: SessionID = SessionID()) -> SessionOpened {
+    let consent = configuration.consentModel[AgeBand.youngAdult.rawValue]!
+    return SessionOpened(
+        purpose: .study, sessionID: id, participant: participant, openedAt: WallTime(Date()),
+        openedUptime: ProcessInfo.processInfo.systemUptime, boot: Clock.boot,
+        app: AppInfo(version: "0.1.0", build: "1", sourceRevision: "test"),
+        device: DeviceInfo(model: "iPad17,2", os: "iPadOS 27.0", nativeScale: 2, asset: "IPAD-01"),
+        surface: Surface(protector: .none, nib: .new), qualification: nil,
+        scale: MillimetreScale.lookup(model: "iPad17,2", nativeScale: 2)!, pencil: .none,
+        channels: ChannelPlan.plan(pencil: .none, hoverSupported: false), input: .directTouchAsPen,
+        administration: administration, study: configuration.studyRef(site: "DEMO"), visit: Visit(id: "V1", number: 1)!,
+        ageBand: .youngAdult, jurisdiction: "GB", locale: "en",
+        consent: Consent(model: consent.model,
+                         attestedBy: Attestor(code: "OP1", role: administration == .supervised ? .operator : .enrolment),
+                         attestedAt: WallTime(Date()), documents: consent.documents),
+        ethics: configuration.ethics, battery: battery.reference
+    )
+}
+
+/// The demo configuration file with a self-administered PHQ-9 block and the remote review that it needs.
+func remoteReviewConfiguration() throws -> StudyConfiguration {
+    let url = Bundle.main.url(forResource: "demo", withExtension: "json")!
+    var root = try JSONSerialization.jsonObject(with: try Data(contentsOf: url)) as! [String: Any]
+    root["questionnaires"] = [["administration": "self", "ageBand": "18-24", "position": "afterTasks",
+                               "instruments": ["phq9"]]]
+    var safety = root["safety"] as! [String: Any]
+    safety["remoteReview"] = ["reviewerRole": "study clinician", "imminentReviewWithinHours": 24,
+                              "routineReviewWithinWeekdays": 1, "exportEveryHours": 12,
+                              "monitoringDisclosureVersion": "1"]
+    root["safety"] = safety
+    return try StudyConfiguration(data: try JSONSerialization.data(withJSONObject: root))
+}
+
+extension SessionStore {
+    /// Runs every task step with a Begin and a Done, as a participant who does not draw.
+    func runTasks() {
+        var guardCount = 0
+        while currentTask != nil, guardCount < 50 {
+            startTrial(view: ViewSize(width: 834, height: 1000)!)
+            begin()
+            done()
+            guardCount += 1
+        }
+    }
+
+    /// Answers every item of the open blocks: the value in `values`, else 0.
+    func answerBlocks(_ values: [ItemID: Int?] = [:]) {
+        var guardCount = 0
+        while let item = currentItem, guardCount < 100 {
+            answer(values[item.item.id] ?? 0)
+            if live?.stage == .flagCrisisList { continueAfterCrisisList() }
+            guardCount += 1
+        }
+    }
+}
+
+/// The device secret in memory.
+final class MemorySecret: DeviceSecret {
+    private let stored = Mutex<[UInt8]?>(nil)
+
+    func key() throws -> SymmetricKey {
+        stored.withLock { key in
+            if key == nil { key = (0..<32).map { _ in UInt8.random(in: 0...255) } }
+            return SymmetricKey(data: key!)
+        }
+    }
+}
+
+/// A sink that writes like the journal writer and then fails: the append after `failAfter` writes half of its
+/// bytes, as a full disk does, and reports the failure; every later append throws.
+final class FailingSink: JournalSink {
+    private struct State {
+        var appends = 0
+        var failed = false
+    }
+
+    private let url: URL
+    private let failAfter: Int
+    private let onFailure: @Sendable (JournalWriter.WriteError) -> Void
+    private let state = Mutex(State())
+
+    init(url: URL, failAfter: Int, onFailure: @escaping @Sendable (JournalWriter.WriteError) -> Void) {
+        self.url = url
+        self.failAfter = failAfter
+        self.onFailure = onFailure
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+    }
+
+    func append(_ entries: [Entry]) throws {
+        var data = Data()
+        for entry in entries { data.append(try LineCodec.encode(entry)) }
+        let fails = try state.withLock { state -> Bool in
+            if state.failed { throw JournalWriter.WriteError.io(EIO) }
+            state.appends += 1
+            state.failed = state.appends > failAfter
+            return state.failed
+        }
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: fails ? data.prefix(data.count / 2) : data)
+        try handle.close()
+        if fails { onFailure(.io(EIO)) }
+    }
+
+    func sync() async throws {}
+    func close() async throws {}
+}

@@ -432,15 +432,19 @@ extension Manifest.Facts {
 ///
 ///     <applicationSupport>/Sessions/<uuid>.jsonl   journals not yet exported
 ///     <applicationSupport>/Staging/<name>/         publication in progress
+///     <applicationSupport>/Damaged/<uuid>.jsonl    journals with damage before the last line, never in Files
 ///     <applicationSupport>/Deletions.jsonl         one line for each withdrawal
+///     <applicationSupport>/ExportIndex.jsonl       the keyed hash of the participant code of each export name
 ///     <documents>/Exports/<name>/                  verified exports, visible in Files
-///     <documents>/Damaged/<uuid>.jsonl             journals with damage before the last line
 public struct Storage: Sendable {
     public let sessions: URL
     public let staging: URL
     public let exports: URL
     public let damaged: URL
     public let deletionLog: URL
+    /// One line for each export: its name and `participantHMAC`. An export name holds no participant code, and an
+    /// encrypted export cannot be read on the device, so withdrawal finds a participant's exports here.
+    public let exportIndex: URL
     /// The key of `participantHMAC` in the deletion log.
     let deviceSecret: any DeviceSecret
 
@@ -450,7 +454,7 @@ public struct Storage: Sendable {
 
     /// Each point between two durable writes of `publish` and `reconcile`, and each write and fsync of `JournalWriter`.
     enum Step: String, CaseIterable, Sendable {
-        case stagingCleared, journalStaged, manifestWritten, stagedSynced, stagedVerified, renamed, sourceRemoved
+        case stagingCleared, journalStaged, manifestWritten, stagedSynced, stagedVerified, indexed, renamed, sourceRemoved
         case leftoverRemoved, movedToDamaged, recoveryStaged, recoveryCommitted, staleStagingRemoved
         case journalWrite, journalSync
     }
@@ -495,8 +499,9 @@ public struct Storage: Sendable {
         sessions = applicationSupport.appendingPathComponent("Sessions", isDirectory: true)
         staging = applicationSupport.appendingPathComponent("Staging", isDirectory: true)
         deletionLog = applicationSupport.appendingPathComponent("Deletions.jsonl")
+        exportIndex = applicationSupport.appendingPathComponent("ExportIndex.jsonl")
         exports = documents.appendingPathComponent("Exports", isDirectory: true)
-        damaged = documents.appendingPathComponent("Damaged", isDirectory: true)
+        damaged = applicationSupport.appendingPathComponent("Damaged", isDirectory: true)
         self.deviceSecret = deviceSecret
         self.stops = stops
     }
@@ -506,7 +511,8 @@ public struct Storage: Sendable {
     }
 
     /// Creates the folders. On iOS, each folder has the file protection `completeUntilFirstUserAuthentication`,
-    /// which every file created inside it inherits.
+    /// which every file created inside it inherits. Each folder is excluded from device backups, so no journal or
+    /// export reaches iCloud or a computer backup.
     public func createDirectories() throws {
         try guarded { try makeDirectories() }
     }
@@ -515,6 +521,7 @@ public struct Storage: Sendable {
         for folder in [sessions, staging, exports, damaged] {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             try protect(folder)
+            try excludeFromBackup(folder)
         }
     }
 
@@ -565,12 +572,20 @@ public struct Storage: Sendable {
     /// An open journal loses its torn tail and gets a `recovered` line in one atomic replacement. A journal with
     /// damage before its last line moves unchanged to `Damaged/`. A closed journal whose publication had started
     /// finishes it. A staging folder whose export exists and whose journal is gone is removed. An error in one
-    /// journal becomes its result, so every other journal is still reconciled.
+    /// journal becomes its result, so every other journal is still reconciled. A leftover `.recovering` file or
+    /// staging folder that cannot be removed stays for the next launch.
     public func reconcile(_ launch: Launch, policy: ExportPolicy) throws -> [Reconciled] {
+        try reconcile(launch, policy: { _ in policy })
+    }
+
+    /// `policy` gives the export format of each session, from the configuration that the session recorded, so a
+    /// session never finishes its publication under the key of another configuration. When it throws, the result
+    /// is `publishFailed` and the journal stays.
+    public func reconcile(_ launch: Launch, policy: (SessionOpened) throws -> ExportPolicy) throws -> [Reconciled] {
         try guarded {
             try makeDirectories()
             for leftover in try contents(of: sessions) where leftover.pathExtension == "recovering" {
-                try FileManager.default.removeItem(at: leftover)
+                guard (try? FileManager.default.removeItem(at: leftover)) != nil else { continue }
                 try syncPath(sessions)
                 try checkpoint(.leftoverRemoved)
             }
@@ -587,7 +602,7 @@ public struct Storage: Sendable {
             }
             for folder in try contents(of: staging)
             where !names.contains(folder.lastPathComponent) && exists(exports.appendingPathComponent(folder.lastPathComponent)) {
-                try FileManager.default.removeItem(at: folder)
+                guard (try? FileManager.default.removeItem(at: folder)) != nil else { continue }
                 try syncPath(staging)
                 try checkpoint(.staleStagingRemoved)
             }
@@ -596,7 +611,7 @@ public struct Storage: Sendable {
     }
 
     /// Reconciles one journal and adds its export name to `names`.
-    private func reconcile(_ journal: URL, launch: Launch, policy: ExportPolicy,
+    private func reconcile(_ journal: URL, launch: Launch, policy: (SessionOpened) throws -> ExportPolicy,
                            names: inout Set<String>) throws -> Reconciled {
         let data = try Data(contentsOf: journal)
         let scan = Journal.scan(data)
@@ -621,7 +636,7 @@ public struct Storage: Sendable {
             return .closed(state)
         }
         do {
-            return .published(try publish(journal: journal, policy: policy))
+            return .published(try publish(journal: journal, policy: try policy(state.session.opened)))
         } catch let crash as InjectedCrash {
             throw crash
         } catch {
@@ -660,7 +675,8 @@ public struct Storage: Sendable {
     // MARK: Publish
 
     /// Clones or encrypts the closed journal into `Staging/<name>/`, writes the manifest, syncs, verifies the staged
-    /// copy (decode, fold, counts, SHA-256), and renames the folder into `Exports/`. Only then does it delete the source.
+    /// copy (decode, fold, counts, SHA-256), adds the name to the export index, and renames the folder into `Exports/`.
+    /// Only then does it delete the source.
     @discardableResult
     public func publish(_ id: SessionID, policy: ExportPolicy) throws -> URL {
         try guarded {
@@ -729,6 +745,9 @@ public struct Storage: Sendable {
 
             try Self.verify(stage, source: data, state: state)
             try checkpoint(.stagedVerified)
+
+            try index(name, participant: state.session.opened.participant)
+            try checkpoint(.indexed)
 
             try move(stage, to: target)
             try syncPath(exports)
@@ -835,13 +854,15 @@ public struct Storage: Sendable {
     /// and every `*.recovering` file, which is a disposable copy of a journal. It first appends one line to the
     /// deletion log: the time, the HMAC-SHA256 of the code with the device secret, and the session identifiers.
     /// The line never holds the code. A rerun after a crash deletes what is left and logs again, so the log never
-    /// misses a deletion.
+    /// misses a deletion. Exports are found by the export index and by the names of the participant's journals.
     public func withdraw(participant: ParticipantCode, at: WallTime) throws -> Withdrawal {
         try guarded {
             try makeDirectories()
+            let mac = try participantHMAC(participant).hex
             var ids = Set<SessionID>()
             var targets: [URL] = []
             var unreadable: [URL] = []
+            var names = try indexedNames(participantHMAC: mac)
             for folder in [sessions, damaged] {
                 for file in try contents(of: folder) {
                     switch file.pathExtension {
@@ -854,6 +875,7 @@ public struct Storage: Sendable {
                         }
                         guard opened.participant == participant else { continue }
                         ids.insert(opened.sessionID)
+                        names.insert(opened.exportName)
                         targets.append(file)
                     default:
                         continue
@@ -861,7 +883,7 @@ public struct Storage: Sendable {
                 }
             }
             for folder in [staging, exports] {
-                for export in try contents(of: folder) where export.lastPathComponent.hasPrefix("\(participant.rawValue)_") {
+                for export in try contents(of: folder) where names.contains(export.lastPathComponent) {
                     if let manifest = try? Self.readManifest(export, session: nil),
                        let uuid = UUID(uuidString: manifest.sessionID) {
                         ids.insert(SessionID(uuid))
@@ -872,7 +894,7 @@ public struct Storage: Sendable {
             let sorted = ids.sorted { $0.description < $1.description }
             let line = JSON.object([
                 ("at", .string(at.text)),
-                ("participantHMAC", .string(try participantHMAC(participant).hex)),
+                ("participantHMAC", .string(mac)),
                 ("sessions", .array(sorted.map { .string($0.description) })),
             ])
             var bytes: [UInt8] = []
@@ -884,6 +906,7 @@ public struct Storage: Sendable {
                 try protect(deletionLog)
                 try syncPath(deletionLog.deletingLastPathComponent())
             }
+            try excludeFromBackup(deletionLog)
             for target in targets {
                 try FileManager.default.removeItem(at: target)
                 try syncPath(target.deletingLastPathComponent())
@@ -907,6 +930,34 @@ public struct Storage: Sendable {
             }
             return false
         }
+    }
+
+    /// Appends the export's name and the keyed hash of its participant code to the export index, once.
+    private func index(_ name: String, participant: ParticipantCode) throws {
+        let mac = try participantHMAC(participant).hex
+        guard try !indexedNames(participantHMAC: mac).contains(name) else { return }
+        var bytes: [UInt8] = []
+        JSON.object([("name", .string(name)), ("participantHMAC", .string(mac))]).write(into: &bytes)
+        bytes.append(0x0A)
+        let created = !exists(exportIndex)
+        try appendAndSync(Data(bytes), to: exportIndex, create: true)
+        if created {
+            try protect(exportIndex)
+            try syncPath(exportIndex.deletingLastPathComponent())
+        }
+        try excludeFromBackup(exportIndex)
+    }
+
+    /// The export names that the index gives for one keyed hash.
+    private func indexedNames(participantHMAC mac: String) throws -> Set<String> {
+        guard exists(exportIndex) else { return [] }
+        var names = Set<String>()
+        for line in try Data(contentsOf: exportIndex).split(separator: 0x0A) {
+            guard let entry = try? Fields(JSON.decodeDocument(Data(line)), path: ""),
+                  (try? entry.string("participantHMAC")) == mac, let name = try? entry.string("name") else { continue }
+            names.insert(name)
+        }
+        return names
     }
 
     private func participantHMAC(_ participant: ParticipantCode) throws -> HashedAuthenticationCode<SHA256> {
@@ -938,6 +989,15 @@ public struct Storage: Sendable {
         try FileManager.default.setAttributes(
             [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: url.path)
         #endif
+    }
+
+    /// Sets `isExcludedFromBackup` when it is not set yet, so a folder that is already excluded needs no write.
+    private func excludeFromBackup(_ url: URL) throws {
+        guard try url.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup != true else { return }
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        var url = url
+        try url.setResourceValues(values)
     }
 
     private func move(_ from: URL, to: URL) throws {
