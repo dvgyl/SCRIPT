@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import replace
 from pathlib import Path
 
@@ -52,9 +53,10 @@ def test_svc_rejects_invalid_layout(tmp_path: Path, payload: str) -> None:
 
 
 def test_parkinsonhw_groups_tests_and_converts_time() -> None:
-    # Detects merged test IDs or a ParkinsonHW reader that treats milliseconds as seconds.
+    # Detects merged or unnamed test IDs, or a ParkinsonHW reader that treats milliseconds as seconds.
     rec = read_parkinsonhw(FIXTURES / "parkinsonhw" / "synthetic.txt")
     assert [t.index for t in rec.trials] == [0, 1]
+    assert [t.task.id for t in rec.trials] == ["parkinsonhw-static-spiral", "parkinsonhw-dynamic-spiral"]
     contact, air = rec.trials[0].strokes
     np.testing.assert_allclose(contact.t, [0, 0.01])
     np.testing.assert_allclose(contact.xy[0], [100, -200])
@@ -110,3 +112,70 @@ def test_parkinsonhw_rejects_wrong_column_count(tmp_path: Path) -> None:
     path.write_text("1;2;3;4;5;6\n")
     with pytest.raises(FormatError):
         read_parkinsonhw(path)
+
+
+# The layout of the real files: CRLF line ends, no header, and system time in milliseconds. Pressure is
+# positive in contact. Z is 12 in one contact sample and 64 in one hover sample.
+REAL_LAYOUT = (
+    b"200;204;0;73;910;1732647300;0\r\n"
+    b"201;204;12;218;900;1732647307;0\r\n"
+    b"202;205;0;253;900;1732647316;0\r\n"
+    b"203;205;0;0;900;1732647323;0\r\n"
+    b"204;206;64;0;900;1732647332;0\r\n"
+    b"205;206;0;40;900;1732647339;2\r\n"
+)
+
+
+def test_parkinsonhw_pen_state_comes_from_pressure_not_z(tmp_path: Path) -> None:
+    # Detects a reader that splits a contact at a nonzero Z, or calls a sample without pressure a contact.
+    path = tmp_path / "drawing.txt"
+    path.write_bytes(REAL_LAYOUT)
+    rec = read_parkinsonhw(path)
+    contact, air = rec.trials[0].strokes
+    assert (contact.state, air.state) == (PenState.CONTACT, PenState.IN_AIR)
+    np.testing.assert_allclose(contact.t, [0, 0.007, 0.016])
+    np.testing.assert_allclose(air.t, [0.023, 0.032])
+    assert [t.task.id for t in rec.trials] == ["parkinsonhw-static-spiral", "parkinsonhw-circular-motion"]
+
+
+def test_parkinsonhw_loader_reads_every_data_file_and_no_readme(tmp_path: Path) -> None:
+    # Detects a loader that skips a data file without a class prefix, or reads a readme or a ._ file.
+    (tmp_path / "readme.txt").write_text("Dataset is delimited as CSV values as follows;\n")
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "drawing.txt").write_bytes(REAL_LAYOUT)
+    (tmp_path / "a" / "._drawing.txt").write_bytes(b"\x00\x05\x16\x07")
+    [rec] = load_parkinsonhw(tmp_path)
+    assert rec.source_hashes == (hashlib.sha256(REAL_LAYOUT).hexdigest(),)
+
+
+CLASS_WORDS = re.compile(r"control|parkinson(?!hw)|hw_dataset|new_dataset", re.IGNORECASE)
+CLASS_PREFIX = re.compile(r"\b[CPH]_[A-Za-z0-9]")
+
+
+def test_parkinsonhw_class_names_reach_no_code_row_or_output(tmp_path: Path) -> None:
+    # Detects a class folder, class prefix, or file name in a participant code, a row, a file, or an error.
+    files = {
+        "hw_dataset/control/C_0001.txt": REAL_LAYOUT,
+        "hw_dataset/parkinson/P_02100001.txt": REAL_LAYOUT.replace(b"200;204", b"190;204"),
+        "new_dataset/parkinson/H_p000-0010.txt": REAL_LAYOUT.replace(b"200;204", b"180;204"),
+    }
+    for name, data in files.items():
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_bytes(data)
+    records = load_parkinsonhw(tmp_path)
+    table = feature_table(records)
+    table.to_csv(tmp_path / "features.csv")
+    outputs = [
+        repr(records),
+        repr(table),
+        (tmp_path / "features.csv").read_text(),
+        (tmp_path / "features.csv.provenance.json").read_text(),
+    ]
+    (tmp_path / "hw_dataset" / "parkinson" / "P_02100002.txt").write_bytes(b"1;2;3\r\n")
+    with pytest.raises(FormatError) as refused:
+        load_parkinsonhw(tmp_path)
+    outputs.append(str(refused.value))
+    assert len(records) == 3
+    for text in outputs:
+        assert not CLASS_WORDS.search(text) and not CLASS_PREFIX.search(text)
+        assert not any(Path(name).stem in text for name in files)

@@ -266,20 +266,22 @@ python/src/scriptkin/
   instruments.py     questionnaire text and scoring rules, instruments.json
   studyconfig.py     the demo configuration and the configuration rules
   formats/journal.py fold, summarize: line checks and the session state machine
-  formats/export.py  read_journal (manifest and encrypted exports), pen_only
+  formats/export.py  verify_export, read_journal (manifest and encrypted exports), pen_only
   formats/checks.py  value checks for the journal and manifest readers
   formats/svc.py     SvcReader
-  formats/parkinsonhw.py
+  formats/parkinsonhw.py  read_parkinsonhw, load_parkinsonhw
   hpke.py            HPKE base mode for the export suite (RFC 9180)
   quality.py         QcPolicy, Refusal, Segment, Accepted, Rejected, assess
   signal.py          resampling, kinematics, Welch band power, entropy counts, micro-movement spikes, Gamma fit
   features.py        the feature catalog and extract, feature_table
   labels.py          questionnaire scores or refusals, and the safety flag count for audit
   qualification.py   the device qualification report
+  intake.py          intake into a study store: verify, keep one copy of each session, quarantine, receipts
+  qcreport.py        the QC report of a study store: counts and rates, never a label or a score
   synthetic.py       participants with latent traits and scores, device models, sites, scenarios, cohorts
   evaluate/          plan (digests), screening, participants, metrics, report, reliability, norms, planning
   contract.py        regenerate and verify the shared contract
-  cli.py             inspect, features, contract
+  cli.py             contract, evaluate, plan-size, intake, qc-report
 ```
 
 Key decisions:
@@ -299,6 +301,15 @@ Key decisions:
 - **Pen-only copy.** `pen_only(export, target)` writes a copy without questionnaire, response, and safety lines, and without `recovered.interruptedBlock`. It also ends at the last `trialEnded`: every later line is dropped, and `sessionClosed.t` is set to the time of that `trialEnded`. The time after the last task depends on whether an operator handled a safety flag, so keeping it would leak the label. It renumbers `seq`, recounts `sessionClosed.counts`, writes a new manifest, and writes `derivation.json` with the source session identifier and the SHA-256 of the source journal. The copy must pass I1 to I7 before the function returns.
 - **Encrypted exports.** `read_journal(path, private_key=...)` reads an export whose manifest has an `encryption` block (section 17). The key is the study's raw 32-byte X25519 private key. The reader checks the ciphertext size and SHA-256, opens the ciphertext, checks the plaintext size, line count, and SHA-256, and then applies I1 to I7. A ciphertext that does not open gives `JournalError` with rule I5.
 - **Qualification.** `qualification.qualify(recording)` accepts only a session with `purpose: qualification`. It reports the sample intervals inside contact strokes (median, 5th and 95th percentile, and the share of intervals longer than 30 ms), the jitter during the still hold (root mean square distance from the mean position of each stroke, in millimetres), the straight-line deviation (root mean square orthogonal distance from the total-least-squares line of each stroke, in millimetres), the scale source, and the planned and observed channels. A value that the data cannot support is a refusal.
+- **Intake.** `intake(sources, store, *, private_key, keep_plaintext)` checks each export folder under the sources with `verify_export`: the manifest, the decryption, and rules I1 to I7. It copies the export first into `store/.partial/` and checks that copy, so the bytes that it checks are the bytes that it keeps. The store holds:
+  - `sessions/<sessionID>/`: a verified export as received. An encrypted export stays encrypted. The decrypted `journal.jsonl` is kept beside it only with `keep_plaintext`.
+  - `quarantine/<first 16 hex digits of the export digest>/`: an export that failed a check or that conflicts, with `reason.json`.
+  - `receipts/<sessionID>.json`: every intake of that session, with the source folder, the export and journal SHA-256, encryption, `keyID`, the result, and the time.
+  - `intake.jsonl`: every intake, in order.
+- **Intake results.** A session with one journal is `accepted` into `sessions/`. The same journal again is a `duplicate`, and intake copies nothing. A journal is the same when its plaintext bytes are the same, so a copy that was encrypted again is a duplicate. A different journal for a session is a `conflict`: every version goes to `quarantine/`, and `sessions/` keeps none, because the store cannot know which one is correct. A failed check is `quarantined`. An absent or wrong study key raises `StudyKeyError`. Intake then refuses that export and writes nothing, so a second run with the correct key can take it.
+- **Idempotent intake.** The log records each export by its source folder and the SHA-256 of its files. Intake skips an export that the log already records, so a second run on the same sources changes no byte in the store. A folder or a receipt file gets its final name only when it is complete. The log is append-only. A crash leaves at most a torn last log line, and the next run removes it. Intake never writes into a source folder, and it never reads its own store as a source.
+- **QC report.** `qc_report(store, *, private_key)` reads every session in `store/sessions/`. It counts sessions by site, device asset, configuration digest, app version, administration, and purpose. It counts the measured trials of study sessions that `assess` accepts or refuses, with the refusal codes. These are the trials that `feature_table` uses. For each device asset and declared Pencil, it gives the sample rate from the intervals inside contact strokes (median, 5th and 95th percentile) and the latest qualification session in the store. It also gives the planned and observed channels, the rates of unresolved estimates and unmatched corrections, the interrupted trials and blocks, the recovered sessions, and the safety counts of the fold summary, for audit. `qc_markdown` writes two short tables. No label, score, response, feature value, or participant code enters the report.
+- **ParkinsonHW.** `read_parkinsonhw` reads the public UCI files for reader and feature tests only. A row is `X;Y;Z;Pressure;GripAngle;Timestamp;Test ID`. Time is in milliseconds; the real files have a median sample interval of 7 ms. A positive pressure is contact, and zero pressure is in-air. Z is not a pen state: it is nonzero in single samples inside contact. No source gives a unit for X, Y, Z, or the grip angle, so positions stay in source units, and Z and the grip angle are not channels. Each test ID is a trial named `parkinsonhw-static-spiral`, `parkinsonhw-dynamic-spiral`, or `parkinsonhw-circular-motion`, from the dataset readme. A file is known only by the SHA-256 of its bytes. Class folders and class file name prefixes never decide a value, an order, or an error message, and no label is read.
 
 ## 7. Evaluation
 
