@@ -9,15 +9,40 @@
 /* Begin PBXBuildFile section */
 		B10000000000000000000001 /* ScriptCore in Frameworks */ = {isa = PBXBuildFile; productRef = B20000000000000000000001 /* ScriptCore */; };
 		C20000000000000000000001 /* battery.json in Resources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000001 /* battery.json */; };
+		C20000000000000000000002 /* demo.json in Resources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000002 /* demo.json */; };
+		C20000000000000000000003 /* instruments.json in Resources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000003 /* instruments.json */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		E10000000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A90000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AA0000000000000000000001;
+			remoteInfo = ScriptApp;
+		};
+		E10000000000000000000002 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A90000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AA0000000000000000000001;
+			remoteInfo = ScriptApp;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		A10000000000000000000001 /* ScriptApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ScriptApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A10000000000000000000002 /* ScriptAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ScriptAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A10000000000000000000003 /* ScriptAppUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ScriptAppUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C10000000000000000000001 /* battery.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; name = battery.json; path = ../contract/battery.json; sourceTree = SOURCE_ROOT; };
+		C10000000000000000000002 /* demo.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; name = demo.json; path = ../contract/configs/demo.json; sourceTree = SOURCE_ROOT; };
+		C10000000000000000000003 /* instruments.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; name = instruments.json; path = ../contract/instruments.json; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		A20000000000000000000001 /* ScriptApp */ = {isa = PBXFileSystemSynchronizedRootGroup; path = ScriptApp; sourceTree = "<group>"; };
+		A20000000000000000000002 /* ScriptAppTests */ = {isa = PBXFileSystemSynchronizedRootGroup; path = ScriptAppTests; sourceTree = "<group>"; };
+		A20000000000000000000003 /* ScriptAppUITests */ = {isa = PBXFileSystemSynchronizedRootGroup; path = ScriptAppUITests; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -29,6 +54,20 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A50000000000000000000002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A50000000000000000000003 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -36,6 +75,8 @@
 			isa = PBXGroup;
 			children = (
 				A20000000000000000000001 /* ScriptApp */,
+				A20000000000000000000002 /* ScriptAppTests */,
+				A20000000000000000000003 /* ScriptAppUITests */,
 				C30000000000000000000001 /* Contract */,
 				A30000000000000000000002 /* Products */,
 			);
@@ -45,6 +86,8 @@
 			isa = PBXGroup;
 			children = (
 				A10000000000000000000001 /* ScriptApp.app */,
+				A10000000000000000000002 /* ScriptAppTests.xctest */,
+				A10000000000000000000003 /* ScriptAppUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -53,6 +96,8 @@
 			isa = PBXGroup;
 			children = (
 				C10000000000000000000001 /* battery.json */,
+				C10000000000000000000002 /* demo.json */,
+				C10000000000000000000003 /* instruments.json */,
 			);
 			name = Contract;
 			sourceTree = "<group>";
@@ -83,6 +128,48 @@
 			productReference = A10000000000000000000001 /* ScriptApp.app */;
 			productType = "com.apple.product-type.application";
 		};
+		AA0000000000000000000002 /* ScriptAppTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AC0000000000000000000003 /* Build configuration list for PBXNativeTarget "ScriptAppTests" */;
+			buildPhases = (
+				A40000000000000000000002 /* Sources */,
+				A50000000000000000000002 /* Frameworks */,
+				A60000000000000000000002 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				E20000000000000000000001 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				A20000000000000000000002 /* ScriptAppTests */,
+			);
+			name = ScriptAppTests;
+			productName = ScriptAppTests;
+			productReference = A10000000000000000000002 /* ScriptAppTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		AA0000000000000000000003 /* ScriptAppUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AC0000000000000000000004 /* Build configuration list for PBXNativeTarget "ScriptAppUITests" */;
+			buildPhases = (
+				A40000000000000000000003 /* Sources */,
+				A50000000000000000000003 /* Frameworks */,
+				A60000000000000000000003 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				E20000000000000000000002 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				A20000000000000000000003 /* ScriptAppUITests */,
+			);
+			name = ScriptAppUITests;
+			productName = ScriptAppUITests;
+			productReference = A10000000000000000000003 /* ScriptAppUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -95,6 +182,14 @@
 				TargetAttributes = {
 					AA0000000000000000000001 = {
 						CreatedOnToolsVersion = 27.2;
+					};
+					AA0000000000000000000002 = {
+						CreatedOnToolsVersion = 27.2;
+						TestTargetID = AA0000000000000000000001;
+					};
+					AA0000000000000000000003 = {
+						CreatedOnToolsVersion = 27.2;
+						TestTargetID = AA0000000000000000000001;
 					};
 				};
 			};
@@ -116,6 +211,8 @@
 			projectRoot = "";
 			targets = (
 				AA0000000000000000000001 /* ScriptApp */,
+				AA0000000000000000000002 /* ScriptAppTests */,
+				AA0000000000000000000003 /* ScriptAppUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -126,6 +223,22 @@
 			buildActionMask = 2147483647;
 			files = (
 				C20000000000000000000001 /* battery.json in Resources */,
+				C20000000000000000000002 /* demo.json in Resources */,
+				C20000000000000000000003 /* instruments.json in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A60000000000000000000002 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A60000000000000000000003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -139,7 +252,34 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A40000000000000000000002 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A40000000000000000000003 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		E20000000000000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = AA0000000000000000000001 /* ScriptApp */;
+			targetProxy = E10000000000000000000001 /* PBXContainerItemProxy */;
+		};
+		E20000000000000000000002 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = AA0000000000000000000001 /* ScriptApp */;
+			targetProxy = E10000000000000000000002 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		AD0000000000000000000001 /* Debug */ = {
@@ -161,6 +301,7 @@
 				SDKROOT = iphoneos;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_TREAT_WARNINGS_AS_ERRORS = YES;
 				SWIFT_VERSION = 6.0;
 			};
 			name = Debug;
@@ -177,6 +318,7 @@
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				SDKROOT = iphoneos;
 				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_TREAT_WARNINGS_AS_ERRORS = YES;
 				SWIFT_VERSION = 6.0;
 				VALIDATE_PRODUCT = YES;
 			};
@@ -188,6 +330,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "ScriptApp-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "SCRIPT Capture";
 				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -204,6 +347,7 @@
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.dvgyl.script.capture;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				SCRIPT_SOURCE_REVISION = unknown;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				TARGETED_DEVICE_FAMILY = 2;
 			};
@@ -215,6 +359,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "ScriptApp-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "SCRIPT Capture";
 				INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -231,8 +376,71 @@
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.dvgyl.script.capture;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				SCRIPT_SOURCE_REVISION = unknown;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				TARGETED_DEVICE_FAMILY = 2;
+			};
+			name = Release;
+		};
+		AD0000000000000000000005 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.dvgyl.script.capture.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TARGETED_DEVICE_FAMILY = 2;
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ScriptApp.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ScriptApp";
+			};
+			name = Debug;
+		};
+		AD0000000000000000000006 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.dvgyl.script.capture.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TARGETED_DEVICE_FAMILY = 2;
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ScriptApp.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ScriptApp";
+			};
+			name = Release;
+		};
+		AD0000000000000000000007 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.dvgyl.script.capture.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TARGETED_DEVICE_FAMILY = 2;
+				TEST_TARGET_NAME = ScriptApp;
+			};
+			name = Debug;
+		};
+		AD0000000000000000000008 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.dvgyl.script.capture.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TARGETED_DEVICE_FAMILY = 2;
+				TEST_TARGET_NAME = ScriptApp;
 			};
 			name = Release;
 		};
@@ -253,6 +461,24 @@
 			buildConfigurations = (
 				AD0000000000000000000003 /* Debug */,
 				AD0000000000000000000004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AC0000000000000000000003 /* Build configuration list for PBXNativeTarget "ScriptAppTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AD0000000000000000000005 /* Debug */,
+				AD0000000000000000000006 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AC0000000000000000000004 /* Build configuration list for PBXNativeTarget "ScriptAppUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AD0000000000000000000007 /* Debug */,
+				AD0000000000000000000008 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

@@ -20,7 +20,7 @@ private func session(_ id: SessionID, participant: ParticipantCode = "P0001", cl
 }
 
 private let publishSteps: [Storage.Step] = [
-    .stagingCleared, .journalStaged, .manifestWritten, .stagedSynced, .stagedVerified, .renamed, .sourceRemoved,
+    .stagingCleared, .journalStaged, .manifestWritten, .stagedSynced, .stagedVerified, .indexed, .renamed, .sourceRemoved,
 ]
 private let reconcileSteps: [Storage.Step] = [
     .leftoverRemoved, .movedToDamaged, .recoveryStaged, .recoveryCommitted, .staleStagingRemoved,
@@ -93,10 +93,12 @@ func publishConvergesFromEveryCrashPoint(step: Storage.Step, policy: ExportKind)
     let exportPolicy: ExportPolicy = policy == .demo ? .demo : .encrypted(recipient: key.publicKey)
     let id = SessionID(UUID(uuidString: "2B000000-0000-4000-8000-000000000001")!)
     let journal = try session(id).journal
+    // One device secret, as on a device, so the export index line is the same in every run.
+    let secret = MemoryDeviceSecret(SymmetricKey(data: Data(repeating: 9, count: 32)))
 
     func prepared(stops: @escaping @Sendable (Storage.Step) -> Bool = { _ in false }) throws -> (URL, Storage) {
         let root = try temporaryFolder()
-        let s = storage(in: root, stops: stops)
+        let s = storage(in: root, secret: secret, stops: stops)
         try s.createDirectories()
         try journal.write(to: s.journalURL(id))
         return (root, s)
@@ -110,9 +112,9 @@ func publishConvergesFromEveryCrashPoint(step: Storage.Step, policy: ExportKind)
     try reference.publish(id, policy: exportPolicy)
     #expect(throws: Storage.InjectedCrash(step: step)) { try crashing.publish(id, policy: exportPolicy) }
 
-    let relaunched = storage(in: crashRoot)
+    let relaunched = storage(in: crashRoot, secret: secret)
     let results = try relaunched.reconcile(Fixed.launch, policy: exportPolicy)
-    let folder = relaunched.exports.appendingPathComponent("P0001_2b000000", isDirectory: true)
+    let folder = relaunched.exports.appendingPathComponent("SCRIPT_DEMO_DEMO_2b000000", isDirectory: true)
     switch step {
     case .stagingCleared:
         // The crash came before the staging folder existed, so nothing shows that the publication had started.
@@ -260,7 +262,7 @@ func reconcileConvergesFromEveryCrashPointAndASecondLaunchChangesNoByte(step: St
     defer { try? FileManager.default.removeItem(at: root) }
     let s = storage(in: root, secret: MemoryDeviceSecret(SymmetricKey(data: Data(repeating: 7, count: 32))))
     try s.createDirectories()
-    func id(_ n: Int) -> SessionID { SessionID(UUID(uuidString: "4D000000-0000-4000-8000-00000000000\(n)")!) }
+    func id(_ n: Int) -> SessionID { SessionID(UUID(uuidString: "4D00000\(n)-0000-4000-8000-000000000000")!) }
 
     for (n, participant, closed) in [(1, "WD-ALPHA", true), (2, "WD-ALPHA", false), (4, "WD-BRAVO", true), (5, "WD-BRAVO", false)] {
         try session(id(n), participant: ParticipantCode(participant)!, close: closed).journal.write(to: s.journalURL(id(n)))
@@ -275,8 +277,8 @@ func reconcileConvergesFromEveryCrashPointAndASecondLaunchChangesNoByte(step: St
     #expect(withdrawal.unreadable.isEmpty)
     let after = try snapshot(root)
     let log = "Support/Deletions.jsonl"
-    #expect(Set(after.keys) == Set(before.keys.filter { !$0.contains("WD-ALPHA") && !$0.contains(id(2).description)
-        && !$0.contains(id(3).description) }).union([log]))
+    let withdrawn = [id(1), id(2), id(3)].flatMap { [$0.description, "_\($0.description.prefix(8).lowercased())/"] }
+    #expect(Set(after.keys) == Set(before.keys.filter { path in !withdrawn.contains { path.contains($0) } }).union([log]))
     for (path, bytes) in after where path != log { #expect(before[path] == bytes, "\(path)") }
 
     let text = String(decoding: after[log]!, as: UTF8.self)
@@ -340,7 +342,7 @@ func reconcileConvergesFromEveryCrashPointAndASecondLaunchChangesNoByte(step: St
     try FileManager.default.createDirectory(at: unreadable, withIntermediateDirectories: true)
     let closed = SessionID(UUID(uuidString: "0A000000-0000-4000-8000-000000000002")!)
     try session(closed, participant: "P0002").journal.write(to: s.journalURL(closed))
-    try FileManager.default.createDirectory(at: s.exports.appendingPathComponent("P0002_0a000000"),
+    try FileManager.default.createDirectory(at: s.exports.appendingPathComponent("SCRIPT_DEMO_DEMO_0a000000"),
                                             withIntermediateDirectories: true)
     let open = SessionID(UUID(uuidString: "0A000000-0000-4000-8000-000000000003")!)
     try session(open, participant: "P0003", close: false).journal.write(to: s.journalURL(open))
@@ -386,4 +388,127 @@ func reconcileConvergesFromEveryCrashPointAndASecondLaunchChangesNoByte(step: St
         return
     }
     for error in [taken, blocked] { #expect(!String(describing: error).contains("WD-GOLF")) }
+}
+
+@Test func researchDataStaysOutOfDeviceBackups() throws {
+    // Detects a journal, staging, export, or damaged folder, the deletion log, or the export index that a device
+    // backup would copy.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let s = storage(in: root)
+    _ = try s.reconcile(Fixed.launch, policy: .demo)
+    _ = try s.withdraw(participant: "WD-HOTEL", at: Fixed.at)
+    let published = SessionID()
+    try session(published, participant: "WD-INDIA").journal.write(to: s.journalURL(published))
+    try s.publish(published, policy: .demo)
+    for url in [s.sessions, s.staging, s.exports, s.damaged, s.deletionLog, s.exportIndex] {
+        let fresh = URL(fileURLWithPath: url.path)
+        #expect(try fresh.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup == true,
+                "\(url.lastPathComponent)")
+    }
+}
+
+@Test func aLeftoverThatCannotBeRemovedDoesNotStopTheLaunch() throws {
+    // Detects a launch that stops at a leftover `.recovering` file or stale staging folder that it cannot remove, so
+    // no open journal gets its `recovered` line.
+    let root = try temporaryFolder()
+    let s = storage(in: root)
+    defer {
+        for folder in [s.sessions, s.staging] {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: folder.path)
+        }
+        try? FileManager.default.removeItem(at: root)
+    }
+    try s.createDirectories()
+    let open = SessionID(UUID(uuidString: "0B000000-0000-4000-8000-000000000001")!)
+    try session(open, close: false).journal.write(to: s.journalURL(open))
+    let leftover = s.journalURL(SessionID(UUID(uuidString: "0B000000-0000-4000-8000-000000000002")!))
+        .appendingPathExtension("recovering")
+    try Data("{}".utf8).write(to: leftover)
+    let stale = s.staging.appendingPathComponent("P0099_0b000000", isDirectory: true)
+    try FileManager.default.createDirectory(at: stale, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: s.exports.appendingPathComponent("P0099_0b000000"),
+                                            withIntermediateDirectories: true)
+    for folder in [s.sessions, s.staging] {
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: folder.path)
+    }
+
+    let results = try s.reconcile(Fixed.launch, policy: .demo)
+    guard results.count == 1, case .interrupted(let state) = results[0] else {
+        Issue.record("unexpected results \(results)")
+        return
+    }
+    #expect(state.status == .suspended)
+    let last = try LineCodec.decode(Contract.lines(try Data(contentsOf: s.journalURL(open))).last!)
+    #expect(last.event.kind == .recovered)
+    #expect(FileManager.default.fileExists(atPath: leftover.path))
+    #expect(FileManager.default.fileExists(atPath: stale.path))
+}
+
+@Test func aStartedPublicationFinishesUnderTheExportPolicyOfItsOwnSession() throws {
+    // Detects a launch that finishes every started publication under one policy, which writes a plaintext export of
+    // a session whose configuration has an export key.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let s = storage(in: root)
+    try s.createDirectories()
+    let study = SessionID(UUID(uuidString: "0C000001-0000-4000-8000-000000000000")!)
+    let demo = SessionID(UUID(uuidString: "0C000002-0000-4000-8000-000000000000")!)
+    try session(study, participant: "P0001").journal.write(to: s.journalURL(study))
+    try session(demo, participant: "P0002").journal.write(to: s.journalURL(demo))
+    for name in ["SCRIPT_DEMO_DEMO_0c000001", "SCRIPT_DEMO_DEMO_0c000002"] {
+        try FileManager.default.createDirectory(at: s.staging.appendingPathComponent(name), withIntermediateDirectories: true)
+    }
+    let key = Curve25519.KeyAgreement.PrivateKey()
+
+    let results = try s.reconcile(Fixed.launch) { opened in
+        opened.participant == "P0001" ? .encrypted(recipient: key.publicKey) : .demo
+    }
+    let files = results.map { result -> Set<String> in
+        guard case .published(let url) = result else { return [] }
+        return Set((try? FileManager.default.contentsOfDirectory(atPath: url.path)) ?? [])
+    }
+    #expect(files == [[Storage.Export.encryptedJournal, Storage.Export.manifest],
+                      [Storage.Export.journal, Storage.Export.manifest]])
+}
+
+@Test func anExportNameHoldsNoParticipantCodeAndWithdrawalStillFindsAnEncryptedExport() throws {
+    // Detects an export folder name that shows the participant code in Files, or a withdrawal that misses an
+    // encrypted export because nothing on the device names its participant.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let s = storage(in: root)
+    try s.createDirectories()
+    let key = Curve25519.KeyAgreement.PrivateKey()
+    let mine = SessionID(UUID(uuidString: "0D000001-0000-4000-8000-000000000000")!)
+    let other = SessionID(UUID(uuidString: "0D000002-0000-4000-8000-000000000000")!)
+    try session(mine, participant: "WD-JULIET").journal.write(to: s.journalURL(mine))
+    try session(other, participant: "WD-KILO").journal.write(to: s.journalURL(other))
+    let mineExport = try s.publish(mine, policy: .encrypted(recipient: key.publicKey))
+    let otherExport = try s.publish(other, policy: .encrypted(recipient: key.publicKey))
+    #expect(mineExport.lastPathComponent == "SCRIPT_DEMO_DEMO_0d000001")
+    for path in try snapshot(root).keys { #expect(!path.contains("WD-"), "\(path)") }
+
+    let withdrawal = try s.withdraw(participant: "WD-JULIET", at: Fixed.at)
+    #expect(withdrawal.sessions == [mine])
+    #expect(!FileManager.default.fileExists(atPath: mineExport.path))
+    #expect(FileManager.default.fileExists(atPath: otherExport.path))
+}
+
+@Test func aDamagedJournalNeverAppearsInFiles() throws {
+    // Detects a damaged journal moved into Documents, which Files shows and any person with the iPad can copy.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let s = storage(in: root)
+    try s.createDirectories()
+    try Contract.data("fixtures/recovery/damaged_interior.jsonl")
+        .write(to: s.sessions.appendingPathComponent("0E000000-0000-4000-8000-000000000001.jsonl"))
+    let results = try s.reconcile(Fixed.launch, policy: .demo)
+    guard case .damaged? = results.first else {
+        Issue.record("unexpected results \(results)")
+        return
+    }
+    let files = try snapshot(root).keys
+    #expect(files.contains { $0.hasPrefix("Support/Damaged/") })
+    #expect(!files.contains { $0.hasPrefix("Documents/") })
 }

@@ -20,13 +20,13 @@ SCRIPT is not a screening or diagnostic tool. The app never shows a result to th
 ./check
 ```
 
-This runs the contract check, the Python lint, type check, and tests, the Swift core tests, and the app build. To run one part, name it:
+This runs the contract check, the Swift core tests, the app unit and UI tests on the simulator, and the Python lint, type check, and tests. The Python tests read the exports that the Swift and app tests write, so `app` runs before `python`. To run one part, name it:
 
 ```sh
 ./check python
 ```
 
-The sections are `contract`, `python`, `core`, and `app`. Build output goes to `~/Library/Caches/SCRIPT/`, outside the repository, because the repository can sit on an exFAT drive.
+The sections are `contract`, `core`, `app`, and `python`. Build output goes to `~/Library/Caches/SCRIPT/`, outside the repository, because the repository can sit on an exFAT drive.
 
 ## Find your way
 
