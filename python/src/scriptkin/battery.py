@@ -6,6 +6,7 @@ Frame coordinates have the origin at the top-left of the stimulus frame, x to th
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import itertools
 import json
@@ -244,18 +245,21 @@ def battery() -> dict[str, Any]:
     return {"id": BATTERY_ID, "version": BATTERY_VERSION, "tasks": tasks}
 
 
+@functools.cache
 def battery_bytes() -> bytes:
     text = json.dumps(battery(), indent=1, ensure_ascii=False, allow_nan=False)
     text = re.sub(r"\[\s+(-?[0-9.e+-]+),\s+(-?[0-9.e+-]+)\s+\]", r"[\1, \2]", text)
     return (text + "\n").encode()
 
 
+@functools.cache
 def battery_sha256() -> str:
     return hashlib.sha256(battery_bytes()).hexdigest()
 
 
 def task_spec(task_id: str) -> dict[str, Any]:
-    for task in battery()["tasks"]:
+    """A new copy of one task specification, parsed from the battery bytes."""
+    for task in json.loads(battery_bytes())["tasks"]:
         if task["id"] == task_id:
             return task
     raise KeyError(task_id)

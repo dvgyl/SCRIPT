@@ -7,6 +7,7 @@ builder's own record of what it wrote, never from a reader, so they are an indep
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import struct
@@ -58,6 +59,7 @@ def encode_line(line: dict[str, Any]) -> bytes:
     return (json.dumps(line, separators=(",", ":"), ensure_ascii=False, allow_nan=False) + "\n").encode()
 
 
+@functools.cache
 def demo_config_sha256() -> str:
     return hashlib.sha256(studyconfig.config_bytes(studyconfig.demo_config())).hexdigest()
 
@@ -102,6 +104,10 @@ class JournalBuilder:
     jurisdiction: str = "US"
     visit: int = 1
     qualification: dict[str, str] | None = None
+    device_model: str = "iPad16,3"
+    asset: str = "IPAD-01"
+    site: str = "DEMO"
+    opened_at: str = "2026-11-03T09:00:00Z"
 
     lines: list[dict[str, Any]] = field(default_factory=list)
     _trials: list[_Trial] = field(default_factory=list)
@@ -143,11 +149,11 @@ class JournalBuilder:
             purpose=self.purpose,
             sessionID=self.session_id,
             participant=self.participant,
-            openedAt="2026-11-03T09:00:00Z",
+            openedAt=self.opened_at,
             openedUptime=self.opened_uptime,
             boot=self.boot,
             app={"version": "1.0.0", "build": "1", "sourceRevision": "fixture"},
-            device={"model": "iPad16,3", "os": "iPadOS 27.0", "nativeScale": 2.0, "asset": "IPAD-01"},
+            device={"model": self.device_model, "os": "iPadOS 27.0", "nativeScale": 2.0, "asset": self.asset},
             surface={"protector": "none", "nib": "new"},
             qualification=self.qualification,
             scale=self.scale,
@@ -157,7 +163,7 @@ class JournalBuilder:
             administration=self.administration,
             study={
                 "id": "DEMO",
-                "site": "DEMO",
+                "site": self.site,
                 "configID": "DEMO",
                 "configVersion": "1.0",
                 "configSHA256": demo_config_sha256(),
@@ -873,7 +879,7 @@ def generated_files() -> dict[str, bytes]:
         files[f"fixtures/recovery/{name}.jsonl"] = data
         files[f"fixtures/recovery/{name}.expected.json"] = _json_bytes(expected)
     basic = _basic()
-    folder = f"fixtures/export/{basic.participant}_{basic.session_id[:8].lower()}"
+    folder = f"fixtures/export/SCRIPT_DEMO_DEMO_{basic.session_id[:8].lower()}"
     journal = basic.journal_bytes()
     files[f"{folder}/journal.jsonl"] = journal
     files[f"{folder}/manifest.json"] = manifest_bytes(basic.session_id, journal)

@@ -247,6 +247,7 @@ class SessionContext:
     device_asset: str
     surface: Surface
     scale: ScaleSource
+    opened_at: str
     qualification: QualificationRef | None = None
 
 

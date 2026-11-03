@@ -27,6 +27,7 @@ class RefusalCode(StrEnum):
     UNKNOWN_SCALE = "unknown_scale"
     SIMULATED_INPUT = "simulated_input"
     NOT_APPLICABLE = "not_applicable"
+    OUT_OF_RANGE = "out_of_range"
     UNDEFINED = "undefined"
 
 

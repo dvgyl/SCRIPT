@@ -1,0 +1,662 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "%@ Hz" : {
+
+    },
+    "%@ mm per point" : {
+
+    },
+    "%@ ms" : {
+
+    },
+    "%@ points" : {
+
+    },
+    "%@ s" : {
+
+    },
+    "%@, %lld ppi" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@, %2$lld ppi"
+          }
+        }
+      }
+    },
+    "%@, session %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@, session %2$@"
+          }
+        }
+      }
+    },
+    "%@, version %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@, version %2$@"
+          }
+        }
+      }
+    },
+    "%lld" : {
+
+    },
+    "+%lld" : {
+
+    },
+    "A %@ from the study team reads the answers to some questions. This happens within ^[%lld working day](inflect: true)." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "A %1$@ from the study team reads the answers to some questions. This happens within ^[%2$lld working day](inflect: true)."
+          }
+        }
+      }
+    },
+    "A safety item needs follow-up under your protocol: %@, item %lld" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "A safety item needs follow-up under your protocol: %1$@, item %2$lld"
+          }
+        }
+      }
+    },
+    "A session is open" : {
+
+    },
+    "A session needs at least 500 MB of free storage. Free some storage on this iPad, and try again." : {
+
+    },
+    "Action" : {
+
+    },
+    "Action recorded" : {
+
+    },
+    "Administration" : {
+
+    },
+    "Age band" : {
+
+    },
+    "Apple Pencil (2nd generation)" : {
+
+    },
+    "Apple Pencil (USB-C)" : {
+
+    },
+    "Apple Pencil Pro" : {
+
+    },
+    "Before the questions" : {
+
+    },
+    "Begin" : {
+
+    },
+    "Cancel" : {
+
+    },
+    "Card outline" : {
+
+    },
+    "Check the deletion log" : {
+
+    },
+    "Choose an action" : {
+
+    },
+    "Close the session" : {
+
+    },
+    "Closed" : {
+
+    },
+    "Configuration" : {
+
+    },
+    "Configuration imported" : {
+
+    },
+    "Configuration not on this iPad" : {
+
+    },
+    "Configuration refused" : {
+
+    },
+    "Consent" : {
+
+    },
+    "Continue" : {
+
+    },
+    "Damaged" : {
+
+    },
+    "Declined" : {
+
+    },
+    "Delete" : {
+
+    },
+    "Delete every recording of this code" : {
+
+    },
+    "Delete every recording of this code on this iPad?" : {
+
+    },
+    "Deleted" : {
+
+    },
+    "Demo, not for research" : {
+
+    },
+    "Device" : {
+
+    },
+    "Device asset code" : {
+
+    },
+    "Device qualification" : {
+
+    },
+    "Digest" : {
+
+    },
+    "Done" : {
+
+    },
+    "Double-tap and hold for 2 seconds." : {
+
+    },
+    "Drawing area" : {
+
+    },
+    "Encrypted" : {
+
+    },
+    "Encrypted to the study key" : {
+
+    },
+    "Encryption" : {
+
+    },
+    "End the session" : {
+
+    },
+    "Enrolment record code" : {
+
+    },
+    "Export" : {
+
+    },
+    "Export failed" : {
+
+    },
+    "Exported" : {
+
+    },
+    "Finish or end the open session first." : {
+
+    },
+    "From the device table" : {
+
+    },
+    "Glossy" : {
+
+    },
+    "Go to Home" : {
+
+    },
+    "ID card" : {
+
+    },
+    "If you want to talk to someone" : {
+
+    },
+    "If you want to talk to someone sooner, the services on the support list can help. The list comes at the end." : {
+
+    },
+    "Import a configuration" : {
+
+    },
+    "Import the configuration that this session used, and try again." : {
+
+    },
+    "Interrupted" : {
+
+    },
+    "Intervals" : {
+
+    },
+    "Intervals longer than 30 ms" : {
+
+    },
+    "Journals that could not be read" : {
+
+    },
+    "Jurisdiction" : {
+
+    },
+    "Language" : {
+
+    },
+    "Last qualification" : {
+
+    },
+    "Lay an ID-1 card on the outline. Change the size until the outline matches the edges of the card." : {
+
+    },
+    "Lay the rule along the bar. Change the length until the bar is exactly 100 mm." : {
+
+    },
+    "Leave the session open and go to Home" : {
+
+    },
+    "Left" : {
+
+    },
+    "Left hand" : {
+
+    },
+    "Length" : {
+
+    },
+    "Location" : {
+
+    },
+    "Longer by %lld points" : {
+
+    },
+    "Matte" : {
+
+    },
+    "Measure the screen" : {
+
+    },
+    "Measurement bar" : {
+
+    },
+    "Median sample interval" : {
+
+    },
+    "Millimetres per point" : {
+
+    },
+    "Model" : {
+
+    },
+    "Needed" : {
+
+    },
+    "New" : {
+
+    },
+    "New session" : {
+
+    },
+    "New sessions use this configuration." : {
+
+    },
+    "Next" : {
+
+    },
+    "No contact has two samples." : {
+
+    },
+    "No recording of this code was on this iPad. The deletion log has a line for it." : {
+
+    },
+    "No sessions on this iPad." : {
+
+    },
+    "None" : {
+
+    },
+    "None (simulator input)" : {
+
+    },
+    "None for this iPad and Pencil" : {
+
+    },
+    "Not encrypted" : {
+
+    },
+    "Not encrypted (demo configuration)" : {
+
+    },
+    "Not enough free storage" : {
+
+    },
+    "Not known" : {
+
+    },
+    "On My iPad › SCRIPT Capture › Exports" : {
+
+    },
+    "Open" : {
+
+    },
+    "Operator" : {
+
+    },
+    "Operator PIN" : {
+
+    },
+    "Operator code" : {
+
+    },
+    "PIN" : {
+
+    },
+    "Paper-like" : {
+
+    },
+    "Participant" : {
+
+    },
+    "Participant code" : {
+
+    },
+    "Participant code again" : {
+
+    },
+    "Pencil" : {
+
+    },
+    "Pencil tip" : {
+
+    },
+    "Please give the iPad back to the researcher." : {
+
+    },
+    "Please give the iPad to the participant." : {
+
+    },
+    "Practice" : {
+
+    },
+    "Prefer not to answer" : {
+
+    },
+    "Qualification" : {
+
+    },
+    "Question %lld of %lld" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Question %1$lld of %2$lld"
+          }
+        }
+      }
+    },
+    "Record action" : {
+
+    },
+    "Record an action for each safety item first." : {
+
+    },
+    "Recorded samples" : {
+
+    },
+    "Reference" : {
+
+    },
+    "Resume" : {
+
+    },
+    "Return" : {
+
+    },
+    "Return to the participant" : {
+
+    },
+    "Right" : {
+
+    },
+    "Right hand" : {
+
+    },
+    "SCRIPT Capture" : {
+
+    },
+    "SCRIPT Capture cannot start" : {
+
+    },
+    "Safety follow-up" : {
+
+    },
+    "Sample rate" : {
+
+    },
+    "Save a copy to another place in Files" : {
+
+    },
+    "Save to Files" : {
+
+    },
+    "Scale" : {
+
+    },
+    "Screen protector" : {
+
+    },
+    "Self-administered" : {
+
+    },
+    "Session paused" : {
+
+    },
+    "Session review" : {
+
+    },
+    "Sessions" : {
+
+    },
+    "Shorter by %lld points" : {
+
+    },
+    "Show the support list to the participant" : {
+
+    },
+    "Site" : {
+
+    },
+    "Something went wrong" : {
+
+    },
+    "Start" : {
+
+    },
+    "Start the qualification" : {
+
+    },
+    "Start the session" : {
+
+    },
+    "Steel rule" : {
+
+    },
+    "Step %lld of %lld" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Step %1$lld of %2$lld"
+          }
+        }
+      }
+    },
+    "Stopped by the operator" : {
+
+    },
+    "Storage problem" : {
+
+    },
+    "Study" : {
+
+    },
+    "Supervised" : {
+
+    },
+    "Tap Start when you are ready." : {
+
+    },
+    "Task %lld of %lld" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Task %1$lld of %2$lld"
+          }
+        }
+      }
+    },
+    "Technical failure" : {
+
+    },
+    "Thank you." : {
+
+    },
+    "The PIN is not correct." : {
+
+    },
+    "The configuration was refused" : {
+
+    },
+    "The deletion log could not be read." : {
+
+    },
+    "The deletion log on this iPad has a withdrawal for this code." : {
+
+    },
+    "The deletion log on this iPad has no withdrawal for this code." : {
+
+    },
+    "The export could not be verified. The session stays on this iPad." : {
+
+    },
+    "The file could not be read." : {
+
+    },
+    "The file does not match the configuration schema: %@" : {
+
+    },
+    "The iPad could not save the recording. Every line saved before the failure is kept, and Home lists the session as interrupted." : {
+
+    },
+    "The iPad could not save the recording. The session stopped. Every line saved before the failure is kept." : {
+
+    },
+    "The session could not start." : {
+
+    },
+    "The session stopped" : {
+
+    },
+    "The sessions could not be read." : {
+
+    },
+    "The two codes are not the same." : {
+
+    },
+    "The withdrawal could not finish." : {
+
+    },
+    "These journals name no participant. They were not deleted." : {
+
+    },
+    "This cannot be undone. Copies outside this iPad are not deleted." : {
+
+    },
+    "Time limit" : {
+
+    },
+    "Trials" : {
+
+    },
+    "Unable" : {
+
+    },
+    "Unlock" : {
+
+    },
+    "Use letters, digits, and hyphens only." : {
+
+    },
+    "Use the demo configuration" : {
+
+    },
+    "Use this measurement" : {
+
+    },
+    "Used" : {
+
+    },
+    "Verify a withdrawal" : {
+
+    },
+    "Version" : {
+
+    },
+    "Visit %lld" : {
+
+    },
+    "Visit code" : {
+
+    },
+    "Which hand do you write with?" : {
+
+    },
+    "Withdraw a participant" : {
+
+    },
+    "Withdrawal" : {
+
+    },
+    "Writing hand" : {
+
+    },
+    "You can now give the iPad back to the study team, or save the session to Files." : {
+
+    },
+    "^[%lld sample](inflect: true)" : {
+
+    },
+    "attempt %lld" : {
+
+    },
+    "export.recipientPublicKey is not a valid X25519 public key" : {
+
+    },
+    "force" : {
+
+    },
+    "hover" : {
+
+    },
+    "position only" : {
+
+    },
+    "roll" : {
+
+    },
+    "tilt" : {
+
+    }
+  },
+  "version" : "1.0"
+}

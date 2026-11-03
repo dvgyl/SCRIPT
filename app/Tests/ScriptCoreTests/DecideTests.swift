@@ -131,3 +131,14 @@ func decideRefusesAValueThatTheDecoderRefuses(command: Command, rejection: Rejec
         #expect(d.state.decide(.startQuestionnaire("probe", t: 200), rules: rules).rejection == expected, "\(band)")
     }
 }
+
+@Test func aSessionWithoutACrisisListForItsJurisdictionCannotStartABlockOrShowAList() throws {
+    // Detects a questionnaire block, or a crisis-list display, in a jurisdiction for which the study has no crisis list.
+    var config = try Contract.demoConfiguration()
+    config.jurisdictions.append("FR")
+    let opened = makeOpened(jurisdiction: "FR", configuration: config, battery: try Contract.battery())
+    let d = try Driver(opened: opened, rules: try rules(for: opened, configuration: config))
+    #expect(d.rules.crisisList == nil)
+    #expect(d.state.decide(.startQuestionnaire("gad7", t: 200), rules: d.rules).rejection == .noCrisisList)
+    #expect(d.state.decide(.show(.crisisList, t: 200), rules: d.rules).rejection == .noCrisisList)
+}

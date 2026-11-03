@@ -117,7 +117,7 @@ private func pinJSON(salt: String, iterations: Int) -> String {
     let line = Contract.lines(try Contract.data("fixtures/journal/basic.jsonl"))[0]
     guard case .sessionOpened(let opened) = try LineCodec.decode(line).event else { throw DecodeError.notAnObject }
     #expect(MillimetreScale.lookup(model: "iPad16,3", nativeScale: 2) == opened.scale)
-    #expect(DeviceTable.density(model: "iPad16,3")?.ppiConfirmed == false)
+    #expect(DeviceTable.density(model: "iPad16,3")?.ppiConfirmed == true)
     #expect(MillimetreScale.lookup(model: "iPad99,9", nativeScale: 2) == nil)
 }
 
@@ -128,4 +128,22 @@ private func pinJSON(salt: String, iterations: Int) -> String {
     #expect(MillimetreScale.idCard(drawnPoints: 444.67532467532465) == opened.scale)
     #expect(MillimetreScale.steelRule(measuredMM: 50, drawnPoints: 250)?.mmPerPoint == 0.2)
     #expect(MillimetreScale.idCard(drawnPoints: 0) == nil)
+}
+
+@Test func aConfiguredJurisdictionWithoutACrisisListIsRefused() throws {
+    // Detects a configuration that runs questionnaires in a jurisdiction for which no crisis list exists.
+    var config = try Contract.demoConfiguration()
+    config.jurisdictions.append("FR")
+    #expect(try problems(config) == [.noCrisisList("FR")])
+}
+
+@Test(arguments: [(25.0, 1.0, ConfigProblem.imminentReviewTooLong), (24.0, 2.0, .routineReviewTooLong)])
+func aRemoteReviewSlowerThanTheProtocolIsRefused(imminentHours: Double, routineWeekdays: Double,
+                                                  expected: ConfigProblem) throws {
+    // Detects a self-administered safety item whose flags a reviewer may leave longer than 24 hours when imminent,
+    // or longer than 1 weekday otherwise.
+    var config = try Contract.remoteReviewConfiguration()
+    config.safety.remoteReview?.imminentReviewWithinHours = imminentHours
+    config.safety.remoteReview?.routineReviewWithinWeekdays = routineWeekdays
+    #expect(try problems(config) == [expected])
 }

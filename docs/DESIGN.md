@@ -27,9 +27,9 @@ After the reader, each stage accepts only a type that the previous stage built a
 1. **Home** lists sessions as open, interrupted, closed, exported, or damaged. The operator taps New session.
 2. **Setup** asks for the participant code (pattern `^[A-Z0-9-]{3,16}$`), the age band, jurisdiction, locale, dominant hand, visit number, consent attestation, device asset code, screen protector, nib state, and Pencil model (Pro, 2nd generation, USB-C). If the iPad model is not in the device table, or its table density is not confirmed, Setup asks for a reference measurement with a steel rule or an ID-1 card. Setup refuses to start a session when the device has less than 500 MB of free storage.
 3. **Handoff** says "Please give the iPad to the participant."
-4. **Task.** The participant reads one instruction, taps Begin, and draws. The task ends when the participant taps Done or the time limit occurs. The participant never sees a score, a replay, or a quality value.
+4. **Task.** One screen shows the instruction, the stimulus at true millimetre scale, and Begin. Begin enables ink. The task ends when the participant taps Done or the time limit occurs; no countdown is shown. The participant never sees a score, a replay, or a quality value.
 5. **Handoff** says "Please give the iPad back to the researcher." A visible Operator control (press and hold for 2 seconds, then the PIN when the configuration has one) opens the operator screens. The flow is the same whatever the answers were.
-6. **Review** shows each trial with its duration, sample rate, and channels present. The operator can repeat a trial, add a mark from a fixed list, or close the session.
+6. **Review** shows each safety flag with its instrument and item (never a score) and requires an action code for it, then shows each trial with its duration, sample count, rate, and channels. The participant then sees the crisis list. Marks and repeat buttons in Review are planned, not built.
 7. **Export** puts a verified folder in Files under On My iPad > SCRIPT > Exports.
 
 After a crash, Home shows the session as interrupted. The open trial is marked interrupted. The operator repeats it, continues, or closes the session.
@@ -64,14 +64,15 @@ agreement["kinematic.speed_mean"].icc               # Estimate(point, low, high)
 Screening harness with known truth:
 
 ```python
-from scriptkin.evaluate import screening, Screening, Refused, Prevalence, Missing, LOGISTIC_L2
+from scriptkin.evaluate import AnalysisPlan, Refused, Screening, Target, screening
 
-truth = syn.Outcome(prevalence=0.08, effect={"tremor_mm": 0.6, "pause_rate_hz": 0.4})
-cohort = syn.cohort(n=800, devices=(syn.IPAD_PRO_PENCIL_PRO,), outcome=truth, seed=11)
-match screening(sk.feature_table(cohort.recordings), cohort.labels, model=LOGISTIC_L2,
-                prevalence=Prevalence(0.08), missing=Missing.IMPUTE_IN_FOLD, seed=11):
+cohort = syn.cohort(n=300, seed=11, scenario="signal")       # PHQ-9 answers come from a latent score
+plan = AnalysisPlan(target=Target(instrument="phq9", cut=10.0),
+                    features=("spiral-trace/kinematic.speed_mean", "spiral-trace/spectral.tremor_power"),
+                    prevalence=0.08)                          # the plan digest is fixed before labels join
+match screening(sk.feature_table(cohort.recordings), cohort.labels, plan=plan, seed=11):
     case Screening(auc=auc):
-        assert auc.low <= cohort.oracle_auc
+        print(auc.point, auc.low, auc.high, auc.p_value)     # significance comes from the permutation p-value
     case Refused(reason=why):
         raise SystemExit(why)
 ```
@@ -248,6 +249,9 @@ Library/Application Support/Sessions/<uuid>.jsonl    journals not yet exported
 Library/Application Support/Staging/<name>/          publication in progress
 Documents/Exports/<name>/                            verified exports, visible in Files
 Library/Application Support/Damaged/<uuid>.jsonl    journals with damage before the last line; exported only through publish
+Library/Application Support/ExportIndex.jsonl       {name, participantHMAC} per export, so that withdrawal finds encrypted exports
+Library/Application Support/Deletions.jsonl         the deletion log
+Library/Application Support/Configurations/         imported configurations, by SHA-256
 ```
 
 ## 6. Python shape
@@ -272,8 +276,8 @@ python/src/scriptkin/
   features.py        the feature catalog and extract, feature_table
   labels.py          questionnaire scores or refusals, and the safety flag count for audit
   qualification.py   the device qualification report
-  synthetic.py       traits, device models, journals, cohorts
-  evaluate/          screening, metrics, reliability, report
+  synthetic.py       participants with latent traits and scores, device models, sites, scenarios, cohorts
+  evaluate/          plan (digests), screening, participants, metrics, report, reliability, norms, planning
   contract.py        regenerate and verify the shared contract
   cli.py             inspect, features, contract
 ```
@@ -298,18 +302,84 @@ Key decisions:
 
 ## 7. Evaluation
 
-- `screening(table, labels, *, model, prevalence, missing, plan, seed) -> Screening | Refused`.
-- One row per participant. The median over accepted attempts gives each task and feature value.
-- Outer `StratifiedGroupKFold` with repeats. Inner grouped search and grouped calibration use training participants only.
-- **Leakage witness.** A `FitWitness` step at the head of every pipeline records the participants at each `fit` call. The harness checks the exact invariant: no test participant appears in any fit of its fold. A failure returns `Refused`.
-- **Null check.** A permutation null runs the same plan. A mean null AUC outside 0.5 ± 0.03 returns `Refused`.
-- **Report.** AUC with a participant bootstrap interval (stated as conditional on the fitted procedure), calibration intercept, slope, and curve, sensitivity, specificity, PPV and NPV at the stated prevalence, decision curves with treat-all and treat-none, and the TRIPOD+AI items that the harness knows.
-- `reliability(table, between="device" | "session")` gives ICC(A,1) with an interval, Bland-Altman bias and limits, SEM, and MDC95.
-- **Governance.** Only synthetic cohorts and cleared datasets enter `screening`. Public CC BY datasets test readers and features only. See `AGENTS.md`.
+The harness is `scriptkin.evaluate`. It accepts synthetic cohorts and cleared datasets only (`AGENTS.md`).
+
+### 7.1 Inputs and the analysis plan
+
+- `screening(table, labels, *, plan, seed, reliability=None) -> Screening | Refused`.
+- `table` is a `FeatureTable`. Each row also has `site`, `age_band`, `visit`, `opened_at` (the session `openedAt`), and `qc` (the codes that rejected the trial; empty for an accepted trial). `read_feature_table` reads the CSV that `to_csv` writes.
+- `labels` are `labels.Label` values. `write_labels_csv` and `read_labels_csv` give them a file form.
+- `AnalysisPlan` holds the target (`instrument`, `version`, `scale`, and `cut`: a case has a score of at least `cut`), the feature columns (`task/feature`), the model (`logistic_l2` or `knn`, with a grid), the reliability gate, an optional normative model, the risk thresholds, the stated prevalence, the holdout (`participant`, `site`, `device`, or `temporal`), the missing-data rule (`impute_in_fold` or `complete_case`), the folds, repeats, inner folds, permutations (at least 10, so that the null check can fail), and bootstrap samples. `AnalysisPlan.from_json` refuses an unknown key.
+- `plan_digest(plan)` and `freeze_features(table)` are the SHA-256 of canonical JSON. Every report records both digests and the seed.
+
+### 7.2 Analysis set
+
+- One row per participant. Each column is the median over accepted, non-practice attempts.
+- The label of a participant is the target label of its earliest session in the table, by `openedAt`. A missing or refused label excludes the participant. It is never a negative.
+- A participant with no accepted trial, or with no value in any planned column, is excluded. `complete_case` also excludes a participant with any missing column. `impute_in_fold` uses training-fold medians.
+- The report counts the excluded participants by reason, the excluded cases and controls whose label is known, and the trials that QC rejected, by code.
+
+### 7.3 Splits, search, and calibration
+
+- `participant`: stratified folds with whole participants, with repeats. `site` and `device`: leave one site or device out; a participant seen at two sites or on two devices refuses the plan. `temporal`: participants in date order are cut into `folds` blocks; each block after the first is tested with a model fitted on the earlier blocks only.
+- Inside each outer training set, a grouped stratified search picks the first grid value with the best inner AUC. A logistic model minimizes the mean log loss plus `|w|^2 / (2c)` on standardized features. The penalty is per observation, so a value chosen on an inner training set keeps its scale on the outer training set.
+- A Platt calibrator is fitted on the inner out-of-fold scores of the chosen value and applied to the final model. Calibration never sees the outer test fold.
+- **Leakage witness.** A `FitWitness` is the first step of every pipeline: search, final, calibration, and normative fits. It records the participants of each fit. The harness checks the exact invariant: no test participant is in any fit of its fold, and every fold has a witnessed final fit. A failure returns `Refused`.
+
+### 7.4 AUC and the null check
+
+- The AUC uses only case-control pairs inside one test fold, averaged over repeats. A pair from two folds compares two models whose intercepts carry their training prevalence. That prevalence moves against the test prevalence, so a pooled AUC falls below 0.5 when nothing is learnt.
+- **Interval.** The start is a participant bootstrap, stratified by class, of fixed out-of-fold predictions. This bootstrap omits the variation from refitting. On null matrix cohorts (120 participants, 20 permutations) it covers 0.5 in 92% of datasets with 1 repeat and in 72% with 5 repeats. The harness widens the interval to at least `AUC ± t(0.975, P − 1) · SE_null`. `SE_null` is the standard deviation of the P null AUCs of the same plan. Under the null, the observed AUC and the null AUCs are exchangeable, so the widened interval covers 0.5 at about the nominal rate: 97% with 1 repeat and 96% with 5 repeats on the same cohorts. The interval is not a test of chance. Significance comes from the permutation p-value. The report gives `se_null` and `p_value` next to the AUC.
+- **Null check.** Each permutation run permutes the labels, draws its own split seed, and runs the full plan. A shared split seed would condition the null on one fold assignment. The check needs an exchangeable null, so it permutes between all participants, or inside each held-out site or device for a site or device holdout, where every scored pair shares one group. It passes when the mean null AUC is inside `0.5 ± t(0.995, P − 1) · sd / √P`. A mean outside the band returns `Refused`.
+- **Band spread.** `sd` is the larger of the standard deviation of the null AUCs and `sigma0`, for every P. `sigma0` is the null standard deviation that the fold sizes imply for one repeat of fixed untied scores. The null AUCs of a multi-repeat plan are skewed to the right (skewness about 0.9 at 5 repeats). A sample of them with a low mean then often has a small spread, and a band from that spread alone refuses sound plans. On null matrix cohorts with 5 repeats and 20 permutations, the empirical spread alone refused 6 of 160 datasets, and the larger of the two refused 0 of 160. The cost is a looser check: with 5 repeats the null spreads about 7% less than `sigma0`. A check that refuses sound studies teaches users to ignore it, so the harness accepts the looser band.
+- **p-value.** A second set of runs permutes the labels between participants inside each site. Its distribution gives the p-value of the observed AUC, so a result that only reflects site prevalence is not significant. With one site, or with a site holdout, the two sets are the same. The report gives both null distributions.
+- **p-value resolution.** P permutations cannot give a p-value below `1 / (P + 1)`. `NullCheck.resolution` gives this value. When it exceeds 0.05 (P < 19), a caution states that the p-value cannot reach 0.05.
+
+### 7.5 Report
+
+`Screening` holds, after the witness and the null check pass:
+
+- AUC with its widened interval, `se_null`, and the permutation p-value; calibration intercept (logit offset model), slope, a ten-bin curve, and Brier score.
+- Sensitivity and specificity with Wilson intervals at each plan threshold, and PPV and NPV at the stated prevalence by Bayes' rule. The PPV and NPV bounds combine the matching sensitivity and specificity bounds, so they are conservative. Before the thresholds apply, each out-of-fold risk moves to the stated prevalence by the prior-shift adjustment, `logit p' = logit p + logit π − logit π_f`. `π_f` is the training prevalence of the fold that scored the risk, because the calibrator of that fold learnt `π_f`. With repeats, the shifted risks are averaged over repeats. A pooled prevalence would move the risks of different folds by wrong amounts. Under drifting prevalence, for example in a temporal holdout, that error gives the thresholds spurious discrimination. When the sample prevalence differs from the stated prevalence, a caution states the assumption of the shift.
+- Net benefit for the model, treat-all, and treat-none at thresholds 0.01 to 0.50 and the plan thresholds.
+- Demographic-only (age band, administration), device-only, and site-only baselines on the same folds. Each baseline has its own permutation null, on the same permuted labels and splits as the model, and its interval follows the same rule. A baseline gives a caution that it can explain the result when its AUC is more than `t(0.975, P − 1) · SE_null` above 0.5 and reaches the model's lower bound. The bootstrap low bound is not the test, because it ignores the refit variance. A baseline whose design is the same for every participant ties every pair, so its null AUCs are all 0.5 and need no runs.
+- Subgroup results by age band, administration, device, and site, with bootstrap intervals of fixed predictions that the null spread does not widen; QC attrition; the folds with the sites, devices, and dates that their fits saw, the training prevalence, and the count of test participants outside the range of the fold's norms; the reliability gate result of each column; cautions; and the TRIPOD+AI items. Items that the harness knows have content. The others are author-supplied.
+
+### 7.6 Reliability and the gate
+
+- `reliability(table, between="device" | "session")` gives an `Agreement` for each `task/feature` column. An occasion is a device model or a visit. Devices sort by name and visits by number, so visit 10 comes after visit 2. A participant counts only with a value on every occasion.
+- `Agreement` holds ICC(A,1) (two-way random effects, absolute agreement, one measurement) with the McGraw and Wong F interval, Bland-Altman bias and 95% limits for each pair of occasions, the agreement SEM `sqrt(occasion variance + residual variance)`, MDC95 `1.96 · √2 · SEM`, the between-participant SD, and `n`.
+- `reliability_gate(agreement, criteria)` gives `pass`, `fail`, or `not_established` with the reason. A feature passes when the ICC lower bound reaches `min_icc_low` and every bias is at most `max_bias_sd` between-participant SDs, with at least `min_participants`.
+- `screening` uses only the columns that the gate passes. Without reliability data, the report states that reliability is not established and lists the columns used.
+
+### 7.7 Normative models
+
+- `fit_norms(rows, covariates)` fits, for each feature, a location and a log variance that are linear in the same design: an intercept, a restricted cubic spline of `age` in years when given, and indicators for `age_band`, `hand`, or `administration`.
+- `centiles(norms, rows)` gives a centile for each feature, or a refusal. A row outside the fitted age range or with an unseen level gives `out_of_range`.
+- `plan.norms` replaces each column by its deviation from norms fitted inside each training fold. The report then states that a deviation is not a diagnosis.
+- **Reference sample.** The norms are fitted without labels on all participants of the training fold, cases included, as a general-population reference. Cases pull the location toward themselves and widen the scale, so their deviations shrink toward zero and the AUC tends to fall. The fit does not use labels, so it cannot raise the AUC by leakage. TRIPOD+AI item 12b states this choice.
+- **Out-of-range test rows.** A test participant whose covariates are outside the range of the training-fold norms has no deviation. The training-fold median deviation replaces it. Each fold record counts these participants in `out_of_range`, and a caution gives the total.
+
+### 7.8 Study size
+
+`evaluate.planning` gives, in closed form, the expected positives and negatives and the Wilson half-widths of sensitivity, specificity, PPV, and NPV for `N` enrolled participants at a stated prevalence, assumed accuracy, and QC attrition. It also gives the smallest `N` that reaches a target half-width for each measure. The smallest count is the positive root of a quadratic.
+
+### 7.9 Command line
+
+`scriptkin evaluate --plan plan.json --features table.csv --labels labels.csv [--reliability retest.csv] [--seed N] [--out report.json]` and `scriptkin plan-size --prevalence P --sensitivity SE --specificity SP [--attrition A] [--enrolled N] [--half-width W]` write JSON reports.
 
 ## 8. Synthetic cohorts
 
-The generator follows each stimulus polyline with a minimum-jerk speed profile. It adds tremor at right angles to the path, micro-movement spikes from Gamma traits, and pen lifts at pauses. It samples through a device model with jitter, drops, late corrections, and absent channels. It writes real journal lines, so every synthetic cohort goes through the real `read_journal`, `assess`, and `extract`.
+`scriptkin.synthetic.cohort(n, *, seed, scenario, outcome, devices, sites, tasks, visits, crossed, session_noise)` returns a `Cohort` with the journals, the recordings, the truth, and the oracle AUC. `Cohort.labels` scores the `response` lines with `labels.labels`.
+
+- **Traits.** Each participant has log-normal traits: speed, tremor amplitude and frequency, pause rate, pressure level and variability, and the Gamma shape and scale of micro-movement bumps. A latent depression score `d` is standard normal. `outcome.effect` maps a trait to its loading on `d`, in standard deviations of the log trait. The oracle risk score is `Σ β_i u_i` over the standardized log traits `u`, which orders participants as `E[d | traits]` does. The oracle AUC is its AUC against the case labels.
+- **Labels.** `d` drives the PHQ-9 and GAD-7 items through a graded response model. The latent mean is set by Gauss-Hermite quadrature so that the PHQ-9 total reaches `outcome.threshold` at the stated prevalence. A case is the first-visit PHQ-9 total of at least the threshold. A skipped item makes the label refuse.
+- **Strokes.** The pen follows each stimulus polyline. The speed is a chain of half-overlapping minimum-jerk bells of 160 ms whose amplitudes add Gamma bumps. Tremor moves the pen at right angles to the path. Pauses come at a Poisson rate and lift the pen. A copy is drawn below the stimulus with a small rotation and size change. `clock` and `sentence` have their own polylines.
+- **Devices.** A `DeviceModel` sets the device model text, the declared Pencil, the sample rate, the timestamp jitter, the drop rate, the position noise, the planned channels, the pressure curve `force = max · pressure^γ`, the share of samples whose force arrives later in a `correction`, the correction delay, hover lines between contacts, and a scale bias. `IPAD_PRO_PENCIL_PRO`, `IPAD_PRO_PENCIL_2`, and `IPAD_AIR_PENCIL_USBC` are defined.
+- **Sites and sessions.** A `Site` multiplies speed and pressure. Speed is 0.9 times as large for age band 13-17. Each session adds a small change to every log trait (`session_noise`). Session dates follow enrolment order; visits are 14 days apart.
+- **Scenarios.** `null`: no effect. `signal`: the effect applies. `device_confounded`: no effect; cases use the last device and controls the first, each with probability 0.85. `fingerprint`: no effect, a stable participant quirk on every trait, and two visits. `missingness`: the effect applies; people with higher `d` decline more tasks and skip more items.
+- **Journals.** `contract.JournalBuilder` writes every line. A session has a handoff, the tasks, PHQ-9 and GAD-7 blocks, an operator alert and action when item 9 is flagged, the crisis list, and the close. The recordings come from the same replay that `read_journal` uses. `Cohort.write` writes export folders with manifests.
+- **Seeds.** One seed gives separate streams for the population, the answers, and each participant's drawing.
 
 ## 9. Repository and checks
 
@@ -437,7 +507,7 @@ The operator gives the attestation in supervised sessions. In self-administered 
 
 ## 16. Device qualification
 
-A qualification session has `purpose: qualification` and a fixed task set: a reference-length check with a steel rule or an ID-1 card, a 10-second still hold, and a straight-line stroke along a guide. Channel presence comes from the samples of these three tasks. It writes an ordinary journal. `scriptkin` computes the sample-interval distribution, gaps, jitter, scale error, and channel presence from it. A study session records the identifier of the last qualification session on its device. "Can record" differs from "qualified for comparison"; only the analysis plan decides the second.
+A qualification session has `purpose: qualification` and a fixed task set: a reference-length check with a steel rule or an ID-1 card, a 10-second still hold, and a straight-line stroke along a guide. Channel presence comes from the samples of these three tasks. It writes an ordinary journal. `scriptkin` computes the sample-interval distribution, gaps, jitter, scale error, and channel presence from it. The app records a qualification session with the participant code `QUAL` and an operator attestation without documents. A study session records the identifier of the last qualification session on its device and Pencil. "Can record" differs from "qualified for comparison"; only the analysis plan decides the second.
 
 ## 17. Privacy and withdrawal
 

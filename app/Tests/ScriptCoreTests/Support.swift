@@ -24,7 +24,7 @@ enum Contract {
 
     static let journalFixtures = stems(in: "fixtures/journal", suffix: ".jsonl")
     static let recoveryFixtures = stems(in: "fixtures/recovery", suffix: ".jsonl")
-    static let exportFixture = "fixtures/export/P0001_3f2a9c1e"
+    static let exportFixture = "fixtures/export/SCRIPT_DEMO_DEMO_3f2a9c1e"
 
     static func battery() throws -> Battery { try Battery(data: try data("battery.json")) }
     static func instruments() throws -> InstrumentSet { try InstrumentSet(data: try data("instruments.json")) }

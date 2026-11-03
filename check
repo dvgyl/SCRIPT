@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run the checks. With no arguments, run all sections in order and stop at the first failure.
-# Sections: contract python core app. Example: ./check contract python
+# Sections: contract core app python. Example: ./check contract python
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")" && pwd)
@@ -36,14 +36,64 @@ core() {
 }
 
 app() {
-    step "app: build on the simulator ($DESTINATION)"
-    xcodebuild build -quiet -project "$ROOT/app/ScriptApp.xcodeproj" -scheme ScriptApp \
-        -destination "$DESTINATION" -derivedDataPath "$BUILD/DerivedData"
+    local id=com.dvgyl.script.capture udid revision
+    udid=$("${UV[@]}" python - "$DESTINATION" <<'PY'
+import json, re, subprocess, sys
+fields = dict(part.split("=", 1) for part in sys.argv[1].split(","))
+if "id" in fields:
+    sys.exit(print(fields["id"]))
+listing = json.loads(subprocess.check_output(["xcrun", "simctl", "list", "-j", "devices", "available"]))
+found = []
+for runtime, devices in listing["devices"].items():
+    version = re.search(r"iOS-([0-9-]+)$", runtime)
+    for device in devices:
+        if version and device["name"] == fields.get("name"):
+            found.append((tuple(map(int, version[1].split("-"))), device["udid"]))
+wanted = fields.get("OS", "latest")
+found = [f for f in found if wanted == "latest" or ".".join(map(str, f[0])).startswith(wanted)]
+sys.exit(print(max(found)[1]) if found else f"no available simulator for {sys.argv[1]}")
+PY
+)
+    step "app: unit and UI tests on the simulator ($DESTINATION, $udid)"
+    xcrun simctl boot "$udid" 2>/dev/null || true
+    xcrun simctl bootstatus "$udid" -b >/dev/null
+    # A new container for each run, so the copied exports are this run's only.
+    xcrun simctl uninstall "$udid" "$id" 2>/dev/null || true
+    revision=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)
+    if [ -n "$(git -C "$ROOT" status --porcelain 2>/dev/null)" ]; then revision="$revision-dirty"; fi
+    rm -rf "$BUILD/app-tests.xcresult"
+    if ! xcodebuild test -quiet -project "$ROOT/app/ScriptApp.xcodeproj" -scheme ScriptApp \
+        -destination "platform=iOS Simulator,id=$udid" -derivedDataPath "$BUILD/DerivedData" \
+        -resultBundlePath "$BUILD/app-tests.xcresult" \
+        SWIFT_TREAT_WARNINGS_AS_ERRORS=YES SCRIPT_SOURCE_REVISION="$revision" >"$BUILD/app-tests.log" 2>&1; then
+        tail -n 60 "$BUILD/app-tests.log" >&2
+        echo "app tests failed. Log: $BUILD/app-tests.log. Results: $BUILD/app-tests.xcresult" >&2
+        return 1
+    fi
+
+    step "app: copy the UI test exports to the contract output"
+    local container out="$BUILD/contract-out/app"
+    container=$(xcrun simctl get_app_container "$udid" "$id" data)
+    rm -rf "$out"
+    mkdir -p "$out"
+    cp -R "$container/Documents/Exports/." "$out/"
+
+    step "app: every UI string is in the String Catalog"
+    local catalog="$ROOT/app/ScriptApp/Localizable.xcstrings" synced="$BUILD/Localizable.xcstrings" strings=()
+    for data in "$BUILD"/DerivedData/Build/Intermediates.noindex/ScriptApp.build/Debug-iphonesimulator/ScriptApp.build/Objects-normal/*/*.stringsdata; do
+        strings+=(--stringsdata "$data")
+    done
+    cp "$catalog" "$synced"
+    xcrun xcstringstool sync "$synced" "${strings[@]}"
+    if ! cmp -s "$catalog" "$synced"; then
+        echo "Localizable.xcstrings does not match the source strings. Update it: cp '$synced' '$catalog'" >&2
+        return 1
+    fi
 }
 
 uv sync --project "$ROOT/python" --frozen --quiet
 sections=("$@")
-[ ${#sections[@]} -eq 0 ] && sections=(contract core python app)
+[ ${#sections[@]} -eq 0 ] && sections=(contract core app python)
 for section in "${sections[@]}"; do
     case "$section" in
         contract|python|core|app) "$section" ;;

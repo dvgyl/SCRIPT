@@ -31,6 +31,9 @@ public struct Instrument: Hashable, Sendable {
         public let id: ItemID
         public let text: String
         public let options: [Option]
+        /// False for an item outside the scoring rule, such as `difficulty`. The app shows such an item without
+        /// the instrument stem, as the published form does.
+        public let scored: Bool
         public let safety: Bool
     }
 
@@ -67,7 +70,7 @@ public struct Instrument: Hashable, Sendable {
                 options.append(Option(value: try o.int("value"), label: try o.string("label")))
             }
             items.append(Item(id: try item.text("id", ItemID.init(_:)), text: try item.string("text"), options: options,
-                              safety: try item.bool("safety")))
+                              scored: try item.bool("scored"), safety: try item.bool("safety")))
         }
         self.items = items
     }
