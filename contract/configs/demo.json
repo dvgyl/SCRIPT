@@ -1,0 +1,244 @@
+{
+ "format": "script.config",
+ "version": "1.0",
+ "demo": true,
+ "study": {
+  "id": "DEMO",
+  "version": "1.0",
+  "protocolVersion": "demo"
+ },
+ "sites": [
+  "DEMO"
+ ],
+ "jurisdictions": [
+  "US",
+  "GB",
+  "IN",
+  "AU"
+ ],
+ "administration": [
+  "supervised",
+  "self"
+ ],
+ "battery": {
+  "id": "script-v1",
+  "version": "1.0.0",
+  "sha256": "27c4fa3a2f2e8bcd2d5425a33b9e0082cb4b9b51c5c06fababaa1512490f4663"
+ },
+ "tasks": [
+  {
+   "task": "practice",
+   "practice": true,
+   "attempts": 1,
+   "hands": "dominant"
+  },
+  {
+   "task": "spiral-trace",
+   "practice": false,
+   "attempts": 2,
+   "hands": "dominant"
+  },
+  {
+   "task": "loops",
+   "practice": false,
+   "attempts": 2,
+   "hands": "dominant"
+  },
+  {
+   "task": "pentagons",
+   "practice": false,
+   "attempts": 2,
+   "hands": "dominant"
+  },
+  {
+   "task": "house",
+   "practice": false,
+   "attempts": 2,
+   "hands": "dominant"
+  },
+  {
+   "task": "clock",
+   "practice": false,
+   "attempts": 2,
+   "hands": "dominant"
+  },
+  {
+   "task": "sentence",
+   "practice": false,
+   "attempts": 2,
+   "hands": "dominant"
+  }
+ ],
+ "questionnaires": [
+  {
+   "administration": "supervised",
+   "ageBand": "13-17",
+   "position": "afterTasks",
+   "instruments": [
+    "phq9",
+    "gad7"
+   ]
+  },
+  {
+   "administration": "supervised",
+   "ageBand": "18-24",
+   "position": "afterTasks",
+   "instruments": [
+    "phq9",
+    "gad7"
+   ]
+  },
+  {
+   "administration": "self",
+   "ageBand": "13-17",
+   "position": "afterTasks",
+   "instruments": [
+    "phq8",
+    "gad7"
+   ]
+  },
+  {
+   "administration": "self",
+   "ageBand": "18-24",
+   "position": "afterTasks",
+   "instruments": [
+    "phq8",
+    "gad7"
+   ]
+  }
+ ],
+ "locales": {
+  "en": {
+   "instructionVersion": "1.0",
+   "instructions": {}
+  }
+ },
+ "safety": {
+  "actionCodes": [
+   "clinicianAssessment",
+   "referred",
+   "emergencyServices",
+   "guardianContacted",
+   "participantDeclinedHelp"
+  ],
+  "remoteReview": null,
+  "crisisLists": [
+   {
+    "jurisdiction": "US",
+    "locale": "en",
+    "version": "US-2026-11-03",
+    "verifiedOn": "2026-11-03",
+    "entries": [
+     {
+      "name": "988 Suicide & Crisis Lifeline",
+      "contact": "Call or text 988",
+      "url": "https://988lifeline.org/"
+     },
+     {
+      "name": "Emergency services",
+      "contact": "Call 911"
+     }
+    ]
+   },
+   {
+    "jurisdiction": "GB",
+    "locale": "en",
+    "version": "GB-2026-11-03",
+    "verifiedOn": "2026-11-03",
+    "entries": [
+     {
+      "name": "Samaritans",
+      "contact": "Call 116 123",
+      "url": "https://www.samaritans.org/"
+     },
+     {
+      "name": "Childline (under 19)",
+      "contact": "Call 0800 1111"
+     },
+     {
+      "name": "Shout",
+      "contact": "Text SHOUT to 85258",
+      "url": "https://giveusashout.org/"
+     },
+     {
+      "name": "Emergency services",
+      "contact": "Call 999"
+     }
+    ]
+   },
+   {
+    "jurisdiction": "IN",
+    "locale": "en",
+    "version": "IN-2026-11-03",
+    "verifiedOn": "2026-11-03",
+    "entries": [
+     {
+      "name": "Tele-MANAS",
+      "contact": "Call 14416 or 1-800-891-4416",
+      "url": "https://telemanas.mohfw.gov.in/"
+     },
+     {
+      "name": "Emergency services",
+      "contact": "Call 112"
+     }
+    ]
+   },
+   {
+    "jurisdiction": "AU",
+    "locale": "en",
+    "version": "AU-2026-11-03",
+    "verifiedOn": "2026-11-03",
+    "entries": [
+     {
+      "name": "Lifeline",
+      "contact": "Call 13 11 14 or text 0477 13 11 14",
+      "url": "https://www.lifeline.org.au/"
+     },
+     {
+      "name": "Kids Helpline (ages 5 to 25)",
+      "contact": "Call 1800 55 1800",
+      "url": "https://kidshelpline.com.au/"
+     },
+     {
+      "name": "Emergency services",
+      "contact": "Call 000"
+     }
+    ]
+   }
+  ]
+ },
+ "consentModel": {
+  "13-17": {
+   "model": "guardianAndAssent",
+   "documents": [
+    {
+     "id": "demo-guardian-permission",
+     "version": "1"
+    },
+    {
+     "id": "demo-assent",
+     "version": "1"
+    }
+   ]
+  },
+  "18-24": {
+   "model": "adult",
+   "documents": [
+    {
+     "id": "demo-consent",
+     "version": "1"
+    }
+   ]
+  }
+ },
+ "ethics": {
+  "approvalID": "DEMO-NOT-APPROVED",
+  "protocolVersion": "demo",
+  "safetyProtocolVersion": "demo"
+ },
+ "export": {
+  "recipientPublicKey": null,
+  "keyID": null
+ },
+ "operatorPin": null
+}

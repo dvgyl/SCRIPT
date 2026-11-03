@@ -1,16 +1,26 @@
 {
  "sessionID": "3F2A9C1E-0000-4000-8000-000000000002",
+ "purpose": "study",
+ "administration": "supervised",
  "state": "closed",
  "counts": {
   "sessionOpened": 1,
-  "trialStarted": 3,
-  "contactBegan": 3,
-  "sample": 16,
+  "handoff": 0,
+  "trialStarted": 6,
+  "trialBegan": 5,
+  "contactBegan": 4,
+  "sample": 20,
   "correction": 2,
-  "contactEnded": 3,
+  "contactEnded": 4,
   "hover": 1,
   "finger": 2,
-  "trialEnded": 3,
+  "trialEnded": 6,
+  "questionnaireStarted": 0,
+  "response": 0,
+  "questionnaireEnded": 0,
+  "safetyFlagged": 0,
+  "safetyShown": 0,
+  "safetyAction": 0,
   "mark": 1,
   "recovered": 0,
   "sessionClosed": 1
@@ -18,8 +28,22 @@
  "trials": [
   {
    "index": 0,
+   "task": "practice",
+   "attempt": 1,
+   "practice": true,
+   "began": true,
+   "outcome": "completed",
+   "contacts": 1,
+   "samples": 4,
+   "corrections": 0,
+   "unresolved": 0
+  },
+  {
+   "index": 1,
    "task": "spiral-trace",
    "attempt": 1,
+   "practice": false,
+   "began": true,
    "outcome": "completed",
    "contacts": 1,
    "samples": 3,
@@ -27,9 +51,11 @@
    "unresolved": 1
   },
   {
-   "index": 1,
+   "index": 2,
    "task": "loops",
    "attempt": 1,
+   "practice": false,
+   "began": true,
    "outcome": "completed",
    "contacts": 1,
    "samples": 5,
@@ -37,16 +63,49 @@
    "unresolved": 0
   },
   {
-   "index": 2,
+   "index": 3,
    "task": "spiral-trace",
    "attempt": 2,
+   "practice": false,
+   "began": true,
    "outcome": "timeLimit",
    "contacts": 1,
    "samples": 8,
    "corrections": 0,
    "unresolved": 0
+  },
+  {
+   "index": 4,
+   "task": "pentagons",
+   "attempt": 1,
+   "practice": false,
+   "began": false,
+   "outcome": "declined",
+   "contacts": 0,
+   "samples": 0,
+   "corrections": 0,
+   "unresolved": 0
+  },
+  {
+   "index": 5,
+   "task": "house",
+   "attempt": 1,
+   "practice": false,
+   "began": true,
+   "outcome": "unable",
+   "contacts": 0,
+   "samples": 0,
+   "corrections": 0,
+   "unresolved": 0
   }
  ],
+ "questionnaires": [],
+ "safety": {
+  "flags": 0,
+  "crisisListShown": 0,
+  "operatorAlerts": 0,
+  "actions": 0
+ },
  "unmatchedCorrections": 0,
  "truncatedBytes": 0
 }

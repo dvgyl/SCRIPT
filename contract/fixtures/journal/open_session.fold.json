@@ -1,9 +1,13 @@
 {
  "sessionID": "3F2A9C1E-0000-4000-8000-000000000008",
+ "purpose": "study",
+ "administration": "supervised",
  "state": "drawing",
  "counts": {
   "sessionOpened": 1,
+  "handoff": 0,
   "trialStarted": 1,
+  "trialBegan": 1,
   "contactBegan": 1,
   "sample": 4,
   "correction": 0,
@@ -11,6 +15,12 @@
   "hover": 0,
   "finger": 0,
   "trialEnded": 0,
+  "questionnaireStarted": 0,
+  "response": 0,
+  "questionnaireEnded": 0,
+  "safetyFlagged": 0,
+  "safetyShown": 0,
+  "safetyAction": 0,
   "mark": 0,
   "recovered": 0,
   "sessionClosed": 0
@@ -20,6 +30,8 @@
    "index": 0,
    "task": "spiral-trace",
    "attempt": 1,
+   "practice": false,
+   "began": true,
    "outcome": "open",
    "contacts": 1,
    "samples": 4,
@@ -27,6 +39,13 @@
    "unresolved": 0
   }
  ],
+ "questionnaires": [],
+ "safety": {
+  "flags": 0,
+  "crisisListShown": 0,
+  "operatorAlerts": 0,
+  "actions": 0
+ },
  "unmatchedCorrections": 0,
  "truncatedBytes": 0
 }

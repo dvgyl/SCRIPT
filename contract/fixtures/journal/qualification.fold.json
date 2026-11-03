@@ -1,0 +1,75 @@
+{
+ "sessionID": "3F2A9C1E-0000-4000-8000-00000000000D",
+ "purpose": "qualification",
+ "administration": "supervised",
+ "state": "closed",
+ "counts": {
+  "sessionOpened": 1,
+  "handoff": 0,
+  "trialStarted": 3,
+  "trialBegan": 3,
+  "contactBegan": 3,
+  "sample": 36,
+  "correction": 0,
+  "contactEnded": 3,
+  "hover": 0,
+  "finger": 0,
+  "trialEnded": 3,
+  "questionnaireStarted": 0,
+  "response": 0,
+  "questionnaireEnded": 0,
+  "safetyFlagged": 0,
+  "safetyShown": 0,
+  "safetyAction": 0,
+  "mark": 0,
+  "recovered": 0,
+  "sessionClosed": 1
+ },
+ "trials": [
+  {
+   "index": 0,
+   "task": "qual-reference",
+   "attempt": 1,
+   "practice": false,
+   "began": true,
+   "outcome": "completed",
+   "contacts": 1,
+   "samples": 12,
+   "corrections": 0,
+   "unresolved": 0
+  },
+  {
+   "index": 1,
+   "task": "qual-hold",
+   "attempt": 1,
+   "practice": false,
+   "began": true,
+   "outcome": "completed",
+   "contacts": 1,
+   "samples": 12,
+   "corrections": 0,
+   "unresolved": 0
+  },
+  {
+   "index": 2,
+   "task": "qual-line",
+   "attempt": 1,
+   "practice": false,
+   "began": true,
+   "outcome": "completed",
+   "contacts": 1,
+   "samples": 12,
+   "corrections": 0,
+   "unresolved": 0
+  }
+ ],
+ "questionnaires": [],
+ "safety": {
+  "flags": 0,
+  "crisisListShown": 0,
+  "operatorAlerts": 0,
+  "actions": 0
+ },
+ "unmatchedCorrections": 0,
+ "truncatedBytes": 0
+}
