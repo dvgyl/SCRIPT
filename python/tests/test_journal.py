@@ -262,6 +262,46 @@ def test_a_run_index_mounting_or_mark_outside_the_protocol_is_refused(
     assert list(SCHEMA.iter_errors(row))
 
 
+@pytest.mark.parametrize(
+    ("kind", "keys", "value"),
+    [
+        ("sample", ("tiltX",), 1.5),
+        ("hover", ("tiltY",), -2.0),
+        ("sessionOpened", ("bench", "protocol", "sha256"), "abc"),
+        ("sessionOpened", ("bench", "protocol", "version"), ""),
+        ("sessionOpened", ("bench", "motion", "id"), ""),
+        ("sessionOpened", ("bench", "motion", "version"), ""),
+        ("sessionOpened", ("tablet", "model"), ""),
+        ("sessionOpened", ("tablet", "driver"), ""),
+        ("sessionOpened", ("tablet", "asset"), "WACOM 01"),
+        ("trialStarted", ("bench", "program"), "Line-osc8"),
+        ("trialStarted", ("bench", "trajectorySHA256"), "xyz"),
+        ("trialStarted", ("bench", "clip"), ""),
+        ("trialStarted", ("bench", "clip"), "x" * 65),
+    ],
+)
+def test_a_bench_or_tablet_value_that_the_schema_refuses_is_refused(
+    kind: str, keys: tuple[str, ...], value: Any
+) -> None:
+    # Detects a Python reader that accepts a tilt outside -1 to 1, a digest that is not SHA-256 hex, an
+    # empty bench or tablet name, an asset that is not a code, a program that is not a program id, or a
+    # clip outside 1 to 64 characters, which the schema and the Swift reader refuse.
+    rows = lines("bench_wacom")
+    row = _set(rows, kind, keys, value)
+    with pytest.raises(JournalError, match=f"I1, line {row['seq']}"):
+        summarize(rows)
+    assert list(SCHEMA.iter_errors(row))
+
+
+def test_a_tablet_channel_on_a_correction_line_is_not_read() -> None:
+    # Detects a reader that refuses a correction line for a tablet key, which the Swift reader ignores, or
+    # that copies the key into the corrected samples.
+    rows = lines("bench_ipad")
+    next(r for r in rows if r["kind"] == "correction")["tiltX"] = "a"
+    assert summarize(rows) == summarize(lines("bench_ipad"))
+    assert all(Channel.TILT_X not in s.channels for s in fold(rows).trials[0].strokes)
+
+
 def test_the_last_rerun_and_the_eighth_mounting_are_accepted() -> None:
     # Detects a reader or schema whose run or mounting range stops short of the protocol's last values.
     rows = lines("bench_ipad")

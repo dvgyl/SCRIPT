@@ -17,13 +17,17 @@ from scriptkin.formats.checks import (
     Check,
     any_of,
     array,
+    between,
     boolean,
     integer,
+    matches,
+    nonempty,
     number,
     one_of,
     point,
     positive,
     record,
+    sized,
     text,
     uptime,
 )
@@ -100,7 +104,10 @@ _CONTACT = integer(1)
 _BITS = integer(0, 31)
 _INDEX = integer(0)
 _LOCALIZED = record({"id": text, "version": text, "locale": text})
-_OPTIONAL_CHANNELS = {k: number for k in _CHANNELS}
+_SHA256 = matches("[0-9a-f]{64}")
+_PENCIL_VALUES = {k: number for k in _PENCIL_CHANNELS}
+# A tablet tilt component is the normalised tilt of AppKit, -1 to 1.
+_TABLET_VALUES = {"tiltX": between(-1, 1), "tiltY": between(-1, 1), "rotation": number}
 _SCALE = any_of(
     record({"kind": one_of("modelTable"), "mmPerPoint": positive, "ppi": positive, "nativeScale": positive}),
     record(
@@ -116,7 +123,12 @@ _SCALE = any_of(
     record({"kind": one_of("unknown")}),
 )
 _TABLET = record(
-    {"model": text, "asset": text, "driver": text, "pen": record({"declared": one_of("proPen3", "unknown")})}
+    {
+        "model": nonempty,
+        "asset": matches("[A-Za-z0-9-]{1,32}"),
+        "driver": nonempty,
+        "pen": record({"declared": one_of("proPen3", "unknown")}),
+    }
 )
 _STIMULUS = any_of(
     lambda v: v is None,
@@ -198,16 +210,21 @@ _LINES: dict[str, tuple[dict[str, Check], dict[str, Check]]] = {
             "phase": one_of("began", "moved", "stationary", "ended", "cancelled"),
             "est": _BITS,
         },
-        {**_OPTIONAL_CHANNELS, "pending": record({"expect": integer(1, 31), "update": integer()})},
+        {
+            **_PENCIL_VALUES,
+            **_TABLET_VALUES,
+            "pending": record({"expect": integer(1, 31), "update": integer()}),
+        },
     ),
+    # A correction updates the estimated Pencil values only. A tablet sample has no estimate.
     "correction": (
         {"update": integer(), "arrived": uptime, "expect": _BITS},
-        {"contact": _CONTACT, "x": number, "y": number, **_OPTIONAL_CHANNELS},
+        {"contact": _CONTACT, "x": number, "y": number, **_PENCIL_VALUES},
     ),
     "contactEnded": ({"t": uptime, "contact": _CONTACT, "cancelled": boolean}, {}),
     "hover": (
         {"t": uptime, "clock": one_of("callback", "event"), "x": number, "y": number},
-        {"z": uptime, **{k: number for k in ("altitude", "azimuth", "roll", *_TABLET_CHANNELS)}},
+        {"z": uptime, **{k: number for k in ("altitude", "azimuth", "roll")}, **_TABLET_VALUES},
     ),
     "finger": ({"t": uptime, "phase": one_of("began", "ended", "cancelled"), "x": number, "y": number}, {}),
     "trialEnded": ({"t": uptime, "trial": _INDEX, "reason": one_of(*OUTCOME_OF_REASON)}, {}),
@@ -266,8 +283,8 @@ _BENCH_SESSION: dict[str, Check] = {
         {
             "role": one_of("P", "W"),
             "mounting": one_of(*bench.MOUNTINGS),
-            "motion": record({"id": text, "version": text}),
-            "protocol": record({"version": text, "sha256": text}),
+            "motion": record({"id": nonempty, "version": nonempty}),
+            "protocol": record({"version": nonempty, "sha256": _SHA256}),
         }
     ),
 }
@@ -280,8 +297,12 @@ _PARTICIPANT_TRIAL: dict[str, Check] = {
 }
 _BENCH_TRIAL: dict[str, Check] = {
     "bench": record(
-        {"program": text, "run": integer(min(bench.RUNS), max(bench.RUNS)), "trajectorySHA256": text},
-        {"clip": text},
+        {
+            "program": matches("[a-z0-9-]{1,32}"),
+            "run": integer(min(bench.RUNS), max(bench.RUNS)),
+            "trajectorySHA256": _SHA256,
+        },
+        {"clip": sized(1, 64)},
     ),
 }
 _SUBJECT_LINES: dict[str, dict[str, dict[str, Check]]] = {
@@ -519,7 +540,7 @@ class FoldState:
         target, samples = self.pending[key]
         target.corrections += 1
         for s in samples:
-            s.update({name: row[name] for name in ("x", "y", *_CHANNELS) if name in row})
+            s.update({name: row[name] for name in ("x", "y", *_PENCIL_CHANNELS) if name in row})
             s["remaining"] = row["expect"]
 
     def _hover(self, i: int, row: Line) -> None:
