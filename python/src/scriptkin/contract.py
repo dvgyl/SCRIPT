@@ -81,9 +81,13 @@ class _Trial:
 class _Block:
     block: int
     instrument: str
+    # The time of the block's latest questionnaireStarted or response line.
+    last: float
     answered: int = 0
     skipped: int = 0
     outcome: str = "open"
+    # The items with a response or a safety flag, as `OpenBlock.settled` in Swift.
+    settled: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -320,7 +324,7 @@ class JournalBuilder:
         assert self._state in ("ready", "suspended") and self._open_block is None and self._open_trial is None
         spec = instruments.instrument(instrument_id)
         block = len(self._blocks)
-        self._blocks.append(_Block(block, instrument_id))
+        self._blocks.append(_Block(block, instrument_id, t))
         self._emit(
             "questionnaireStarted",
             t=t,
@@ -339,16 +343,44 @@ class JournalBuilder:
         item_spec = next(i for i in spec["items"] if i["id"] == item)
         skipped = value is None
         self._emit("response", t=t, block=block.block, item=item, value=value, skipped=skipped)
+        block.settled.add(item)
+        block.last = t
         if skipped:
             block.skipped += 1
         else:
             block.answered += 1
         if item_spec["safety"] and (value is None or value >= 1):
-            self._emit("safetyFlagged", t=t, block=block.block, item=item, value=value, skipped=skipped)
-            self._flags += 1
+            self._flag(t, block.block, item, value)
+            self._crisis_list_at_once(t)
+
+    def _flag(self, t: float, block: int, item: str, value: int | None) -> None:
+        self._emit("safetyFlagged", t=t, block=block, item=item, value=value, skipped=value is None)
+        self._blocks[block].settled.add(item)
+        self._flags += 1
+
+    def _crisis_list_at_once(self, t: float) -> None:
+        """A self-administered session shows the crisis list with each flag, as `decide` does."""
+        if self.administration == "self":
+            self.shown(t, "crisisList")
+
+    def _flag_unreached(self, t: float) -> bool:
+        """Flag each safety item of the open block that has no response. True when one was flagged."""
+        assert self._open_block is not None
+        block = self._blocks[self._open_block]
+        unreached = [
+            item["id"]
+            for item in instruments.instrument(block.instrument)["items"]
+            if item["safety"] and item["id"] not in block.settled
+        ]
+        for item in unreached:
+            self._flag(t, block.block, item, None)
+        return bool(unreached)
 
     def questionnaire_end(self, t: float, reason: str = "completed") -> None:
+        """End the open block. An unreached safety item flags first, as `decide` does."""
         assert self._open_block is not None
+        if self._flag_unreached(t):
+            self._crisis_list_at_once(t)
         self._emit("questionnaireEnded", t=t, block=self._open_block, reason=reason)
         self._blocks[self._open_block].outcome = reason
         self._open_block = None
@@ -380,7 +412,11 @@ class JournalBuilder:
         self._emit("mark", t=t, trial=trial, code=code)
 
     def recovered(self, t: float, boot: str, truncated_bytes: int) -> None:
+        """Adopt the journal after a crash. An unreached safety item of the open block flags first, at the
+        time of the block's latest line, so the flag stays in the boot of its block."""
         interrupted, block = self._open_trial, self._open_block
+        if block is not None:
+            self._flag_unreached(self._blocks[block].last)
         self._emit(
             "recovered",
             t=t,
@@ -696,7 +732,6 @@ def _self_with_remote_review() -> JournalBuilder:
     for i in range(1, 9):
         b.respond(f"phq9-{i}", 1, 1020.0 + i)
     b.respond("phq9-9", None, 1029.0)
-    b.shown(1029.5, "crisisList")
     b.respond("difficulty", 1, 1030.0)
     b.questionnaire_end(1031.0)
     b.shown(1035.0, "crisisList")
@@ -727,6 +762,54 @@ def _recovered_in_questionnaire() -> JournalBuilder:
     b.answer_all("gad7", 8.0)
     b.shown(30.0, "crisisList")
     b.close(31.0)
+    return b
+
+
+def _declined_unreached_safety() -> JournalBuilder:
+    """A self-administered adolescent stops before PHQ-9 item 9, and the operator ends the session."""
+    b = JournalBuilder(
+        "3F2A9C1E-0000-4000-8000-000000000011",
+        "P0017",
+        administration="self",
+        age_band="13-17",
+        jurisdiction="AU",
+    ).opened()
+    b.trial("spiral-trace", 1, 1010.0)
+    b.began(1010.5)
+    _stroke(b, 1011.0, 6, 300.0, 400.0)
+    b.end(1013.0, "participantDone")
+    b.questionnaire("phq9", 1020.0)
+    for i in range(1, 5):
+        b.respond(f"phq9-{i}", 1, 1020.0 + i)
+    b.handoff(1026.0, "operator")
+    b.questionnaire_end(1027.0, "declined")
+    b.handoff(1035.0, "participant")
+    b.shown(1036.0, "crisisList")
+    b.close(1037.0)
+    return b
+
+
+def _interrupted_unreached_safety() -> JournalBuilder:
+    """A crash ends a supervised PHQ-9 block before item 9. The repeated block reaches item 9 with no flag."""
+    b = JournalBuilder(
+        "3F2A9C1E-0000-4000-8000-000000000012", "P0018", age_band="13-17", jurisdiction="GB"
+    ).opened()
+    b.handoff(1004.0, "participant")
+    b.trial("spiral-trace", 1, 1010.0)
+    b.began(1010.5)
+    _stroke(b, 1011.0, 6, 300.0, 400.0)
+    b.end(1013.0, "participantDone")
+    b.questionnaire("phq9", 1020.0)
+    for i in range(1, 4):
+        b.respond(f"phq9-{i}", 0, 1020.0 + i)
+    b.recovered(6.0, "0B0B0B0B-0000-4000-8000-000000000004", 0)
+    b.handoff(9.0, "participant")
+    b.answer_all("phq9", 10.0)
+    b.handoff(40.0, "operator")
+    b.shown(41.0, "operatorAlert")
+    b.action(50.0, "clinicianAssessment")
+    b.shown(51.0, "crisisList")
+    b.close(52.0)
     return b
 
 
@@ -774,6 +857,8 @@ JOURNAL_FIXTURES = {
     "recovered_in_questionnaire": _recovered_in_questionnaire,
     "repeated_update_key": _repeated_update_key,
     "cross_contact_update": _cross_contact_update,
+    "declined_unreached_safety": _declined_unreached_safety,
+    "interrupted_unreached_safety": _interrupted_unreached_safety,
 }
 
 

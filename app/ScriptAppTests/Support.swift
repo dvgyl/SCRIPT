@@ -32,10 +32,11 @@ func temporaryFolder() throws -> URL {
 
 /// The `sessionOpened` line that Setup builds for a session under `configuration`.
 func opened(_ administration: Administration = .supervised, participant: ParticipantCode = "T-0001",
-            configuration: StudyConfiguration, battery: Battery, id: SessionID = SessionID()) -> SessionOpened {
+            configuration: StudyConfiguration, battery: Battery, id: SessionID = SessionID(),
+            openedAt: Date = Date()) -> SessionOpened {
     let consent = configuration.consentModel[AgeBand.youngAdult.rawValue]!
     return SessionOpened(
-        purpose: .study, sessionID: id, participant: participant, openedAt: WallTime(Date()),
+        purpose: .study, sessionID: id, participant: participant, openedAt: WallTime(openedAt),
         openedUptime: ProcessInfo.processInfo.systemUptime, boot: Clock.boot,
         app: AppInfo(version: "0.1.0", build: "1", sourceRevision: "test"),
         device: DeviceInfo(model: "iPad17,2", os: "iPadOS 27.0", nativeScale: 2, asset: "IPAD-01"),
@@ -53,6 +54,11 @@ func opened(_ administration: Administration = .supervised, participant: Partici
 
 /// The demo configuration file with a self-administered PHQ-9 block and the remote review that it needs.
 func remoteReviewConfiguration() throws -> StudyConfiguration {
+    try StudyConfiguration(data: try remoteReviewConfigurationData())
+}
+
+/// The file of `remoteReviewConfiguration()`, for an import into a store.
+func remoteReviewConfigurationData() throws -> Data {
     let url = Bundle.main.url(forResource: "demo", withExtension: "json")!
     var root = try JSONSerialization.jsonObject(with: try Data(contentsOf: url)) as! [String: Any]
     root["questionnaires"] = [["administration": "self", "ageBand": "18-24", "position": "afterTasks",
@@ -62,7 +68,7 @@ func remoteReviewConfiguration() throws -> StudyConfiguration {
                               "routineReviewWithinWeekdays": 1, "exportEveryHours": 12,
                               "monitoringDisclosureVersion": "1"]
     root["safety"] = safety
-    return try StudyConfiguration(data: try JSONSerialization.data(withJSONObject: root))
+    return try JSONSerialization.data(withJSONObject: root)
 }
 
 extension SessionStore {
@@ -78,10 +84,10 @@ extension SessionStore {
     }
 
     /// Answers every item of the open blocks: the value in `values`, else 0.
-    func answerBlocks(_ values: [ItemID: Int?] = [:]) {
+    func answerBlocks(_ values: [ItemID: Int?] = [:]) async {
         var guardCount = 0
         while let item = currentItem, guardCount < 100 {
-            answer(values[item.item.id] ?? 0)
+            await answer(values[item.item.id] ?? 0)
             if live?.stage == .flagCrisisList { continueAfterCrisisList() }
             guardCount += 1
         }
@@ -137,5 +143,68 @@ final class FailingSink: JournalSink {
     }
 
     func sync() async throws {}
+    func close() async throws {}
+}
+
+/// Holds every `sync()` of a `GatedSink` until the test opens it, and records whether a `safetyFlagged` line was
+/// appended before the first sync.
+final class SyncGate: Sendable {
+    private struct State {
+        var open = false
+        var syncs = 0
+        var flagged = false
+        var flaggedBeforeSync = false
+        var waiting: [CheckedContinuation<Void, Never>] = []
+    }
+
+    private let state = Mutex(State())
+
+    var flaggedBeforeSync: Bool { state.withLock { $0.flaggedBeforeSync } }
+
+    func appended(_ kinds: [LineKind]) {
+        state.withLock { state in
+            if kinds.contains(.safetyFlagged) { state.flagged = true }
+        }
+    }
+
+    func sync() async {
+        await withCheckedContinuation { (k: CheckedContinuation<Void, Never>) in
+            let passes = state.withLock { state -> Bool in
+                if state.syncs == 0 { state.flaggedBeforeSync = state.flagged }
+                state.syncs += 1
+                if !state.open { state.waiting.append(k) }
+                return state.open
+            }
+            if passes { k.resume() }
+        }
+    }
+
+    func open() {
+        let waiting = state.withLock { state in
+            state.open = true
+            defer { state.waiting = [] }
+            return state.waiting
+        }
+        for k in waiting { k.resume() }
+    }
+
+    /// True once a sync has arrived. It gives up after many yields, so a store that never syncs fails the test.
+    func waitForSync() async -> Bool {
+        for _ in 0..<1000 {
+            if state.withLock({ $0.syncs > 0 }) { return true }
+            await Task.yield()
+        }
+        return false
+    }
+}
+
+/// A sink that keeps no bytes and holds each sync at its gate.
+final class GatedSink: JournalSink {
+    let gate: SyncGate
+
+    init(gate: SyncGate) { self.gate = gate }
+
+    func append(_ entries: [Entry]) throws { gate.appended(entries.map(\.event.kind)) }
+    func sync() async throws { await gate.sync() }
     func close() async throws {}
 }

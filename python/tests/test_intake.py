@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import fixture_lines, write_encrypted_export, write_export
+from conftest import FIXTURES, fixture_lines, write_encrypted_export, write_export
 
 from scriptkin.contract import encode_line, manifest_bytes
 from scriptkin.formats.export import read_journal
@@ -221,3 +223,79 @@ def test_intake_does_not_take_its_own_store_as_exports(tmp_path: Path) -> None:
     again = intake([tmp_path / "in"], tmp_path / "in" / "store")
     assert again.receipts == ()
     assert len(again.known) == 2
+
+
+def damaged_journal() -> tuple[bytes, int]:
+    """A self-administered journal with an unreached-item flag and, after it, a line that does not decode."""
+    lines = (FIXTURES / "journal" / "declined_unreached_safety.jsonl").read_bytes().splitlines(keepends=True)
+    damaged_line = len(lines) - 3
+    return b"".join([*lines[:damaged_line], b"{not json\n", *lines[damaged_line:]]), damaged_line
+
+
+def write_damaged_package(folder: Path, data: bytes, line: int, private_key: bytes | None) -> None:
+    """Write a package as the app's Export damaged journal does: the bytes as found and a `damaged` member."""
+    session = json.loads(data.splitlines()[0])["sessionID"]
+    if private_key is None:
+        folder.mkdir(parents=True)
+        (folder / "journal.jsonl").write_bytes(data)
+        (folder / "manifest.json").write_bytes(manifest_bytes(session, data))
+    else:
+        write_encrypted_export(folder, data, session, private_key)
+    manifest = json.loads((folder / "manifest.json").read_bytes())
+    manifest = {
+        **{k: manifest[k] for k in ("format", "version", "sessionID")},
+        "damaged": {"line": line},
+        **manifest,
+    }
+    (folder / "manifest.json").write_text(json.dumps(manifest, indent=1) + "\n")
+
+
+@pytest.mark.parametrize("encrypted", [False, True])
+def test_a_damaged_package_is_filed_for_review_and_never_as_a_session(
+    tmp_path: Path, encrypted: bool
+) -> None:
+    # Detects a damaged journal that intake quarantines, refuses, or stores as a session, or whose flags a
+    # reviewer cannot read from the store.
+    data, line = damaged_journal()
+    session = json.loads(data.splitlines()[0])["sessionID"]
+    write_damaged_package(tmp_path / "in" / "a", data, line, KEY if encrypted else None)
+    report = intake([tmp_path / "in"], tmp_path / "store", private_key=KEY)
+    [receipt] = report.receipts
+    assert (receipt.result, receipt.session_id, receipt.encrypted) == ("damaged", session, encrypted)
+    assert receipt.reason == f"Damage at line {line}."
+    assert receipt.journal_sha256 == hashlib.sha256(data).hexdigest()
+    assert names(tmp_path / "store") == ["damaged", "intake.jsonl", "receipts"]
+    [filed] = [tmp_path / "store" / "damaged" / name for name in names(tmp_path / "store" / "damaged")]
+    assert filed.name == receipt.export_sha256[:16]
+    assert (filed / "journal.jsonl").read_bytes() == data
+    assert names(filed) == sorted(
+        ["manifest.json", "journal.jsonl", *(["journal.jsonl.hpke"] if encrypted else [])]
+    )
+    readable = []
+    for raw in (filed / "journal.jsonl").read_bytes().splitlines():
+        try:
+            readable.append(json.loads(raw))
+        except ValueError:
+            continue
+    assert [(r["item"], r["skipped"]) for r in readable if r["kind"] == "safetyFlagged"] == [("phq9-9", True)]
+    assert [
+        r["result"] for r in json.loads((tmp_path / "store" / "receipts" / f"{session}.json").read_text())
+    ] == ["damaged"]
+    before = snapshot(tmp_path / "store")
+    assert intake([tmp_path / "in"], tmp_path / "store", private_key=KEY).receipts == ()
+    assert snapshot(tmp_path / "store") == before
+
+
+def test_the_app_damaged_package_is_filed_for_review(tmp_path: Path) -> None:
+    # Detects a Swift package of a damaged journal that intake cannot decrypt, match, or file for review.
+    configured = os.environ.get("SCRIPT_CONTRACT_OUT")
+    if configured is None:
+        pytest.skip("SCRIPT_CONTRACT_OUT is not set.")
+    folder = Path(configured) / "damaged"
+    assert folder.is_dir(), f"{folder} is absent: the ScriptCore tests did not write the damaged package."
+    key = base64.b64decode((folder / "private_key.txt").read_text())
+    store = tmp_path / "store"
+    [receipt] = intake([folder], store, private_key=key).receipts
+    expected = (FIXTURES / "recovery" / "damaged_interior.jsonl").read_bytes()
+    assert (receipt.result, receipt.encrypted, receipt.reason) == ("damaged", True, "Damage at line 3.")
+    assert (store / "damaged" / receipt.export_sha256[:16] / "journal.jsonl").read_bytes() == expected

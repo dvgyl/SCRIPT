@@ -9,6 +9,7 @@ struct SessionView: View {
 
     var body: some View {
         switch live.stage {
+        case .confirmCode: ConfirmCodeScreen(store: store, live: live)
         case .ready: ReadyScreen(store: store, live: live)
         case .hand: HandScreen(store: store, live: live)
         case .disclosure: DisclosureScreen(store: store, live: live)
@@ -26,6 +27,60 @@ struct SessionView: View {
 
 private extension LiveSession {
     var pin: OperatorPin? { configuration.operatorPin }
+}
+
+extension StudyConfiguration.RemoteReview {
+    /// The routine review interval in whole working days, rounded up, so that half a day reads "1 working day".
+    var workingDays: Int { Int(routineReviewWithinWeekdays.rounded(.up)) }
+
+    /// The monitoring disclosure that the participant reads before the first block.
+    var disclosure: AttributedString {
+        AttributedString(localized: "A \(reviewerRole) from the study team reads the answers to some questions. This happens within ^[\(workingDays) working day](inflect: true).")
+    }
+}
+
+/// A resumed self-administered session continues only for the participant who types its code.
+struct ConfirmCodeScreen: View {
+    let store: SessionStore
+    let live: LiveSession
+    @State private var code = ""
+    @State private var wrong = false
+
+    var body: some View {
+        ParticipantFrame(step: nil, pin: live.pin, onOperator: store.operatorTookOver) {
+            VStack(alignment: .leading, spacing: 24) {
+                Text("Type your participant code to continue.")
+                    .font(.largeTitle.weight(.semibold))
+                    .fixedSize(horizontal: false, vertical: true)
+                TextField("Participant code", text: $code)
+                    .font(.title2)
+                    .textInputAutocapitalization(.characters)
+                    .autocorrectionDisabled()
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit(confirm)
+                    .onChange(of: code) { if !code.isEmpty { wrong = false } }
+                    .accessibilityIdentifier("confirmCode")
+                if wrong {
+                    Text("This code is not the code of this session.")
+                        .font(.title3)
+                        .foregroundStyle(.red)
+                        .accessibilityIdentifier("codeWrong")
+                }
+            }
+            .padding(.top, 120)
+        } actions: {
+            Button("Continue", action: confirm)
+                .buttonStyle(PrimaryButtonStyle())
+                .disabled(code.isEmpty)
+                .accessibilityIdentifier("continue")
+        }
+    }
+
+    /// A wrong code clears the field, and the message stays until the participant types again.
+    private func confirm() {
+        wrong = !store.confirmCode(code)
+        if wrong { code = "" }
+    }
 }
 
 struct ReadyScreen: View {
@@ -75,8 +130,7 @@ struct DisclosureScreen: View {
                 Text("Before the questions")
                     .font(.largeTitle.weight(.semibold))
                 if let review = live.configuration.safety.remoteReview {
-                    Text("A \(review.reviewerRole) from the study team reads the answers to some questions. This happens within ^[\(Int(review.routineReviewWithinWeekdays)) working day](inflect: true).")
-                        .font(.title2)
+                    Text(review.disclosure).font(.title2)
                 }
                 Text("If you want to talk to someone sooner, the services on the support list can help. The list comes at the end.")
                     .font(.title2)
@@ -225,11 +279,12 @@ struct ItemScreen: View {
             .fixedSize(horizontal: false, vertical: true)
         } actions: {
             Button("Next") {
-                switch choice {
-                case .value(let value): store.answer(value)
-                case .skip: store.answer(nil)
-                case nil: break
+                let value: Int?? = switch choice {
+                case .value(let value): .some(value)
+                case .skip: .some(nil)
+                case nil: nil
                 }
+                if let value { Task { await store.answer(value) } }
             }
             .buttonStyle(PrimaryButtonStyle())
             .disabled(choice == nil)

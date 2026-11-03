@@ -6,11 +6,14 @@ docs/DATA_GOVERNANCE.md, stage 4. The store holds:
                                 manifest.json and journal.jsonl.hpke (and journal.jsonl only with
                                 keep_plaintext)
     quarantine/<digest>/        an export that failed a check or conflicts with another, and reason.json
+    damaged/<digest>/           the package of a damaged journal as received, and journal.jsonl
+                                decrypted, so that a reviewer can read the safety flags in it
     receipts/<sessionID>.json   every intake of that session
     intake.jsonl                every intake, in order
 
 A session identifier with one journal is in `sessions/`. A session identifier with two or more
-different journals is a conflict: every version is in `quarantine/`. Intake is idempotent: an export
+different journals is a conflict: every version is in `quarantine/`. A package whose manifest has a
+`damaged` member never enters `sessions/` (docs/DESIGN.md section 17). Intake is idempotent: an export
 that the log already records from the same folder with the same bytes is not processed again.
 """
 
@@ -28,14 +31,17 @@ from pathlib import Path
 from typing import Any, Literal
 
 from scriptkin.formats import FormatError
-from scriptkin.formats.export import StudyKeyError, verify_export
+from scriptkin.formats.checks import integer, record
+from scriptkin.formats.export import StudyKeyError, load_export, verify_export
 
-Result = Literal["accepted", "duplicate", "conflict", "quarantined"]
+Result = Literal["accepted", "duplicate", "conflict", "quarantined", "damaged"]
 
 EXPORT_FILES = ("manifest.json", "journal.jsonl", "journal.jsonl.hpke")
 _SESSION_ID = re.compile(r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
 _LOG = "intake.jsonl"
 _STAGING = ".partial"
+# The `damaged` member of a manifest: the first line of the journal that does not decode or fold.
+_DAMAGED = record({"line": integer(0)})
 
 
 @dataclass(frozen=True)
@@ -135,6 +141,14 @@ def _claimed_session(files: dict[str, bytes]) -> str | None:
     return claimed if isinstance(claimed, str) and _SESSION_ID.match(claimed) else None
 
 
+def _claims_damage(files: dict[str, bytes]) -> bool:
+    try:
+        manifest: Any = json.loads(files["manifest.json"])
+    except (KeyError, ValueError):
+        return False
+    return isinstance(manifest, dict) and "damaged" in manifest
+
+
 def _now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -212,6 +226,8 @@ def _admit(
     """Verify one export from a staged copy, then move the copy to sessions or quarantine, or drop it."""
     digest = _digest(files)
     staged = store.stage(digest, files)
+    if _claims_damage(files):
+        return _admit_damaged(store, source, files, digest, staged, private_key)
     try:
         export = verify_export(staged, private_key=private_key)
         session_id: str = export.manifest["sessionID"]
@@ -251,6 +267,46 @@ def _admit(
             store.quarantine(accepted, first.export_sha256, str(reason), session_id)
         store.quarantine(staged, digest, str(reason), session_id)
     return receipt
+
+
+def _admit_damaged(
+    store: _Store, source: str, files: dict[str, bytes], digest: str, staged: Path, private_key: bytes | None
+) -> Receipt | Refused:
+    """Check the manifest facts of a damaged journal's package, decrypt it, and file it under `damaged/`.
+
+    The journal is not folded: its damage is known. A package that fails the facts goes to quarantine.
+    """
+    try:
+        manifest, journal = load_export(staged, private_key)
+        session_id: str = manifest["sessionID"]
+        if not _DAMAGED(manifest["damaged"]) or not _SESSION_ID.match(session_id):
+            raise FormatError("The damaged member or the session identifier of the manifest is invalid.")
+    except StudyKeyError as e:
+        shutil.rmtree(staged)
+        return Refused(source, str(e))
+    except FormatError as e:
+        claimed = _claimed_session(files)
+        store.quarantine(staged, digest, str(e), claimed)
+        return Receipt(
+            source, digest, claimed, None, "journal.jsonl.hpke" in files, None, "quarantined", str(e), _now()
+        )
+    encryption: dict[str, Any] | None = manifest.get("encryption")
+    for extra in set(files) - {"manifest.json", "journal.jsonl.hpke" if encryption else "journal.jsonl"}:
+        (staged / extra).unlink()
+    if encryption:
+        (staged / "journal.jsonl").write_bytes(journal)
+    store.place(staged, store.root / "damaged" / digest[:16])
+    return Receipt(
+        source,
+        digest,
+        session_id,
+        hashlib.sha256(journal).hexdigest(),
+        encryption is not None,
+        encryption["keyID"] if encryption else None,
+        "damaged",
+        f"Damage at line {manifest['damaged']['line']}.",
+        _now(),
+    )
 
 
 def intake(

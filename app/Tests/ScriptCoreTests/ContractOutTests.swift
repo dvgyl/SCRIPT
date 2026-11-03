@@ -62,7 +62,7 @@ private func replace(_ destination: URL, with source: URL) throws {
     try handle.write(contentsOf: torn)
     try handle.close()
 
-    guard case .interrupted(let recovered) = try s.reconcile(Fixed.launch, policy: .demo).first else {
+    guard case .interrupted(let recovered) = try s.reconcile(Fixed.launch, instruments: try Contract.instruments(), policy: .demo).first else {
         Issue.record("the relaunch did not adopt the open journal")
         return
     }
@@ -108,4 +108,22 @@ private func replace(_ destination: URL, with source: URL) throws {
     try replace(out.appendingPathComponent("encrypted/\(name)"), with: encrypted)
     try Data((key.rawRepresentation.base64EncodedString() + "\n").utf8)
         .write(to: out.appendingPathComponent("encrypted/private_key.txt"))
+}
+
+@Test func aDamagedJournalWritesTheContractPackage() throws {
+    // Detects a damaged-journal package that Python intake cannot decrypt, match to its manifest, or file for review.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let s = storage(in: root)
+    try s.createDirectories()
+    let file = "3F2A9C1E-0000-4000-8000-000000000008.jsonl"
+    try Contract.data("fixtures/recovery/damaged_interior.jsonl").write(to: s.sessions.appendingPathComponent(file))
+    _ = try s.reconcile(Fixed.launch, instruments: try Contract.instruments(), policy: .demo)
+    let key = Curve25519.KeyAgreement.PrivateKey()
+    let package = try s.publishDamaged(file, policy: .encrypted(recipient: key.publicKey))
+
+    let out = contractOut.appendingPathComponent("damaged")
+    try replace(out.appendingPathComponent(package.lastPathComponent), with: package)
+    try Data((key.rawRepresentation.base64EncodedString() + "\n").utf8)
+        .write(to: out.appendingPathComponent("private_key.txt"))
 }

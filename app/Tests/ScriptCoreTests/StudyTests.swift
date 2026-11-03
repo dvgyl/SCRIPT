@@ -66,6 +66,8 @@ private func withProbeBlock(_ config: StudyConfiguration) -> StudyConfiguration 
     (#""sites": ["#, #""sites": ["DEMO", "#, .invalid("sites")),
     (#""remoteReview": null"#, #""remoteReview": {"reviewerRole": "x"}"#, .missing("safety.remoteReview.imminentReviewWithinHours")),
     (#""keyID": null"#, #""keyID": "study-key-1""#, .invalid("export.keyID")),
+    (#""resumeWithinHours": 24"#, #""resumeWithinHours": 0"#, .invalid("selfAdministered.resumeWithinHours")),
+    (#""resumeWithinHours": 24"#, #""resumeWithinHours": 24, "hours": 1"#, .unexpected("selfAdministered.hours")),
     (#""operatorPin": null"#, pinJSON(salt: "AAECAwQFBgcICQoLDA0ODw==", iterations: 599_999), .invalid("operatorPin.iterations")),
     (#""operatorPin": null"#, pinJSON(salt: "AAECAwQFBgcICQoLDA0O", iterations: 600_000), .invalid("operatorPin.salt")),
 ])
@@ -146,4 +148,21 @@ func aRemoteReviewSlowerThanTheProtocolIsRefused(imminentHours: Double, routineW
     config.safety.remoteReview?.imminentReviewWithinHours = imminentHours
     config.safety.remoteReview?.routineReviewWithinWeekdays = routineWeekdays
     #expect(try problems(config) == [expected])
+}
+
+@Test func theResumeWindowDefaultsTo24HoursAndMustNotOutlastTheReview() throws {
+    // Detects a configuration without a resume window whose interrupted sessions never expire, or a window in which a
+    // flag can wait on the device past the review interval.
+    #expect(try Contract.demoConfiguration().selfAdministered.resumeWithinHours == 24)
+    var root = try JSONSerialization.jsonObject(with: try Contract.data("configs/demo.json")) as! [String: Any]
+    root["selfAdministered"] = nil
+    let without = try StudyConfiguration(data: try JSONSerialization.data(withJSONObject: root))
+    #expect(without.selfAdministered.resumeWithinHours == 24)
+
+    var config = try Contract.remoteReviewConfiguration()
+    config.safety.remoteReview?.imminentReviewWithinHours = 12
+    config.safety.remoteReview?.exportEveryHours = 12
+    #expect(try problems(config) == [.resumeWindowTooLong])
+    config.selfAdministered.resumeWithinHours = 12
+    #expect(try problems(config) == [])
 }

@@ -241,6 +241,8 @@ public struct WallTime: Hashable, Sendable, CustomStringConvertible {
     public init(_ date: Date) { text = date.formatted(.iso8601) }
     init(text: String) { self.text = text }
     public var description: String { text }
+    /// The time, or nil when the text is not ISO 8601.
+    public var date: Date? { try? Date(text, strategy: .iso8601) }
 }
 
 // MARK: - Line values

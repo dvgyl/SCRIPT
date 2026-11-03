@@ -102,9 +102,16 @@ struct DeviceFacts: Sendable {
             nativeScale: Double(scene?.screen.nativeScale ?? 2),
             app: AppInfo(version: info["CFBundleShortVersionString"] as? String ?? "0",
                          build: info["CFBundleVersion"] as? String ?? "0",
-                         sourceRevision: info["SCRIPTSourceRevision"] as? String ?? "unknown"),
+                         sourceRevision: sourceRevision(info["SCRIPTSourceRevision"])),
             input: LaunchMode.directTouchAsPen ? .directTouchAsPen : .pencil
         )
+    }
+
+    /// The revision that `./check` stamps into Info.plist. A build without it, such as a plain Xcode build, leaves
+    /// the value absent or empty, and the journal then records `unknown`.
+    static func sourceRevision(_ value: Any?) -> String {
+        guard let text = value as? String, !text.isEmpty else { return "unknown" }
+        return text
     }
 
     private static func modelIdentifier() -> String {

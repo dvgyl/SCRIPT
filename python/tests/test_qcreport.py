@@ -14,12 +14,12 @@ FIXTURE_NAMES = sorted(p.stem for p in (FIXTURES / "journal").glob("*.jsonl") if
 
 @pytest.fixture(scope="module")
 def fixture_store(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Every journal fixture and the export fixture: 15 sessions, one duplicate, and one open session."""
+    """Every journal fixture and the export fixture: 17 sessions, one duplicate, and one open session."""
     root = tmp_path_factory.mktemp("qc")
     for name in FIXTURE_NAMES:
         write_export(root / "in" / name, fixture_lines(name))
     report = intake([root / "in", FIXTURES / "export"], root / "store")
-    assert sorted(r.result for r in report.receipts).count("accepted") == 15
+    assert sorted(r.result for r in report.receipts).count("accepted") == 17
     return root / "store"
 
 
@@ -27,37 +27,37 @@ def test_qc_report_counts_match_a_hand_count_of_the_contract_fixtures(fixture_st
     # Detects a QC report that counts a session, trial, sample, correction, or safety event wrongly.
     # The expected values come from the .fold.json oracles and the header lines of the fixtures.
     report = qc_report(fixture_store)
-    assert report["sessions"] == 15
+    assert report["sessions"] == 17
     assert report["sessionsBy"] == {
-        "site": {"DEMO": 15},
-        "deviceAsset": {"IPAD-01": 15},
-        "configSHA256": {"bf2d2222fac8c0704708bd1666838a02fcf938276df52b148e7e8fc74c18c04f": 15},
-        "appVersion": {"1.0.0": 15},
-        "administration": {"self": 2, "supervised": 13},
-        "purpose": {"qualification": 1, "study": 14},
+        "site": {"DEMO": 17},
+        "deviceAsset": {"IPAD-01": 17},
+        "configSHA256": {"f8184468496da4db92266e2808d01f37b063f6c2dbbf98541983a983a616e046": 17},
+        "appVersion": {"1.0.0": 17},
+        "administration": {"self": 3, "supervised": 14},
+        "purpose": {"qualification": 1, "study": 16},
     }
     assert report["trials"] == {
         "accepted": 0,
-        "refused": 19,
+        "refused": 21,
         "refusalCodes": {
             "duplicate_times": 1,
             "incomplete_trial": 4,
-            "too_few_values": 19,
+            "too_few_values": 21,
             "unresolved_estimates": 3,
         },
     }
     assert report["estimates"] == {
-        "samples": 143,
+        "samples": 155,
         "unresolved": 3,
-        "unresolvedRate": 3 / 143,
+        "unresolvedRate": 3 / 155,
         "corrections": 7,
         "unmatched": 3,
         "unmatchedRate": 3 / 7,
     }
-    assert report["interrupted"] == {"trials": 1, "blocks": 1}
-    assert report["recovered"] == {"sessions": 2, "truncatedBytes": 37}
-    assert report["safetyAudit"] == {"actions": 1, "crisisListShown": 5, "flags": 2, "operatorAlerts": 1}
-    planned = {"force": 13, "altitude": 14, "azimuth": 14, "roll": 12, "hover": 13}
+    assert report["interrupted"] == {"trials": 1, "blocks": 2}
+    assert report["recovered"] == {"sessions": 3, "truncatedBytes": 37}
+    assert report["safetyAudit"] == {"actions": 2, "crisisListShown": 8, "flags": 4, "operatorAlerts": 2}
+    planned = {"force": 15, "altitude": 16, "azimuth": 16, "roll": 14, "hover": 15}
     observed = {**planned, "hover": 2}
     assert report["channels"] == {
         c: {"planned": planned[c], "observed": observed[c], "plannedNotObserved": planned[c] - observed[c]}

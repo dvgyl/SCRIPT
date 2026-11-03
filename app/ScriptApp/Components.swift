@@ -59,10 +59,11 @@ extension View {
 }
 
 /// The visible operator control on participant screens. It opens after a press-and-hold of 2 seconds and then the
-/// PIN, when the configuration has one. VoiceOver users double-tap and hold.
+/// PIN, when the configuration has one. VoiceOver users double-tap and hold. `onUnlock` learns whether the PIN was
+/// entered.
 struct OperatorControl: View {
     let pin: OperatorPin?
-    let onUnlock: () -> Void
+    let onUnlock: (_ withPIN: Bool) -> Void
     @State private var pressing = false
     @State private var askingPIN = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -85,7 +86,7 @@ struct OperatorControl: View {
             .overlay(Capsule().strokeBorder(Color(UIColor.separator)))
             .contentShape(Capsule())
             .onLongPressGesture(minimumDuration: 2, maximumDistance: 40) {
-                if pin == nil { onUnlock() } else { askingPIN = true }
+                if pin == nil { onUnlock(false) } else { askingPIN = true }
             } onPressingChanged: { pressing = $0 }
             .accessibilityElement()
             .accessibilityLabel(Text("Operator"))
@@ -93,7 +94,7 @@ struct OperatorControl: View {
             .accessibilityAddTraits(.isButton)
             .accessibilityIdentifier("operatorControl")
             .sheet(isPresented: $askingPIN) {
-                if let pin { PINSheet(pin: pin, onUnlock: onUnlock) }
+                if let pin { PINSheet(pin: pin) { onUnlock(true) } }
             }
     }
 }
@@ -158,7 +159,7 @@ struct PINSheet: View {
 struct ParticipantFrame<Content: View, Actions: View>: View {
     let step: Text?
     let pin: OperatorPin?
-    let onOperator: () -> Void
+    let onOperator: (_ withPIN: Bool) -> Void
     @ViewBuilder let content: Content
     @ViewBuilder let actions: Actions
 

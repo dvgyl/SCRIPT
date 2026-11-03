@@ -441,6 +441,20 @@
           }
         }
       ]
+    },
+    "selfAdministered": {
+      "description": "Without this member, an interrupted self-administered session can resume for 24 hours after it opened.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "resumeWithinHours"
+      ],
+      "properties": {
+        "resumeWithinHours": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      }
     }
   }
 }

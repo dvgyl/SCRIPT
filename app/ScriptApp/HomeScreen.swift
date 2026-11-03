@@ -55,7 +55,8 @@ struct HomeScreen: View {
     @State private var importing = false
     @State private var imported: ImportOutcome?
     @State private var exportResult: ExportResult?
-    @State private var exportingID: SessionID?
+    @State private var exportingID: String?
+    @State private var askingPIN = false
 
     var body: some View {
         NavigationStack {
@@ -93,6 +94,16 @@ struct HomeScreen: View {
             }
             .sheet(item: $imported) { outcome in ImportResultScreen(outcome: outcome) }
             .sheet(item: $exportResult) { result in ExportScreen(result: result) }
+            .toolbar {
+                if store.activeConfiguration.operatorPin != nil, !store.codesUnlocked {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button("Show participant codes") { askingPIN = true }
+                    }
+                }
+            }
+            .sheet(isPresented: $askingPIN) {
+                if let pin = store.activeConfiguration.operatorPin { PINSheet(pin: pin, onUnlock: store.unlockCodes) }
+            }
         }
         .demoBanner(store.activeConfiguration.demo)
     }
@@ -132,7 +143,7 @@ struct HomeScreen: View {
     private func rowInfo(_ row: Listed) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             // An identifier stays on one line, because a line break would hyphenate it into another name.
-            Text(verbatim: row.title).font(.body.weight(.medium)).lineLimit(1).minimumScaleFactor(0.4)
+            Text(verbatim: store.title(of: row)).font(.body.weight(.medium)).lineLimit(1).minimumScaleFactor(0.4)
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 6) { rowFacts(row) }
                 VStack(alignment: .leading, spacing: 2) { rowFacts(row) }
@@ -164,22 +175,31 @@ struct HomeScreen: View {
             }
         case .closed:
             if let id = row.sessionID {
-                Button {
-                    exportingID = id
-                    Task {
-                        exportResult = await store.export(id)
-                        exportingID = nil
-                    }
-                } label: {
-                    if exportingID == id { ProgressView() } else { Text("Export") }
-                }
-                .buttonStyle(.bordered)
-                .disabled(exportingID != nil)
-                .accessibilityIdentifier("export-\(row.title)")
+                exportButton(row, "Export") { await store.export(id) }
             }
-        case .exported, .damaged:
+        case .damaged:
+            if let file = row.damagedFile {
+                exportButton(row, "Export damaged journal") { await store.exportDamaged(file) }
+            }
+        case .exported:
             EmptyView()
         }
+    }
+
+    private func exportButton(_ row: Listed, _ title: LocalizedStringKey,
+                              _ export: @escaping () async -> ExportResult?) -> some View {
+        Button {
+            exportingID = row.id
+            Task {
+                exportResult = await export()
+                exportingID = nil
+            }
+        } label: {
+            if exportingID == row.id { ProgressView() } else { Text(title) }
+        }
+        .buttonStyle(.bordered)
+        .disabled(exportingID != nil)
+        .accessibilityIdentifier("export-\(store.title(of: row))")
     }
 }
 
