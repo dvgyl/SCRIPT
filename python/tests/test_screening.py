@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import math
 import multiprocessing
+import re
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import replace
 from typing import Any
@@ -26,7 +27,15 @@ from scriptkin.evaluate.plan import (
     column,
 )
 from scriptkin.evaluate.reliability import reliability
-from scriptkin.evaluate.report import NORMS_STATEMENT, TRIPOD_AI, Refused, RefusedCode, Screening
+from scriptkin.evaluate.report import (
+    COUNTS_STATEMENT,
+    DIGEST_STATEMENT,
+    NORMS_STATEMENT,
+    TRIPOD_AI,
+    Refused,
+    RefusedCode,
+    Screening,
+)
 from scriptkin.evaluate.screening import Design, Fold, crossfit, null_check, screening, witness_refusal
 from scriptkin.features import FeatureRow, FeatureTable, Provenance, catalog_digest
 from scriptkin.labels import Label
@@ -77,7 +86,7 @@ def test_fold_auc_compares_pairs_inside_one_test_fold() -> None:
 def test_a_baseline_without_information_scores_exactly_chance(null_cohort: Analysed) -> None:
     # Detects pooled AUC bias: with uneven folds, a constant predictor ranks folds by training prevalence.
     report = run(null_cohort, folds=7, permutations=10, bootstrap=50)
-    assert report.cases % 7 and (report.n - report.cases) % 7
+    assert report.cases % 7 and (report.tested - report.cases) % 7
     device = report.baselines["device"]
     assert (device.point, device.low, device.high, device.se_null) == (0.5, 0.5, 0.5, 0.0)
 
@@ -137,10 +146,8 @@ def test_witness_refuses_an_ungrouped_splitter(fingerprint_cohort: Analysed) -> 
     assert witness_refusal(crossfit(design, KNN, grouped, inner_folds=3, seed=1), grouped, design.ids) is None
 
 
-def test_screening_refuses_when_a_fit_sees_test_participants(
-    null_cohort: Analysed, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # Detects a screening run that reports metrics although a fit used participants of its test fold.
+def leak_one_test_participant(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make every outer training set also hold the first test participant of its fold."""
     original = screening_module.outer_splits
 
     def leaky(*args: Any) -> Any:
@@ -149,8 +156,28 @@ def test_screening_refuses_when_a_fit_sees_test_participants(
         return [[Fold(np.sort(np.concatenate((f.train, f.test[:1]))), f.test) for f in fs] for fs in splits]
 
     monkeypatch.setattr(screening_module, "outer_splits", leaky)
+
+
+def test_screening_refuses_when_a_fit_sees_test_participants(
+    null_cohort: Analysed, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Detects a screening run that reports metrics although a fit used participants of its test fold.
+    leak_one_test_participant(monkeypatch)
     result = screening(null_cohort.table, null_cohort.cohort.labels, plan=quick_plan(), seed=3)
     assert isinstance(result, Refused) and result.code == RefusedCode.LEAKAGE
+
+
+def test_a_leakage_refusal_counts_the_participants_and_names_none(
+    null_cohort: Analysed, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Detects a refusal reason that names a participant code, which `scriptkin evaluate` writes to its report.
+    leak_one_test_participant(monkeypatch)
+    result = screening(null_cohort.table, null_cohort.cohort.labels, plan=quick_plan(), seed=3)
+    assert isinstance(result, Refused) and result.code == RefusedCode.LEAKAGE
+    assert re.fullmatch(
+        r"Fold 0: the \w+ fit includes [1-9][0-9]* of the fold's test participants\.", result.reason
+    )
+    assert not [code for code in {row.participant for row in null_cohort.table.rows} if code in result.reason]
 
 
 def test_fingerprint_inflates_an_ungrouped_auc_and_grouped_auc_stays_at_chance(
@@ -205,12 +232,25 @@ def test_device_holdout_keeps_whole_devices_out_of_every_fit(device_cohort: Anal
         assert len(fold.test_devices) == 1 and fold.test_devices[0] not in fold.fit_devices
 
 
-def test_temporal_holdout_fits_only_earlier_participants(signal_cohort: Analysed) -> None:
+@pytest.fixture(scope="module")
+def temporal_report(signal_cohort: Analysed) -> Screening:
+    return run(signal_cohort, holdout=Holdout.TEMPORAL, folds=4, permutations=10)
+
+
+def test_temporal_holdout_fits_only_earlier_participants(temporal_report: Screening) -> None:
     # Detects a temporal holdout that trains on participants who joined after the test participants.
-    report = run(signal_cohort, holdout=Holdout.TEMPORAL, folds=4, permutations=10)
-    assert len(report.folds) == 3
-    assert all(f.fit_latest < f.test_earliest for f in report.folds)
-    assert report.n < len(signal_cohort.cohort.truth.participants)
+    assert len(temporal_report.folds) == 3
+    assert all(f.fit_latest < f.test_earliest for f in temporal_report.folds)
+
+
+def test_the_report_tells_tested_participants_from_analysed_participants(temporal_report: Screening) -> None:
+    # Detects a report count that reads as the analysed participants, although a temporal holdout never tests
+    # its first block.
+    assert temporal_report.tested == sum(f.test_participants for f in temporal_report.folds)
+    assert temporal_report.tested < temporal_report.attrition.analysed
+    report = temporal_report.to_json()
+    assert "n" not in report and report["tested"] == temporal_report.tested
+    assert COUNTS_STATEMENT in temporal_report.statements
 
 
 def ppv(se: float, sp: float, prevalence: float) -> float:
@@ -498,7 +538,7 @@ def test_attrition_reports_refused_trials_and_participants_with_codes(missing_co
         "no_accepted_trial": declined_with_label,
     }
     assert report.attrition.analysed == len(people) - refused_labels - declined_with_label
-    assert report.n == report.attrition.analysed
+    assert report.tested == report.attrition.analysed
 
 
 def test_report_lists_tripod_items_and_marks_the_rest_author_supplied(null_report: Screening) -> None:
@@ -508,6 +548,14 @@ def test_report_lists_tripod_items_and_marks_the_rest_author_supplied(null_repor
     assert {"7", "8a", "9a", "11", "12c", "12e", "20a", "23a"} <= known
     assert not known & {"1", "2", "3a", "5a", "6b", "17", "18a", "19", "25", "26", "27a"}
     assert null_report.plan_digest in next(t.content or "" for t in null_report.tripod if t.item == "18c")
+
+
+def test_every_report_states_that_its_digests_do_not_date_the_plan(
+    null_report: Screening, norms_report: Screening
+) -> None:
+    # Detects a report that lets a reader take its digests as proof that the plan was fixed before the labels.
+    for report in (null_report, norms_report):
+        assert DIGEST_STATEMENT in report.to_json()["statements"]
 
 
 def test_without_reliability_data_the_report_says_reliability_is_not_established(

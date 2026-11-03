@@ -16,6 +16,16 @@ AUC_STATEMENT = (
     " deviation of the permutation null AUCs. The bootstrap omits the variation from refitting; the widening"
     " adds the null spread of the full procedure."
 )
+COUNTS_STATEMENT = (
+    "tested counts the participants that a test fold scored, and cases counts the cases among them."
+    " attrition.analysed counts the participants in the analysis set. A temporal holdout never tests its"
+    " first block, so tested can be smaller than analysed."
+)
+DIGEST_STATEMENT = (
+    "plan_digest and feature_digest identify the plan and the feature table that produced this report."
+    " They do not prove when the plan was fixed. To show that the plan was fixed before the labels joined,"
+    " register plan_digest before the analysis and give it to `scriptkin evaluate --expect-plan-digest`."
+)
 NORMS_STATEMENT = "A deviation from the normative model is not a diagnosis."
 PPV_STATEMENT = (
     "PPV and NPV bounds combine the matching sensitivity and specificity bounds. Both measures rise with"
@@ -71,7 +81,7 @@ class NetBenefit:
 class Subgroup:
     attribute: str
     level: str
-    n: int
+    tested: int
     cases: int
     auc: Estimate
     brier: float
@@ -249,7 +259,7 @@ class Screening:
     seed: int
     columns: tuple[str, ...]
     reliability: tuple[GateRecord, ...]
-    n: int
+    tested: int
     cases: int
     sample_prevalence: float
     stated_prevalence: float
