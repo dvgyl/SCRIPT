@@ -157,15 +157,25 @@ def test_bench_header_and_run_facts_reach_the_recording() -> None:
     )
     assert context.device_asset == "IPAD-02"
     assert [t.context for t in rec.trials] == [
-        BenchRunContext(False, 1, "loops-s1-v20", 1, bench.trajectory_sha256("loops-s1-v20")),
-        BenchRunContext(False, 2, "spiral-s05-v40", 1, bench.trajectory_sha256("spiral-s05-v40")),
-        BenchRunContext(False, 3, "fault-lift", 1, bench.trajectory_sha256("fault-lift"), "CLIP-0003"),
+        BenchRunContext(
+            False, 1, "loops-l-v20", 1, bench.trajectory_sha256("loops-l-v20"), "P-M1-loops-l-v20-r1"
+        ),
+        BenchRunContext(
+            False, 2, "spiral-s-v40", 1, bench.trajectory_sha256("spiral-s-v40"), "P-M1-spiral-s-v40-r1"
+        ),
+        BenchRunContext(
+            False, 3, "fault-lift", 1, bench.trajectory_sha256("fault-lift"), "P-M1-fault-lift-r1"
+        ),
     ]
     assert [t.task.id for t in rec.trials] == ["bench-loops-l", "bench-spiral-s", "bench-loops-l"]
     assert [t.attempt for t in rec.trials] == [1, 1, 2]
     assert {t.end_reason for t in rec.trials} == {EndReason.OPERATOR_DONE}
     assert {t.outcome for t in rec.trials} == {TrialOutcome.COMPLETED}
-    assert [t.marks for t in rec.trials] == [(), (), ("cameraSync", "exclude")]
+    assert [t.marks for t in rec.trials] == [(), ("disturbance",), ()]
+    rerun = fold(lines("bench_wacom")).trials[0]
+    assert rerun.task.id == "bench-line" and rerun.context == BenchRunContext(
+        False, 1, "line-osc8", 2, bench.trajectory_sha256("line-osc8"), "W-M3-line-osc8-r2"
+    )
 
 
 def test_tablet_samples_keep_native_tilt_pressure_and_lines() -> None:
@@ -219,6 +229,46 @@ def test_a_participant_key_on_a_bench_session_is_refused(
     with pytest.raises(JournalError, match=f"I1, line {row['seq']}"):
         summarize(rows)
     assert list(SCHEMA.iter_errors(row))
+
+
+def _set(rows: list[dict[str, Any]], kind: str, keys: tuple[str, ...], value: Any) -> dict[str, Any]:
+    """Set the value under `keys` on the first line of `kind`, and return that line."""
+    row = next(r for r in rows if r["kind"] == kind)
+    target = row
+    for key in keys[:-1]:
+        target = target[key]
+    target[keys[-1]] = value
+    return row
+
+
+@pytest.mark.parametrize(
+    ("kind", "keys", "value"),
+    [
+        ("trialStarted", ("bench", "run"), 0),
+        ("trialStarted", ("bench", "run"), 8),
+        ("sessionOpened", ("bench", "mounting"), "M9"),
+        ("mark", ("code",), "cameraSync"),
+    ],
+)
+def test_a_run_index_mounting_or_mark_outside_the_protocol_is_refused(
+    kind: str, keys: tuple[str, ...], value: Any
+) -> None:
+    # Detects a reader or schema that accepts a run index outside 1 to 7, a mounting outside M1 to M8, or
+    # a synchronisation mark, which the protocol does not define.
+    rows = lines("bench_ipad")
+    row = _set(rows, kind, keys, value)
+    with pytest.raises(JournalError, match=f"I1, line {row['seq']}"):
+        summarize(rows)
+    assert list(SCHEMA.iter_errors(row))
+
+
+def test_the_last_rerun_and_the_eighth_mounting_are_accepted() -> None:
+    # Detects a reader or schema whose run or mounting range stops short of the protocol's last values.
+    rows = lines("bench_ipad")
+    head = _set(rows, "sessionOpened", ("bench", "mounting"), "M8")
+    run = _set(rows, "trialStarted", ("bench", "run"), 7)
+    assert summarize(rows)["state"] == "closed"
+    assert not list(SCHEMA.iter_errors(head)) and not list(SCHEMA.iter_errors(run))
 
 
 @pytest.mark.parametrize("kind", ["handoff", "questionnaireStarted", "safetyShown", "safetyAction"])

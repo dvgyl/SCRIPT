@@ -834,7 +834,8 @@
           ]
         },
         "mounting": {
-          "$ref": "#/$defs/code"
+          "type": "string",
+          "pattern": "^M[1-8]$"
         },
         "motion": {
           "$ref": "#/$defs/docRef"
@@ -1107,7 +1108,8 @@
         },
         "run": {
           "type": "integer",
-          "minimum": 1
+          "minimum": 1,
+          "maximum": 7
         },
         "trajectorySHA256": {
           "type": "string",
@@ -1713,8 +1715,7 @@
             "repeatRequested",
             "disturbance",
             "deviceProblem",
-            "exclude",
-            "cameraSync"
+            "exclude"
           ]
         }
       }

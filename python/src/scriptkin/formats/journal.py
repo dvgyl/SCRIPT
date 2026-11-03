@@ -10,6 +10,7 @@ from typing import Any, cast
 
 import numpy as np
 
+from scriptkin import bench
 from scriptkin.contract import KINDS, OUTCOME_OF_REASON, READABLE_MAJORS, encode_line
 from scriptkin.formats import FormatError
 from scriptkin.formats.checks import (
@@ -223,7 +224,7 @@ _LINES: dict[str, tuple[dict[str, Check], dict[str, Check]]] = {
         {
             "t": uptime,
             "trial": _INDEX,
-            "code": one_of("repeatRequested", "disturbance", "deviceProblem", "exclude", "cameraSync"),
+            "code": one_of("repeatRequested", "disturbance", "deviceProblem", "exclude"),
         },
         {},
     ),
@@ -264,7 +265,7 @@ _BENCH_SESSION: dict[str, Check] = {
     "bench": record(
         {
             "role": one_of("P", "W"),
-            "mounting": text,
+            "mounting": one_of(*bench.MOUNTINGS),
             "motion": record({"id": text, "version": text}),
             "protocol": record({"version": text, "sha256": text}),
         }
@@ -278,7 +279,10 @@ _PARTICIPANT_TRIAL: dict[str, Check] = {
     ),
 }
 _BENCH_TRIAL: dict[str, Check] = {
-    "bench": record({"program": text, "run": integer(1), "trajectorySHA256": text}, {"clip": text}),
+    "bench": record(
+        {"program": text, "run": integer(min(bench.RUNS), max(bench.RUNS)), "trajectorySHA256": text},
+        {"clip": text},
+    ),
 }
 _SUBJECT_LINES: dict[str, dict[str, dict[str, Check]]] = {
     "sessionOpened": {"participant": _PARTICIPANT_SESSION, "bench": _BENCH_SESSION},

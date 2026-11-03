@@ -912,21 +912,19 @@ def _bench_header(role: str, mounting: str) -> dict[str, Any]:
     }
 
 
-def _run(
-    b: JournalBuilder,
-    program_id: str,
-    attempt: int,
-    t: float,
-    *,
-    position: int,
-    run: int = 1,
-    clip: str | None = None,
-) -> int:
-    """Start one bench run: a trial of the program's task with the run facts from the programs table."""
+def _run(b: JournalBuilder, program_id: str, attempt: int, t: float, *, position: int, run: int = 1) -> int:
+    """Start one bench run: a trial of the program's task with the run facts from the programs table.
+
+    The clip is the run id of bench protocol section 15. The capture fills it; nobody types it.
+    """
+    assert b.bench is not None
     p = bench.program(program_id)
-    facts: dict[str, Any] = {"program": p.id, "run": run, "trajectorySHA256": bench.trajectory_sha256(p.id)}
-    if clip is not None:
-        facts["clip"] = clip
+    facts: dict[str, Any] = {
+        "program": p.id,
+        "run": run,
+        "trajectorySHA256": bench.trajectory_sha256(p.id),
+        "clip": f"{b.bench['role']}-{b.bench['mounting']}-{p.id}-r{run}",
+    }
     return b.trial(p.task, attempt, t, position=position, bench=facts)
 
 
@@ -953,7 +951,7 @@ def _tablet_stroke(
 
 
 def _bench_ipad() -> JournalBuilder:
-    """Role P: the iPad in bench mode. Two main runs, then a fault run that the operator excludes."""
+    """Role P: the iPad in bench mode. Two main runs, one with a disturbance, then a fault run."""
     b = JournalBuilder(
         "3F2A9C1E-0000-4000-8000-000000000013",
         None,
@@ -961,28 +959,27 @@ def _bench_ipad() -> JournalBuilder:
         asset="IPAD-02",
         bench=_bench_header("P", "M1"),
     ).opened()
-    _run(b, "loops-s1-v20", 1, 1010.0, position=1)
+    _run(b, "loops-l-v20", 1, 1010.0, position=1)
     b.began(1010.5)
     c1, lift = _stroke(b, 1011.0, 8, 300.0, 400.0, est_first=FORCE, first_pending=(FORCE, 301))
     b.correction(c1, 301, lift + 0.004, 0, force=0.45)
     b.end(1030.0, "operatorDone")
-    _run(b, "spiral-s05-v40", 1, 1040.0, position=2)
+    _run(b, "spiral-s-v40", 1, 1040.0, position=2)
     b.began(1040.5)
     _stroke(b, 1041.0, 6, 320.0, 420.0)
+    b.mark(1042.0, 1, "disturbance")
     b.end(1046.0, "operatorDone")
-    _run(b, "fault-lift", 2, 1060.0, position=3, clip="CLIP-0003")
+    _run(b, "fault-lift", 2, 1060.0, position=3)
     b.began(1060.5)
-    b.mark(1060.8, 2, "cameraSync")
     _stroke(b, 1061.0, 5, 300.0, 400.0)
     _stroke(b, 1061.5, 5, 310.0, 405.0)
     b.end(1080.0, "operatorDone")
-    b.mark(1081.0, 2, "exclude")
     b.close(1090.0)
     return b
 
 
 def _bench_wacom() -> JournalBuilder:
-    """Role W: the Wacom tablet on the Mac. A proximity leave cancels the first contact of the run."""
+    """Role W: the Wacom tablet on the Mac. A line rerun. A proximity leave cancels its first contact."""
     b = JournalBuilder(
         "3F2A9C1E-0000-4000-8000-000000000014",
         None,
@@ -1000,7 +997,7 @@ def _bench_wacom() -> JournalBuilder:
         view=(52600.0, 29600.0),
         stimulus_origin=(0.0, 0.0),
     ).opened()
-    _run(b, "loops-s1-v20", 1, 1010.0, position=1)
+    _run(b, "line-osc8", 1, 1010.0, position=1, run=2)
     b.began(1010.5)
     for i in range(3):
         b.hover(1010.8 + i / 240, 9800.0 + 20.0 * i, 8000.0)

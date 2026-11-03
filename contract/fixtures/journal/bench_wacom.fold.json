@@ -27,7 +27,7 @@
  "trials": [
   {
    "index": 0,
-   "task": "bench-loops-l",
+   "task": "bench-line",
    "attempt": 1,
    "practice": false,
    "began": true,

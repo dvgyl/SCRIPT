@@ -31,7 +31,7 @@ def test_qc_report_counts_match_a_hand_count_of_the_contract_fixtures(fixture_st
     assert report["sessionsBy"] == {
         "site": {"DEMO": 17},
         "deviceAsset": {"IPAD-01": 17, "IPAD-02": 1, "MAC-01": 1},
-        "configSHA256": {"0db6fda2fa8e6cbcad45b5f27619e609d1c87e0f87be057270f5d592a5e8279f": 17},
+        "configSHA256": {"f6873edd92a4f4d6d9f2a0f5c50c4df853e0c3af5595e7a4dc50cd7dbbe7b5c8": 17},
         "appVersion": {"1.0.0": 19},
         "administration": {"self": 3, "supervised": 14},
         "purpose": {"bench": 2, "qualification": 1, "study": 16},

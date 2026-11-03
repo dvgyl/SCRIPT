@@ -163,9 +163,15 @@ def qualification_line() -> dict[str, Any]:
     return _paths_stimulus((110.0, 20.0), [line], start=line[0])
 
 
+def line() -> dict[str, Any]:
+    """The bench line: a straight segment in +x (bench protocol section 5.1)."""
+    path = _polyline([bench.LINE_START_MM, bench.LINE_END_MM])
+    return _paths_stimulus(bench.LINE_FRAME_MM, [path], start=bench.LINE_START_MM)
+
+
 QUALIFICATION_TASKS = ("qual-reference", "qual-hold", "qual-line")
-# The figures that a bench task can name (`scriptkin.bench.TASKS`). A new figure is one entry here.
-FIGURES: dict[str, Callable[[], dict[str, Any]]] = {"loops": loops, "spiral": spiral}
+# The figure function of each bench geometry. A new geometry is one entry here and one row in `bench`.
+FIGURES: dict[bench.Geometry, Callable[[], dict[str, Any]]] = {"loops": loops, "spiral": spiral, "line": line}
 BENCH_TASKS = tuple(t.id for t in bench.TASKS)
 
 
@@ -186,8 +192,8 @@ def _bench_task(spec: bench.BenchTask) -> dict[str, Any]:
     return _task(
         spec.id,
         spec.mode,
-        f"Bench: the {spec.name} at scale {spec.scale}.",
-        _scaled(FIGURES[spec.figure](), spec.scale),
+        f"Bench: the {spec.geometry} at scale {spec.scale}.",
+        _scaled(FIGURES[spec.geometry](), spec.scale),
         spec.max_seconds,
     )
 
