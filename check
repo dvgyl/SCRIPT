@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run the checks. With no arguments, run all sections in order and stop at the first failure.
-# Sections: contract core app python. Example: ./check contract python
+# Sections: contract core bench app python. Example: ./check contract python
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")" && pwd)
@@ -30,6 +30,9 @@ python() {
     if [ -n "$APP_RAN" ]; then
         export SCRIPT_REQUIRE_APP_EXPORTS=1
     fi
+    if [ -n "$BENCH_RAN" ]; then
+        export SCRIPT_REQUIRE_BENCH_EXPORTS=1
+    fi
     # The unpacked public ParkinsonHW dataset, outside the repository. Its real-file tests skip without it.
     local parkinsonhw="/Volumes/T7 Shield/SCRIPT-records/data/parkinsonhw/extracted"
     if [ -z "${SCRIPT_PARKINSONHW:-}" ] && [ -d "$parkinsonhw" ]; then
@@ -44,6 +47,53 @@ core() {
     # The Python tests read every export in this folder, so an export from an earlier run must not remain.
     rm -rf "$BUILD/contract-out"
     SCRIPT_CONTRACT_OUT="$BUILD/contract-out" swift test --package-path "$ROOT/app" --scratch-path "$BUILD/swiftpm"
+}
+
+# The revision that a build stamps into its Info.plist. A checkout with changes gets the suffix -dirty.
+source_revision() {
+    local revision
+    revision=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)
+    if [ -n "$(git -C "$ROOT" status --porcelain 2>/dev/null)" ]; then revision="$revision-dirty"; fi
+    echo "$revision"
+}
+
+# Fails when a String Catalog differs from the strings that the build found in the source.
+# Arguments: the catalog, then the folder with the build's .stringsdata files.
+catalog_matches_source() {
+    # The copy keeps the file name of the catalog, because the file name selects the strings table.
+    local catalog="$1" synced="$BUILD/$(basename "$1")" strings=()
+    for data in "$2"/*/*.stringsdata; do
+        strings+=(--stringsdata "$data")
+    done
+    cp "$catalog" "$synced"
+    xcrun xcstringstool sync "$synced" "${strings[@]}"
+    if ! cmp -s "$catalog" "$synced"; then
+        echo "$catalog does not match the source strings. Update it: cp '$synced' '$catalog'" >&2
+        return 1
+    fi
+}
+
+bench() {
+    local revision
+    revision=$(source_revision)
+    rm -rf "$BUILD/contract-out/bench"
+    step "bench: ScriptBench tests on the Mac"
+    rm -rf "$BUILD/bench-tests.xcresult"
+    # xcodebuild passes a TEST_RUNNER_ variable to the test process without its prefix. The arch keeps the log free
+    # of the warning about two matching Mac destinations.
+    if ! TEST_RUNNER_SCRIPT_CONTRACT_OUT="$BUILD/contract-out" xcodebuild test -quiet \
+        -project "$ROOT/app/ScriptApp.xcodeproj" -scheme ScriptBench -destination "platform=macOS,arch=$(uname -m)" \
+        -derivedDataPath "$BUILD/DerivedData-bench" -resultBundlePath "$BUILD/bench-tests.xcresult" \
+        SWIFT_TREAT_WARNINGS_AS_ERRORS=YES SCRIPT_SOURCE_REVISION="$revision" >"$BUILD/bench-tests.log" 2>&1; then
+        tail -n 60 "$BUILD/bench-tests.log" >&2
+        echo "bench tests failed. Log: $BUILD/bench-tests.log. Results: $BUILD/bench-tests.xcresult" >&2
+        return 1
+    fi
+
+    step "bench: every UI string is in the String Catalog"
+    catalog_matches_source "$ROOT/app/ScriptBench/Localizable.xcstrings" \
+        "$BUILD/DerivedData-bench/Build/Intermediates.noindex/ScriptApp.build/Debug/ScriptBench.build/Objects-normal"
+    BENCH_RAN=1
 }
 
 app() {
@@ -71,8 +121,7 @@ PY
     xcrun simctl bootstatus "$udid" -b >/dev/null
     # A new container for each run, so the copied exports are this run's only.
     xcrun simctl uninstall "$udid" "$id" 2>/dev/null || true
-    revision=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)
-    if [ -n "$(git -C "$ROOT" status --porcelain 2>/dev/null)" ]; then revision="$revision-dirty"; fi
+    revision=$(source_revision)
     rm -rf "$BUILD/app-tests.xcresult"
     if ! xcodebuild test -quiet -project "$ROOT/app/ScriptApp.xcodeproj" -scheme ScriptApp \
         -destination "platform=iOS Simulator,id=$udid" -derivedDataPath "$BUILD/DerivedData" \
@@ -90,27 +139,20 @@ PY
     cp -R "$container/Documents/Exports/." "$out/"
 
     step "app: every UI string is in the String Catalog"
-    local catalog="$ROOT/app/ScriptApp/Localizable.xcstrings" synced="$BUILD/Localizable.xcstrings" strings=()
-    for data in "$BUILD"/DerivedData/Build/Intermediates.noindex/ScriptApp.build/Debug-iphonesimulator/ScriptApp.build/Objects-normal/*/*.stringsdata; do
-        strings+=(--stringsdata "$data")
-    done
-    cp "$catalog" "$synced"
-    xcrun xcstringstool sync "$synced" "${strings[@]}"
-    if ! cmp -s "$catalog" "$synced"; then
-        echo "Localizable.xcstrings does not match the source strings. Update it: cp '$synced' '$catalog'" >&2
-        return 1
-    fi
+    catalog_matches_source "$ROOT/app/ScriptApp/Localizable.xcstrings" \
+        "$BUILD/DerivedData/Build/Intermediates.noindex/ScriptApp.build/Debug-iphonesimulator/ScriptApp.build/Objects-normal"
     APP_RAN=1
 }
 
 APP_RAN=
+BENCH_RAN=
 uv sync --project "$ROOT/python" --frozen --quiet
 sections=("$@")
-[ ${#sections[@]} -eq 0 ] && sections=(contract core app python)
+[ ${#sections[@]} -eq 0 ] && sections=(contract core bench app python)
 for section in "${sections[@]}"; do
     case "$section" in
-        contract|python|core|app) "$section" ;;
-        *) echo "unknown section: $section (use: contract python core app)" >&2; exit 2 ;;
+        contract|core|bench|app|python) "$section" ;;
+        *) echo "unknown section: $section (use: contract core bench app python)" >&2; exit 2 ;;
     esac
 done
 printf '\nall requested checks passed: %s\n' "${sections[*]}"
