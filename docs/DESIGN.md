@@ -427,7 +427,16 @@ A qualification session has `purpose: qualification` and a fixed task set: a ref
 ## 17. Privacy and withdrawal
 
 - Journals and exports use iOS file protection `completeUntilFirstUserAuthentication`.
-- When the configuration has an export key, the export is encrypted to the study's public key with HPKE (RFC 9180, base mode, DHKEM X25519 with HKDF-SHA256 and ChaCha20-Poly1305). The manifest names the suite and the key identifier, and it holds the SHA-256 of the plaintext and the ciphertext. Only the demo configuration writes plaintext exports, and they are marked as demo exports.
+- When the configuration has an export key, the export is encrypted to the study's public key with HPKE (RFC 9180, base mode, DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, ChaCha20-Poly1305). This is CryptoKit's `HPKE.Ciphersuite.Curve25519_SHA256_ChachaPoly`. The export folder then holds `journal.jsonl.hpke` in place of `journal.jsonl`. The `info` parameter is the UTF-8 text `SCRIPT export 1.0`, and the associated data is the UTF-8 session identifier. The manifest gains this block:
+
+  ```json
+  "encryption": {"scheme": "hpke-base", "suite": "X25519-HKDF-SHA256-ChaCha20Poly1305",
+                 "keyID": "...", "encapsulatedKey": "<base64>",
+                 "plaintext": {"bytes": 18234112, "lines": 131207, "sha256": "..."},
+                 "ciphertext": {"bytes": 18234128, "sha256": "..."}}
+  ```
+
+  The `journal` block of the manifest is then absent. Only the demo configuration writes plaintext exports, and their manifest has `"demo": true`. `scriptkin` decrypts with the study's private key and then applies the normal integrity rules to the plaintext.
 - Withdrawal: the operator enters a participant code, confirms twice, and the app deletes every journal and export for that code on the device. It appends one line to a deletion log: the time, the SHA-256 of the code, and the session identifiers. Copies outside the device are the site's duty; `docs/DATA_GOVERNANCE.md` gives the procedure.
 - Pseudonymous data remain personal data under the GDPR. A participant code alone does not meet HIPAA de-identification.
 
