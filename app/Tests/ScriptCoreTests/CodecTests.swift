@@ -114,13 +114,18 @@ func decodeErrorsNameTheKeyPath(line: String, expected: DecodeError) {
     #expect(throws: expected) { try LineCodec.decode(Data(line.utf8)) }
 }
 
-/// `basic.jsonl` lines 0 and 1 and `bench_wacom.jsonl` lines 0 and 1, as text, by the name a test gives them.
-private func subjectLine(_ name: String) throws -> String {
+/// A fixture line, by the name a test gives it, with the first `original` replaced. The lines are `basic.jsonl` lines
+/// 0 and 1, `bench_wacom.jsonl` lines 0 and 1, and the mark line of `bench_ipad.jsonl`.
+private func fixtureLine(_ name: String, replacing original: String, with replacement: String) throws -> Data {
     let participant = Contract.lines(try Contract.data("fixtures/journal/basic.jsonl"))
     let bench = Contract.lines(try Contract.data("fixtures/journal/bench_wacom.jsonl"))
+    let mark = try #require(Contract.lines(try Contract.data("fixtures/journal/bench_ipad.jsonl"))
+        .first { String(decoding: $0, as: UTF8.self).contains(#""kind":"mark""#) })
     let lines = ["participant header": participant[0], "participant trial": participant[1],
-                 "bench header": bench[0], "bench trial": bench[1]]
-    return String(decoding: try #require(lines[name]), as: UTF8.self)
+                 "bench header": bench[0], "bench trial": bench[1], "bench mark": mark]
+    let line = String(decoding: try #require(lines[name]), as: UTF8.self)
+    let range = try #require(line.range(of: original))
+    return Data(line.replacingCharacters(in: range, with: replacement).utf8)
 }
 
 @Test(arguments: [
@@ -130,17 +135,28 @@ private func subjectLine(_ name: String) throws -> String {
     ("bench header", #""input":"tablet","#, #""input":"pencil","#, .unexpected("tablet")),
     ("participant header", #""input":"pencil","#, #""input":"tablet","#, .missing("tablet")),
     ("bench trial", #""bench":{"#, #""hand":"right","bench":{"#, .unexpected("hand")),
-    ("bench trial", #""run":1,"#, #""run":0,"#, .invalid("bench.run")),
-    ("bench trial", #""run":1,"#, #""run":1,"clip":"","#, .invalid("bench.clip")),
+    ("bench trial", #""clip":"W-M3-line-osc8-r2""#, #""clip":"""#, .invalid("bench.clip")),
 ])
 func theSubjectShapeFollowsThePurposeAndTheBenchKey(name: String, original: String, replacement: String,
                                                      expected: DecodeError) throws {
     // Detects a decoder that accepts a participant key on a bench line, a bench key on a participant line, or a
     // tablet object that disagrees with the input, which the Python reader refuses.
-    let line = try subjectLine(name)
-    let range = try #require(line.range(of: original))
-    let changed = line.replacingCharacters(in: range, with: replacement)
-    #expect(throws: expected) { try LineCodec.decode(Data(changed.utf8)) }
+    let line = try fixtureLine(name, replacing: original, with: replacement)
+    #expect(throws: expected) { try LineCodec.decode(line) }
+}
+
+@Test(arguments: [
+    ("bench trial", #""run":2,"#, #""run":0,"#, DecodeError.invalid("bench.run")),
+    ("bench trial", #""run":2,"#, #""run":8,"#, .invalid("bench.run")),
+    ("bench header", #""mounting":"M3""#, #""mounting":"M9""#, .invalid("bench.mounting")),
+    ("bench mark", #""code":"disturbance""#, #""code":"cameraSync""#, .invalid("code")),
+])
+func aBenchValueOutsideTheProtocolIsRefused(name: String, original: String, replacement: String,
+                                            expected: DecodeError) throws {
+    // Detects a decoder that accepts a run index outside 1 to 7, a mounting outside M1 to M8, or the cameraSync mark,
+    // which bench protocol 1.1 and the Python reader refuse.
+    let line = try fixtureLine(name, replacing: original, with: replacement)
+    #expect(throws: expected) { try LineCodec.decode(line) }
 }
 
 extension String {

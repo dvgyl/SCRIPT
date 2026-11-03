@@ -385,23 +385,21 @@ extension SessionState {
 
 // MARK: - Decide
 
-/// What the app plans for one bench run. It carries no trajectory digest: `decide` copies the digest from the
-/// programs file, so an operator cannot type a wrong one.
+/// What the app plans for one bench run. It carries no trajectory digest and no clip: `decide` copies the digest from
+/// the programs file and writes the run id as the clip, so an operator types neither.
 public struct BenchRunPlan: Hashable, Sendable {
     public var program: ProgramID
-    /// The protocol's run index, from 1.
+    /// The protocol's run index. `decide` refuses a value outside `BenchRun.runs`.
     public var run: Int
-    public var clip: ClipName?
 
-    public init(program: ProgramID, run: Int, clip: ClipName? = nil) {
+    public init(program: ProgramID, run: Int) {
         self.program = program
         self.run = run
-        self.clip = clip
     }
 }
 
-/// What the app plans for one trial. `decide` adds the index, the attempt, the task specification, and the trajectory
-/// digest of a bench run.
+/// What the app plans for one trial. `decide` adds the index, the attempt, the task specification, and, for a bench
+/// run, the trajectory digest and the clip.
 public struct TrialPlan: Hashable, Sendable {
     /// Who or what draws the trial. It must match the session's subject.
     public enum Subject: Hashable, Sendable {
@@ -486,7 +484,7 @@ public enum Rejection: Error, Hashable, Sendable {
     case unknownProgram(ProgramID)
     /// The plan's task differs from the task of its program.
     case programNotForTask(ProgramID)
-    /// A run index below 1. Runs are numbered from 1.
+    /// A run index outside `BenchRun.runs`.
     case invalidRun(Int)
     case unknownInstrument(InstrumentID)
     case unverifiedInstrument(InstrumentID)
@@ -543,14 +541,14 @@ extension SessionState {
                     return .failure(.repeatedAccommodation(accommodation))
                 }
                 subject = .participant(facts)
-            case (.bench, .bench(let run)):
+            case (.bench(let facts), .bench(let run)):
                 guard let program = rules.benchPrograms?.program(run.program) else {
                     return .failure(.unknownProgram(run.program))
                 }
                 guard program.task == plan.task else { return .failure(.programNotForTask(run.program)) }
-                guard run.run >= 1 else { return .failure(.invalidRun(run.run)) }
+                guard BenchRun.runs.contains(run.run) else { return .failure(.invalidRun(run.run)) }
                 subject = .bench(BenchRun(program: run.program, run: run.run, trajectorySHA256: program.trajectorySHA256,
-                                          clip: run.clip))
+                                          clip: ClipName(runOf: run.program, run: run.run, in: facts)))
             case (.bench, .participant):
                 return .failure(.noParticipant)
             case (.participant, .bench):

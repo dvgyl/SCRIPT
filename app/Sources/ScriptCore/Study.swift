@@ -481,13 +481,25 @@ public func validate(config: StudyConfiguration, battery: Battery, instruments: 
 
 // MARK: - Bench programs
 
-/// One registered motion of the bench protocol: a bench task driven at one speed, with or without a fault.
+/// One registered motion of the bench protocol: a bench task driven at one speed, with or without an oscillation or a
+/// fault.
 public struct BenchProgram: Hashable, Sendable {
+    /// The oscillation `mm (1 - cos 2π hz t)` of the position along a line (bench protocol section 5.1).
+    public struct Oscillation: Hashable, Sendable {
+        public let hz: Double
+        public let mm: Double
+    }
+
     public let id: ProgramID
     public let task: TaskID
+    /// The scale of the task's figure.
+    public let scale: Double
     public let speedMMPerS: Double
+    public let oscillation: Oscillation?
     /// `dwell`, `lift`, or `truncated` for a fault program, nil for a main program.
     public let fault: String?
+    /// The main program that a fault program changes, nil for a main program.
+    public let base: ProgramID?
     /// The digest of the registered move list, which every run of this program records.
     public let trajectorySHA256: SHA256Digest
 }
@@ -502,6 +514,8 @@ public struct BenchPrograms: Hashable, Sendable {
         case duplicateProgram(ProgramID)
         /// A program whose task is not a bench task of the battery.
         case unknownTask(ProgramID, TaskID)
+        /// A program whose `base` names no main program of the file.
+        case invalidBase(ProgramID, ProgramID)
     }
 
     public init(data: Data) throws(LoadError) {
@@ -512,10 +526,19 @@ public struct BenchPrograms: Hashable, Sendable {
             self.protocol = BenchProtocolRef(version: try p.nonEmptyString("version"),
                                              sha256: try p.text("sha256", SHA256Digest.init(hex:)))
             entries = try f.objects("programs", minimum: 1) { e throws(DecodeError) in
-                BenchProgram(id: try e.text("id", ProgramID.init(_:)), task: try e.text("task", TaskID.init(_:)),
-                             speedMMPerS: try e.positive("speedMMPerS"),
-                             fault: e.isNull("fault") ? nil : try e.nonEmptyString("fault"),
-                             trajectorySHA256: try e.text("trajectorySHA256", SHA256Digest.init(hex:)))
+                var oscillation: BenchProgram.Oscillation?
+                if !e.isNull("oscillation") {
+                    let o = try e.object("oscillation")
+                    oscillation = BenchProgram.Oscillation(hz: try o.positive("hz"), mm: try o.positive("mm"))
+                }
+                return BenchProgram(
+                    id: try e.text("id", ProgramID.init(_:)), task: try e.text("task", TaskID.init(_:)),
+                    scale: try e.positive("scale"), speedMMPerS: try e.positive("speedMMPerS"),
+                    oscillation: oscillation,
+                    fault: e.isNull("fault") ? nil : try e.nonEmptyString("fault"),
+                    base: e.isNull("base") ? nil : try e.text("base", ProgramID.init(_:)),
+                    trajectorySHA256: try e.text("trajectorySHA256", SHA256Digest.init(hex:))
+                )
             }
         } catch {
             throw .decode(error)
@@ -524,6 +547,10 @@ public struct BenchPrograms: Hashable, Sendable {
         for program in entries {
             guard Battery.benchTasks.contains(program.task) else { throw .unknownTask(program.id, program.task) }
             guard programs.updateValue(program, forKey: program.id) == nil else { throw .duplicateProgram(program.id) }
+        }
+        for program in entries {
+            guard let base = program.base else { continue }
+            guard let target = programs[base], target.fault == nil else { throw .invalidBase(program.id, base) }
         }
         self.programs = programs
     }

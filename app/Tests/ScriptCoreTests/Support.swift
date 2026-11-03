@@ -99,10 +99,10 @@ func makeOpened(
 
 /// Builds the `sessionOpened` line of a bench session: the iPad with the Pencil for role P, the Wacom tablet on the
 /// Mac for role W.
-func makeBenchOpened(id: SessionID = SessionID(), role: BenchRole = .tablet, programs: BenchPrograms,
-                     battery: Battery) -> SessionOpened {
-    let facts = BenchFacts(role: role, mounting: "M3", motion: DocumentRef(id: "nextdraw-8511", version: "unknown")!,
-                           protocol: programs.protocol)
+func makeBenchOpened(id: SessionID = SessionID(), role: BenchRole = .tablet, mounting: MountingCode = "M3",
+                     programs: BenchPrograms, battery: Battery) -> SessionOpened {
+    let motion = DocumentRef(id: "nextdraw-8511", version: "unknown")!
+    let facts = BenchFacts(role: role, mounting: mounting, motion: motion, protocol: programs.protocol)
     let tablet = TabletTable.geometry(model: "Wacom Intuos Pro Medium (2025)")!
     return switch role {
     case .pencil:
@@ -176,9 +176,9 @@ struct Driver {
     }
 
     /// A bench run of `program` on `task`, in the tablet's active area.
-    static func benchPlan(_ program: ProgramID, task: TaskID, run: Int = 1, position: Int = 1, clip: ClipName? = nil) -> TrialPlan {
+    static func benchPlan(_ program: ProgramID, task: TaskID, run: Int = 1, position: Int = 1) -> TrialPlan {
         TrialPlan(task: task, practice: false, position: position,
-                  subject: .bench(BenchRunPlan(program: program, run: run, clip: clip)),
+                  subject: .bench(BenchRunPlan(program: program, run: run)),
                   view: ViewSize(width: 52600, height: 29600)!, stimulusOrigin: Point(x: 0, y: 0))
     }
 

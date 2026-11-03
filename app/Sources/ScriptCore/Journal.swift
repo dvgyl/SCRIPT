@@ -51,6 +51,12 @@ enum Pattern {
     /// `^[a-z0-9-]{1,32}$`
     static func isProgram(_ s: String) -> Bool { s.utf8.count <= 32 && isSlug(s) }
 
+    /// `^M[1-8]$`
+    static func isMounting(_ s: String) -> Bool {
+        let u = Array(s.utf8)
+        return u.count == 2 && u[0] == UInt8(ascii: "M") && (UInt8(ascii: "1")...UInt8(ascii: "8")).contains(u[1])
+    }
+
     /// `^[A-Z0-9-]{3,16}$`
     static func isParticipant(_ s: String) -> Bool {
         (3...16).contains(s.utf8.count) && s.utf8.allSatisfy { isUpper($0) || isDigit($0) || $0 == dash }
@@ -168,7 +174,7 @@ public struct TaskID: PatternText {
     }
 }
 
-/// A bench program identifier from `contract/bench_programs.json`, for example `loops-s1-v20`.
+/// A bench program identifier from `contract/bench_programs.json`, for example `loops-l-v20`.
 public struct ProgramID: PatternText {
     public let rawValue: String
     public init?(_ rawValue: String) {
@@ -177,12 +183,28 @@ public struct ProgramID: PatternText {
     }
 }
 
-/// The name of a camera clip, 1 to 64 characters, as the camera names it before a bench run begins.
+/// A bench mounting code that matches `^M[1-8]$`. The protocol plans M1 to M6 and can add M7 and M8 (section 6.6).
+public struct MountingCode: PatternText {
+    public let rawValue: String
+    public init?(_ rawValue: String) {
+        guard Pattern.isMounting(rawValue) else { return nil }
+        self.rawValue = rawValue
+    }
+}
+
+/// The name of a camera clip, 1 to 64 characters.
 public struct ClipName: PatternText {
     public let rawValue: String
     public init?(_ rawValue: String) {
         guard (1...64).contains(rawValue.unicodeScalars.count) else { return nil }
         self.rawValue = rawValue
+    }
+
+    /// The run id of bench protocol section 15, `<role>-<mounting>-<program>-r<run>`, for example
+    /// `P-M3-loops-s-v40-r2`.
+    init(runOf program: ProgramID, run: Int, in bench: BenchFacts) {
+        // At most 59 characters for any Int run, so the text always fits the 64-character limit.
+        rawValue = "\(bench.role.rawValue)-\(bench.mounting.rawValue)-\(program.rawValue)-r\(run)"
     }
 }
 
@@ -346,7 +368,7 @@ public enum TrialEndReason: String, Hashable, Sendable {
 public enum QuestionnaireEndReason: String, Hashable, Sendable { case completed, declined, interrupted }
 public enum SafetyDisplay: String, Hashable, Sendable { case crisisList, operatorAlert }
 public enum ActionRole: String, Hashable, Sendable { case `operator` }
-public enum MarkCode: String, Hashable, Sendable { case repeatRequested, disturbance, deviceProblem, exclude, cameraSync }
+public enum MarkCode: String, Hashable, Sendable { case repeatRequested, disturbance, deviceProblem, exclude }
 
 public struct AppInfo: Hashable, Sendable {
     public var version: String
@@ -514,12 +536,11 @@ public struct BenchProtocolRef: Hashable, Sendable {
 /// The facts of a bench session: one mounting of one device under the bench protocol.
 public struct BenchFacts: Hashable, Sendable {
     public var role: BenchRole
-    /// The mounting code from the protocol, for example `M3`.
-    public var mounting: Code
+    public var mounting: MountingCode
     /// The motion system, as `{id, version}`, because the system is not decided.
     public var motion: DocumentRef
     public var `protocol`: BenchProtocolRef
-    public init(role: BenchRole, mounting: Code, motion: DocumentRef, protocol: BenchProtocolRef) {
+    public init(role: BenchRole, mounting: MountingCode, motion: DocumentRef, protocol: BenchProtocolRef) {
         self.role = role
         self.mounting = mounting
         self.motion = motion
@@ -662,14 +683,17 @@ public struct ParticipantTrialFacts: Hashable, Sendable {
     static let keys = ["hand", "instruction", "accommodations"]
 }
 
-/// One run of one bench program. The decider copies `trajectorySHA256` from the programs file, so an operator cannot
-/// type a wrong digest.
+/// One run of one bench program. The decider copies `trajectorySHA256` from the programs file and writes `clip` as the
+/// run id, so an operator types neither.
 public struct BenchRun: Hashable, Sendable {
+    /// The run indexes of the protocol: 1 to 5 for the planned runs, 6 and 7 for the reruns (section 6.4).
+    public static let runs = 1...7
+
     public var program: ProgramID
-    /// The protocol's run index, from 1.
+    /// The protocol's run index, in `runs`.
     public var run: Int
     public var trajectorySHA256: SHA256Digest
-    /// The camera's clip name, typed before Begin, when the camera names its clip in advance.
+    /// The run id, which names the camera files of the run. The decider always writes it.
     public var clip: ClipName?
     public init(program: ProgramID, run: Int, trajectorySHA256: SHA256Digest, clip: ClipName? = nil) {
         self.program = program
@@ -1253,7 +1277,7 @@ extension Event {
                 for key in ParticipantTrialFacts.keys where f.has(key) { throw .unexpected(key) }
                 let bench = try f.object("bench")
                 let run = try bench.int("run")
-                guard run >= 1 else { throw .invalid("bench.run") }
+                guard BenchRun.runs.contains(run) else { throw .invalid("bench.run") }
                 subject = .bench(BenchRun(
                     program: try bench.text("program", ProgramID.init(_:)), run: run,
                     trajectorySHA256: try bench.text("trajectorySHA256", SHA256Digest.init(hex:)),
@@ -1479,7 +1503,7 @@ extension ParticipantFacts {
 extension BenchFacts {
     init(_ f: Fields) throws(DecodeError) {
         let p = try f.object("protocol")
-        self.init(role: try f.enumeration("role"), mounting: try f.text("mounting", Code.init(_:)),
+        self.init(role: try f.enumeration("role"), mounting: try f.text("mounting", MountingCode.init(_:)),
                   motion: try DocumentRef(try f.object("motion")),
                   protocol: BenchProtocolRef(version: try p.nonEmptyString("version"),
                                              sha256: try p.text("sha256", SHA256Digest.init(hex:))))

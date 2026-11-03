@@ -188,9 +188,17 @@ func aBlockThatEndsBeforeItsSafetyItemFlagsTheItemFirst(reason: QuestionnaireEnd
     #expect(!d.state.session.safety.flaggedSinceCrisisList)
 }
 
-private func benchDriver(role: BenchRole = .tablet) throws -> Driver {
-    let opened = makeBenchOpened(role: role, programs: try Contract.benchPrograms(), battery: try Contract.battery())
+private func benchDriver(role: BenchRole = .tablet, mounting: MountingCode = "M3") throws -> Driver {
+    let opened = makeBenchOpened(role: role, mounting: mounting, programs: try Contract.benchPrograms(),
+                                 battery: try Contract.battery())
     return try Driver(opened: opened, rules: try benchRules())
+}
+
+/// The bench run of the `trialStarted` line that `decide` gives for `plan`, or nil when it gives none.
+private func decidedRun(_ d: Driver, _ plan: TrialPlan) throws -> BenchRun? {
+    let events = try d.state.decide(.startTrial(plan, t: 101), rules: d.rules).get()
+    guard case .trialStarted(let started) = events.first, case .bench(let run) = started.subject else { return nil }
+    return run
 }
 
 @Test func aBenchSessionRefusesEveryParticipantCommand() throws {
@@ -213,9 +221,9 @@ private func benchDriver(role: BenchRole = .tablet) throws -> Driver {
         try d.state.apply(Entry(seq: 1, event: .safetyShown(SafetyShown(t: 101, what: .crisisList, listVersion: nil))))
     }
 
-    try d.run(.startTrial(Driver.benchPlan("loops-s1-v20", task: "bench-loops-l"), t: 102))
+    try d.run(.startTrial(Driver.benchPlan("loops-l-v20", task: "bench-loops-l"), t: 102))
     try d.run(.beginTrial(t: 102.5))
-    try d.run(.mark(trial: TrialIndex(count: 0), code: .cameraSync, t: 103))
+    try d.run(.mark(trial: TrialIndex(count: 0), code: .disturbance, t: 103))
     try d.run(.endTrial(reason: .operatorDone, t: 104))
     try d.run(.close(t: 105))
     let summary = d.state.summary
@@ -225,25 +233,31 @@ private func benchDriver(role: BenchRole = .tablet) throws -> Driver {
 }
 
 @Test func aBenchRunNeedsAProgramFromTheProgramsFile() throws {
-    // Detects a run with a typed or absent trajectory digest, a program outside the programs file, or a program
-    // run on another task's geometry.
+    // Detects a run with a typed or absent trajectory digest, a clip that is not the run id of the header's role and
+    // mounting, a program outside the programs file, a program run on another task's geometry, or a run index
+    // outside 1 to 7.
     let d = try benchDriver()
     let programs = try Contract.benchPrograms()
-    let events = try d.state.decide(.startTrial(Driver.benchPlan("fault-lift", task: "bench-loops-l", run: 2, clip: "CLIP-0003"), t: 101),
-                                    rules: d.rules).get()
-    guard case .trialStarted(let started) = try #require(events.first), case .bench(let run) = started.subject else {
-        Issue.record("no bench trial in \(events)")
-        return
+    let lift = try decidedRun(d, Driver.benchPlan("fault-lift", task: "bench-loops-l", run: 2))
+    let digest = try #require(programs.program("fault-lift")).trajectorySHA256
+    #expect(lift == BenchRun(program: "fault-lift", run: 2, trajectorySHA256: digest, clip: "W-M3-fault-lift-r2"))
+    let spiral = try decidedRun(try benchDriver(role: .pencil, mounting: "M1"),
+                                Driver.benchPlan("spiral-s-v40", task: "bench-spiral-s"))
+    #expect(spiral?.clip == "P-M1-spiral-s-v40-r1")
+    let rerun = try decidedRun(d, Driver.benchPlan("line-osc8", task: "bench-line", run: 7))
+    #expect(rerun?.run == 7)
+
+    #expect(d.state.decide(.startTrial(Driver.benchPlan("loops-l-v30", task: "bench-loops-l"), t: 101), rules: d.rules).rejection
+        == .unknownProgram("loops-l-v30"))
+    #expect(d.state.decide(.startTrial(Driver.benchPlan("spiral-l-v20", task: "bench-loops-l"), t: 101), rules: d.rules).rejection
+        == .programNotForTask("spiral-l-v20"))
+    for run in [0, 8] {
+        #expect(d.state.decide(.startTrial(Driver.benchPlan("loops-l-v20", task: "bench-loops-l", run: run), t: 101),
+                               rules: d.rules).rejection == .invalidRun(run), "run \(run)")
     }
-    #expect(run == BenchRun(program: "fault-lift", run: 2, trajectorySHA256: programs.program("fault-lift")!.trajectorySHA256,
-                            clip: "CLIP-0003"))
-    #expect(d.state.decide(.startTrial(Driver.benchPlan("loops-s9-v20", task: "bench-loops-l"), t: 101), rules: d.rules).rejection
-        == .unknownProgram("loops-s9-v20"))
-    #expect(d.state.decide(.startTrial(Driver.benchPlan("spiral-s1-v20", task: "bench-loops-l"), t: 101), rules: d.rules).rejection
-        == .programNotForTask("spiral-s1-v20"))
-    #expect(d.state.decide(.startTrial(Driver.benchPlan("loops-s1-v20", task: "bench-loops-l", run: 0), t: 101), rules: d.rules).rejection
-        == .invalidRun(0))
     #expect(ProgramID("Loops-S1" as String) == nil && ProgramID(String(repeating: "a", count: 33)) == nil)
+    #expect(MountingCode("M8" as String) != nil)
+    #expect(MountingCode("M9" as String) == nil && MountingCode("M10" as String) == nil)
     #expect(ClipName("" as String) == nil && ClipName(String(repeating: "c", count: 65)) == nil)
 }
 
@@ -253,13 +267,13 @@ private func benchDriver(role: BenchRole = .tablet) throws -> Driver {
     let study = try driver()
     #expect(study.state.decide(.startTrial(Driver.plan("bench-loops-l"), t: 101), rules: study.rules).rejection
         == .taskNotForPurpose("bench-loops-l"))
-    #expect(study.state.decide(.startTrial(Driver.benchPlan("loops-s1-v20", task: "bench-loops-l"), t: 101), rules: study.rules).rejection
+    #expect(study.state.decide(.startTrial(Driver.benchPlan("loops-l-v20", task: "bench-loops-l"), t: 101), rules: study.rules).rejection
         == .taskNotForPurpose("bench-loops-l"))
-    #expect(study.state.decide(.startTrial(Driver.benchPlan("loops-s1-v20", task: "loops"), t: 101), rules: study.rules).rejection
+    #expect(study.state.decide(.startTrial(Driver.benchPlan("loops-l-v20", task: "loops"), t: 101), rules: study.rules).rejection
         == .notABenchSession)
 
     let bench = try benchDriver(role: .pencil)
-    #expect(bench.state.decide(.startTrial(Driver.benchPlan("loops-s1-v20", task: "loops"), t: 101), rules: bench.rules).rejection
+    #expect(bench.state.decide(.startTrial(Driver.benchPlan("loops-l-v20", task: "loops"), t: 101), rules: bench.rules).rejection
         == .taskNotForPurpose("loops"))
     #expect(bench.state.decide(.startTrial(Driver.plan("qual-hold"), t: 101), rules: bench.rules).rejection
         == .taskNotForPurpose("qual-hold"))

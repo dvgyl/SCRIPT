@@ -63,20 +63,27 @@ private func withProbeBlock(_ config: StudyConfiguration) -> StudyConfiguration 
 }
 
 @Test func theProgramsFileLoadsAndRefusesAProgramOutsideTheBenchTasks() throws {
-    // Detects a shipped programs file that the app refuses, or a program whose task is not a bench task, which the
-    // purpose gate could never start.
+    // Detects a shipped programs file that the app refuses or reads with a lost value, a program whose task is not a
+    // bench task, which the purpose gate could never start, or a fault program whose base is not a main program.
     let programs = try Contract.benchPrograms()
-    #expect(programs.programs.count == 11)
-    #expect(programs.protocol.version == "1.0")
-    #expect(programs.program("fault-dwell")?.fault == "dwell" && programs.program("loops-s05-v40")?.fault == nil)
-    #expect(programs.program("loops-s05-v40")?.speedMMPerS == 40)
-    #expect(Set(programs.programs.values.map(\.trajectorySHA256)).count == 11)
+    #expect(programs.programs.count == 15)
+    #expect(programs.protocol.version == "1.1")
+    #expect(programs.program("fault-dwell")?.fault == "dwell" && programs.program("loops-s-v40")?.fault == nil)
+    #expect(programs.program("loops-s-v40")?.speedMMPerS == 40 && programs.program("loops-s-v40")?.scale == 0.7)
+    #expect(programs.program("fault-lift")?.base == "loops-l-v20" && programs.program("loops-l-v20")?.base == nil)
+    #expect(programs.program("line-osc8")?.oscillation == BenchProgram.Oscillation(hz: 8.0, mm: 0.25))
+    #expect(programs.program("loops-l-v20").map { $0.oscillation == nil } == true)
+    #expect(Set(programs.programs.values.map(\.trajectorySHA256)).count == 15)
 
     let text = String(decoding: try Contract.data("bench_programs.json"), as: UTF8.self)
-    let range = try #require(text.range(of: #""task": "bench-loops-s""#))
-    let changed = text.replacingCharacters(in: range, with: #""task": "loops""#)
-    #expect(throws: BenchPrograms.LoadError.unknownTask("loops-s05-v20", "loops")) {
-        try BenchPrograms(data: Data(changed.utf8))
+    for (original, replacement, expected) in [
+        (#""task": "bench-loops-s""#, #""task": "loops""#, BenchPrograms.LoadError.unknownTask("loops-s-v20", "loops")),
+        (#""base": "loops-l-v20""#, #""base": "fault-lift""#, .invalidBase("fault-dwell", "fault-lift")),
+        (#""base": "loops-l-v20""#, #""base": "loops-l-v30""#, .invalidBase("fault-dwell", "loops-l-v30")),
+    ] {
+        let range = try #require(text.range(of: original))
+        let changed = text.replacingCharacters(in: range, with: replacement)
+        #expect(throws: expected) { try BenchPrograms(data: Data(changed.utf8)) }
     }
 }
 
