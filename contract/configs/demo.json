@@ -22,8 +22,8 @@
  ],
  "battery": {
   "id": "script-v1",
-  "version": "1.0.0",
-  "sha256": "27c4fa3a2f2e8bcd2d5425a33b9e0082cb4b9b51c5c06fababaa1512490f4663"
+  "version": "1.1.0",
+  "sha256": "ab4c93057646bd45f47d70333331c930d5dd9d0903e47454c056f66b8e592c67"
  },
  "tasks": [
   {

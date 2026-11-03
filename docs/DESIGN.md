@@ -18,6 +18,8 @@ Each session has **one append-only journal**. The journal is the recording, the 
 - The Python reader is a **second fold** over the same lines.
 - Each shared fixture is a journal plus its expected fold summary. The Swift tests and the Python tests must both produce that summary.
 
+The **bench capture** writes the same journal for the robotic bench study of `docs/BENCH_PROTOCOL.md`. It has two apps on `ScriptCore`: SCRIPT Capture in bench mode on the iPad, and **SCRIPT Bench**, a macOS app for a Wacom tablet. A motion system draws in a bench session, so the session records no person (section 2.4).
+
 After the reader, each stage accepts only a type that the previous stage built after a check. Features accept only segments that quality control (QC) built. The harness shows metrics only after its leakage witness and its null check pass.
 
 ## 2. Usage
@@ -93,21 +95,54 @@ override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
 }
 ```
 
-## 3. Recording format, version 1.0
+### 2.4 Bench operator
 
-This section is the contract between the app and the library. `contract/journal.schema.json` is the machine-readable authority for line shapes.
+A bench session records one mounting of one device under the bench protocol. The operator runs it alone and picks each run. The session has no participant, handoff, questionnaire, or safety step.
+
+On the iPad, SCRIPT Capture in bench mode records device P:
+
+1. **Home** has the entry Bench session.
+2. **Setup** asks for the mounting (`M1` to `M8`) and for the motion system and its version. It also asks for the device asset code, the screen protector, the Pencil tip, and the Pencil model. It shows the protocol version and digest of the bundled `contract/bench_programs.json`. The scale comes from the device table or a reference measurement, as in a study session.
+3. **Run screen.** The operator picks the program and the run index, 1 to 7. The screen shows the run id, which becomes the clip of the run (section 3.3). Start the run opens the task screen. Start the run is disabled for a run id that the session already has, and the screen says so.
+4. **Task screen.** It shows the run id, the marks that the run offers, and the stimulus at true scale. The stimulus origin is the origin of the task view. Begin enables ink. Done ends the run with `operatorDone`. Stop the run ends it with `operatorAbort` after a confirmation. The operator adds a mark before Done, because the marks are on the task screen only.
+5. **End the session** closes the session after a confirmation. The sample timing screen then shows the runs, and Export publishes the session as plaintext.
+
+After a crash, Home shows the bench session as interrupted. It resumes at the run screen. The screen of the iPad stays on while a bench session is open.
+
+On the Mac, SCRIPT Bench records device W:
+
+1. **Home** shows the clock check, the entries Bench session and Qualification session, and the sessions on this Mac.
+2. **Clock check.** The first tablet event of a launch compares `NSEvent.timestamp` with the system uptime. A session starts or resumes only after the check passes (section 3.2).
+3. **Setup** asks for the mounting and for the motion system and its version. It also asks for the tablet model, the pen, the tablet asset code, and the driver version. It then asks for the surface, the nib, and the Mac asset code. The role is always `W`.
+4. **Run screen.** The controls are beside the tablet area. The tablet area shows the stimulus at the origin, the ink, and the pen. The operator picks the program and the run index, and checks the run id. Begin is disabled for a run id that the session already has, and the screen says so. The **Set origin** button stores the hover position of the pen as the stimulus origin of the next runs.
+5. **Begin** starts the run and enables ink at once, because the operator taps Begin before the stylus lowers. Then **Done** ends the run with `operatorDone`. The **Mark** menu adds a mark to the open run, so the operator adds a mark before Done.
+6. **Close the session** closes the session and exports it as plaintext.
+
+SCRIPT Bench reads every tablet event through one app-level event monitor. During a session, the monitor does not pass tablet events on to the window, so a pen report cannot press a control. The operator uses the mouse. When the window loses the keyboard focus, an open run ends with `backgrounded`. When the app quits, an open run also ends with `backgrounded`. After a crash, Home offers Resume, and the stimulus origin of the last run stays the origin.
+
+While a bench or qualification session is open, the window is in full screen, so the pen pointer stays inside it. Begin is disabled while the window is not in full screen. From the open or resume of a session until its close, SCRIPT Bench also keeps the Mac and its display awake.
+
+In both apps, a bench run has no time limit. It ends with Done, Stop the run on the iPad, or an interruption. A rerun takes a new run id, with the run index 6 or 7. A resumed session can name another bench protocol than the bundled programs file. Its run screen then says so and offers no run (section 5).
+
+In a Debug build, the launch argument `-ScriptBenchWithoutTablet` skips the clock check, so the run screen opens on a Mac without a tablet.
+
+## 3. Recording format, version 2.0
+
+This section is the contract between the capture apps and the library. `contract/journal.schema.json` is the machine-readable authority for line shapes. Version 2.0 adds bench sessions and tablet input. Both readers accept the major versions 1 and 2. A 1.0 journal reads as a 2.0 journal, because a reader reads an absent `channels` key as false.
 
 ### 3.1 Files
 
-An export is the folder `Exports/SCRIPT_<studyID>_<siteCode>_<first 8 hex digits of the session UUID, lowercase>/`. The participant code is not in the name; it stays inside the journal, and inside the ciphertext when the export is encrypted. It contains two files:
+An export is the folder `Exports/SCRIPT_<studyID>_<siteCode>_<first 8 hex digits of the session UUID, lowercase>/`. The participant code is not in the name; it stays inside the journal, and inside the ciphertext when the export is encrypted. A bench session has no study, so its folder is `Exports/SCRIPT_BENCH_<role><mounting>_<first 8 hex digits>/`, for example `SCRIPT_BENCH_WM3_3f2a9c1e`. An export contains two files:
 
 - `journal.jsonl`: the journal.
 - `manifest.json`: the facts that cannot be inside the journal.
 
 ```json
-{"format": "script.journal", "version": "1.0", "sessionID": "3f2a9c1e-...",
+{"format": "script.journal", "version": "2.0", "sessionID": "3f2a9c1e-...",
  "journal": {"bytes": 18234112, "lines": 131207, "sha256": "..."}}
 ```
+
+Both manifest readers accept the major versions 1 and 2. A bench export is always plaintext, with `"demo": true` (section 17).
 
 ### 3.2 Line rules
 
@@ -116,22 +151,25 @@ An export is the folder `Exports/SCRIPT_<studyID>_<siteCode>_<first 8 hex digits
 - Doubles are written as the shortest decimal that round-trips. Python `float()` reads back the same bits. `contract/fixtures/doubles.json` proves this on every check run.
 - An absent channel is an absent key. It is never `null` and never `0`.
 - Values are native. Positions are points in the capture view (UIKit frame, origin top-left, y down). Angles are radians as UIKit reports them. `force` is in UIKit units.
+- A tablet session (`input: tablet`) has native AppKit values. `x` and `y` are tablet lines from `NSEvent.absoluteX` and `NSEvent.absoluteY`, with the origin top-left and y down. The capture flips y when the tablet table records a tablet with y up (section 5).
+- On a tablet, `force` is `NSEvent.pressure`, which Apple documents as a normalized value, so `contactBegan.maxForce` is 1. `tiltX` and `tiltY` are the two components of `NSEvent.tilt`, from -1 to 1. `rotation` is `NSEvent.rotation` in degrees. The journal does not convert tilt to `altitude` and `azimuth`.
 - Times are uptime seconds since boot. Samples use `UITouch.timestamp`. App events use `ProcessInfo.systemUptime`, which is the same clock. Uptime values are compared only inside one `boot`.
-- The bit sets `est` and `expect` use force 1, azimuth 2, altitude 4, location 8, roll 16.
+- On the Mac, samples and hover lines use `NSEvent.timestamp`, and app events use `ProcessInfo.systemUptime`. Apple documents both as seconds since system startup, but no Apple page says that they share one clock. So SCRIPT Bench compares them at the first tablet event of each launch. It opens no session until they differ by 1 s or less.
+- The bit sets `est` and `expect` use force 1, azimuth 2, altitude 4, location 8, roll 16. A tablet has no estimated property, so SCRIPT Bench writes `est` 0, no `pending`, and no `correction` line.
 
 ### 3.3 Line kinds
 
 | kind | written when | fields |
 |---|---|---|
-| `sessionOpened` | line 0 | `format` (`"1.0"`), `purpose`, `sessionID`, `participant`, `openedAt` (ISO 8601 UTC), `openedUptime`, `boot` (boot-session UUID), `app {version, build, sourceRevision}`, `device {model, os, nativeScale, asset}`, `surface {protector, nib}`, `qualification`?, `scale`, `pencil {declared}`, `channels`, `input`, `administration`, `study`, `visit {id, number}`, `ageBand`, `jurisdiction`, `locale`, `consent`, `ethics`, `battery {id, version, sha256}` |
+| `sessionOpened` | line 0 | Every session: `format` (`"2.0"`), `purpose`, `sessionID`, `openedAt` (ISO 8601 UTC), `openedUptime`, `boot` (boot-session UUID), `app {version, build, sourceRevision}`, `device {model, os, nativeScale, asset}`, `tablet`?, `surface {protector, nib}`, `qualification`?, `scale`, `pencil {declared}`, `channels`, `input`, `battery {id, version, sha256}`. With a participant: `participant`, `administration`, `study`, `visit {id, number}`, `ageBand`, `jurisdiction`, `locale`, `consent`, `ethics`. Bench: `bench {role, mounting, motion {id, version}, protocol {version, sha256}}`. |
 | `handoff` | the iPad passes to another person | `t`, `to` (`participant`, `operator`) |
-| `trialStarted` | the stimulus becomes visible | `t`, `trial {index, task, attempt}`, `spec` (full task specification), `practice`, `position`, `hand`, `instruction {id, version, locale}`, `accommodations`, `view {width, height}`, `stimulusOrigin {x, y}` |
-| `trialBegan` | the participant taps Begin | `t`, `trial` (index) |
-| `contactBegan` | Pencil touches down | `t`, `contact`, `maxForce`? |
-| `sample` | each coalesced Pencil touch | `contact`, `t`, `x`, `y`, `force`?, `altitude`?, `azimuth`?, `roll`?, `phase`, `est`, `pending {expect, update}`? |
+| `trialStarted` | the stimulus becomes visible, or a bench run starts on the Mac | Every trial: `t`, `trial {index, task, attempt}`, `spec` (full task specification), `practice`, `position`, `view {width, height}`, `stimulusOrigin {x, y}`. With a participant: `hand`, `instruction {id, version, locale}`, `accommodations`. Bench: `bench {program, run, trajectorySHA256, clip?}`. |
+| `trialBegan` | the participant or the bench operator taps Begin | `t`, `trial` (index) |
+| `contactBegan` | the pen touches down | `t`, `contact`, `maxForce`? |
+| `sample` | each coalesced Pencil touch, or each tablet report in contact | `contact`, `t`, `x`, `y`, `force`?, `altitude`?, `azimuth`?, `roll`?, `phase`, `est`, `pending {expect, update}`?. Tablet channels: `tiltX`?, `tiltY`?, `rotation`?. |
 | `correction` | `touchesEstimatedPropertiesUpdated` | `contact` (or absent when unmatched), `update`, `arrived`, any of `x`, `y`, `force`, `altitude`, `azimuth`, `roll`, then `expect` (bits still pending) |
 | `contactEnded` | lift or cancel | `t`, `contact`, `cancelled` |
-| `hover` | a hover recognizer change | `t`, `clock` (`callback`), `x`, `y`, `z`, `altitude`?, `azimuth`?, `roll`? |
+| `hover` | a hover recognizer change, or a tablet report in range without contact | `t`, `clock` (`callback`, `event`), `x`, `y`, `z`?, `altitude`?, `azimuth`?, `roll`?. Tablet channels: `tiltX`?, `tiltY`?, `rotation`?. |
 | `finger` | a finger contact begins or ends | `t`, `phase`, `x`, `y` |
 | `trialEnded` | the trial ends | `t`, `trial` (index), `reason` |
 | `questionnaireStarted` | an instrument appears | `t`, `block`, `instrument {id, version, locale}` |
@@ -146,20 +184,25 @@ An export is the folder `Exports/SCRIPT_<studyID>_<siteCode>_<first 8 hex digits
 
 Field notes:
 
-- `purpose` is `study` or `qualification` (section 16).
+- `purpose` is `study`, `qualification` (section 16), or `bench` (section 2.4). It selects the subject shape. A study or qualification session has the participant keys, and a bench session has `bench` in their place. Each `trialStarted` has the subject shape of its session.
 - `app.sourceRevision` is never empty. A build that `./check` did not stamp records `unknown`.
-- `scale` is one of `{"kind": "modelTable", "mmPerPoint", "ppi", "nativeScale"}`, `{"kind": "reference", "object", "mmPerPoint", "lengthMM", "drawnPoints"}`, or `{"kind": "unknown"}`. `object` is `steelRule` or `idCard` (an ISO/IEC 7810 ID-1 card, 85.60 mm wide). The model-table formula is `mmPerPoint = 25.4 × nativeScale / ppi`. An unknown scale makes the library refuse every feature that needs millimetres.
-- `channels` is the planned channel set: `{"force": bool, "altitude": bool, "azimuth": bool, "roll": bool, "hover": bool}`. It comes from the declared Pencil model and the hover support of the device. QC compares the plan with the data.
-- `input` is `pencil` in normal use. It is `directTouchAsPen` only in simulator tests, because the simulator cannot make Pencil touches. The library marks such recordings as simulated, and QC refuses every feature that needs a Pencil-only channel.
-- `device.asset` is a pseudonymous asset code that the site assigns to the iPad. `surface.protector` is `none`, `glossy`, `matte`, `paperlike`, or `unknown`; `surface.nib` is `new`, `used`, or `unknown`. `qualification` is `{"sessionID", "at"}` of the last qualification session on this device and Pencil, or absent.
+- `scale` is one of `{"kind": "modelTable", "mmPerPoint", "ppi", "nativeScale"}`, `{"kind": "reference", "object", "mmPerPoint", "lengthMM", "drawnPoints"}`, `{"kind": "tablet", "linesPerMM", "mmPerPoint"}`, or `{"kind": "unknown"}`. `object` is `steelRule` or `idCard` (an ISO/IEC 7810 ID-1 card, 85.60 mm wide). The model-table formula is `mmPerPoint = 25.4 × nativeScale / ppi`. The tablet formula is `mmPerPoint = 1 / linesPerMM`, so one journal unit is one tablet line. An unknown scale makes the library refuse every feature that needs millimetres.
+- `channels` is the planned channel set: `{"force", "altitude", "azimuth", "roll", "hover", "tiltX", "tiltY", "rotation"}`, each a bool. A 2.0 writer writes all eight keys. A reader reads an absent key as false, so a 1.0 header with five keys still reads. QC compares the plan with the data.
+- The Pencil plan comes from the declared Pencil model and the hover support of the device. The tablet plan comes from the declared tablet pen. A Pro Pen 3 plans `force`, `tiltX`, `tiltY`, and `hover`, and an `unknown` pen plans `force` and `hover`. No pen plans `rotation` now (section 12).
+- `input` is `pencil` in normal use, and `tablet` in SCRIPT Bench. It is `directTouchAsPen` only in simulator tests, because the simulator cannot make Pencil touches. The library marks such recordings as simulated, and QC refuses every feature that needs a Pencil-only channel.
+- `tablet` is `{model, asset, driver, pen {declared}}`. It is present exactly when `input` is `tablet`. `model` is the model text of the tablet table, and `asset` is the pseudonymous asset code of the tablet. `driver` is the driver version that the operator types. `pen.declared` is `proPen3` or `unknown`. `device` stays the host Mac, and `pencil.declared` is `none`.
+- `bench.role` is `P` for the iPad with the Pencil, or `W` for the Wacom tablet on the Mac. `bench.mounting` matches `^M[1-8]$`. `bench.motion` is the motion system as `{id, version}`, which the operator enters in Setup. `bench.protocol` is the protocol version and SHA-256 from `contract/bench_programs.json`.
+- `trialStarted.bench.program` is an id of the programs file, and its task is the task of the trial. `run` is the run index of the protocol, 1 to 7. `decide` copies `trajectorySHA256` from the programs file, so the operator never types it.
+- `trialStarted.bench.clip` is the run id `<role>-<mounting>-<program>-r<run>`, for example `W-M3-line-osc8-r2`. `decide` writes it, and the run screen shows it before the run starts. The operator names the camera files of the run with it. The schema keeps `clip` optional, but both apps always write it.
+- `device.asset` is a pseudonymous asset code that the site assigns to the iPad or the Mac. `surface.protector` is `none`, `glossy`, `matte`, `paperlike`, or `unknown`; `surface.nib` is `new`, `used`, or `unknown`. `qualification` is `{"sessionID", "at"}` of the last qualification session on this device and Pencil, or on this tablet and pen. It is absent when no such session exists.
 - `administration` is `supervised` or `self`. `study` is `{id, site, configID, configVersion, configSHA256, protocolVersion}`. `visit` links repeated sessions of one participant: `id` is a study visit code, `number` starts at 1.
 - `ageBand` is `13-17` or `18-24`. `jurisdiction` is an ISO 3166-1 alpha-2 country code. `locale` is a BCP 47 tag.
 - `consent` and `ethics` hold attestations and document versions only (section 15.4). The journal never holds a name, a date of birth, a signature, or contact details.
 - `trialStarted.position` is the 1-based position of the task in the session order. `hand` is `left`, `right`, or `unknown`. `practice` is true for a practice task; the library excludes practice trials from features. `accommodations` is a list of codes: `readAloud`, `largerText`, `extraTime`, `positionAssist`, `other`.
-- `trialEnded.reason` is `participantDone`, `timeLimit`, `declined`, `unable`, `operatorAbort`, `backgrounded`, or `technicalFailure`. `declined` means that the participant chose not to do the task. `unable` means that the participant could not do it.
-- `contact` is an integer, unique in the session, that starts at 1. A correction that arrives after the next trial starts is therefore still unambiguous.
+- `trialEnded.reason` is `participantDone`, `operatorDone`, `timeLimit`, `declined`, `unable`, `operatorAbort`, `backgrounded`, or `technicalFailure`. `declined` means that the participant chose not to do the task. `unable` means that the participant could not do it. `operatorDone` means that the operator ended a bench run with Done.
+- `contact` is an integer, unique in the session, that starts at 1. A correction that arrives after the next trial starts is therefore still unambiguous. On a tablet, a contact that is open when the pen leaves the range of the tablet ends with `cancelled: true`.
 - `update` is `estimationUpdateIndex`. A correction never edits a sample. The library joins them by `(contact, update)`. When two samples share a key, a correction with that key applies to both.
-- `z` in `hover` is normalized: 0 at contact, 1 at the maximum range. It has no unit.
+- `z` in `hover` is normalized: 0 at contact, 1 at the maximum range. It has no unit. `clock` is `callback` for the time of a hover recognizer callback, and `event` for an AppKit event time. A tablet hover line has `clock: event` and no `z`, because the tablet reports no height.
 - Finger contacts never produce samples. They exist for QC only.
 - `block` numbers questionnaire blocks from 0 in session order. `item` is the item identifier from `contract/instruments.json`. `value` is the response value of the chosen option.
 - An unreached safety item is a flag. When a block whose instrument has a safety item ends (`completed`, `declined`, or `interrupted`) without a `response` to that item, a `safetyFlagged` line with `skipped: true` and no `value` comes inside the block: before `questionnaireEnded`, or, for a block that a crash interrupted, before `recovered`. The flag before `recovered` carries the time of the block's latest `questionnaireStarted` or `response` line, so it stays in the boot of its block. In a self-administered session, a `safetyShown` line with the crisis list follows the flag at once; after a recovery, the app shows the list when the session resumes.
@@ -169,12 +212,12 @@ Field notes:
 
 The reader raises `JournalError` when a rule fails.
 
-- **I1.** Each line ends in LF and parses to an object with a known `kind`.
+- **I1.** Each line ends in LF and parses to an object with a known `kind`. Its payload has the shape of its kind. The purpose of the session selects the shape of `sessionOpened` and of each `trialStarted`, and a key of the other shape fails. `tablet` is present exactly when `input` is `tablet`.
 - **I2.** `seq` equals the line index.
-- **I3.** Line 0 is `sessionOpened`. The last line is `sessionClosed`. The major version matches the reader.
+- **I3.** Line 0 is `sessionOpened`. The last line is `sessionClosed`. The major version is 1 or 2.
 - **I4.** `sessionClosed.counts` equals a recount.
 - **I5.** The manifest byte count, line count, and SHA-256 match the file.
-- **I6.** Nesting holds. Samples and `contactEnded` are inside an open contact. Contacts are inside an open trial. `trialBegan` follows its `trialStarted` inside the same trial. Responses and safety flags are inside an open questionnaire block. Trials and questionnaire blocks do not overlap.
+- **I6.** Nesting holds. Samples and `contactEnded` are inside an open contact. Contacts are inside an open trial. `trialBegan` follows its `trialStarted` inside the same trial. Responses and safety flags are inside an open questionnaire block. Trials and questionnaire blocks do not overlap. A bench session has no `handoff`, questionnaire, response, or safety line. A bench trial does not end with `timeLimit`.
 - **I7.** Uptime values are compared only inside one `boot`.
 
 These are **QC findings**, not integrity failures: duplicate timestamps, gaps, a low sample rate, unresolved estimates, unmatched corrections, finger contacts, and a planned channel that the data does not show. A minor version adds optional keys only.
@@ -194,13 +237,15 @@ The fold summary is the shared test oracle. Both languages produce it from a jou
  "unmatchedCorrections": 0, "truncatedBytes": 0}
 ```
 
-`outcome` for a trial is `completed`, `timeLimit`, `declined`, `unable`, `aborted`, `interrupted`, `technicalFailure`, or `open`. `participantDone` maps to `completed`, `operatorAbort` to `aborted`, and `backgrounded` to `interrupted`. A questionnaire outcome is `completed`, `declined`, `interrupted`, or `open`. `unresolved` counts samples whose `pending` bits never all cleared. The summary holds counts only, never a questionnaire score.
+`outcome` for a trial is `completed`, `timeLimit`, `declined`, `unable`, `aborted`, `interrupted`, `technicalFailure`, or `open`. `participantDone` and `operatorDone` map to `completed`, `operatorAbort` to `aborted`, and `backgrounded` to `interrupted`. A questionnaire outcome is `completed`, `declined`, `interrupted`, or `open`. `unresolved` counts samples whose `pending` bits never all cleared. The summary holds counts only, never a questionnaire score.
+
+The summary omits `administration` when the header has none, as in a bench session. The key is then absent, never `null`. Every other key stays.
 
 ## 4. Task battery
 
 `contract/battery.json` holds the battery. The Python module `scriptkin.battery` generates it, and `./check` fails when the checked-in file differs. Geometry is stored as polylines in millimetres, with the origin at the top-left of the stimulus frame and y down. Swift draws a stimulus with one multiply and one add. Swift has no spiral mathematics. `trialStarted` embeds the full task specification, so each journal is self-contained.
 
-Battery version 1 has a practice task and six measured tasks:
+Battery version 1.1.0 has a practice task and six measured tasks for study sessions, three qualification tasks (section 16), and five bench tasks. These are the tasks of a study session:
 
 | id | mode | stimulus | source datasets |
 |---|---|---|---|
@@ -214,9 +259,25 @@ Battery version 1 has a practice task and six measured tasks:
 
 The sentence stimulus is text, not geometry. Spatial-error features return `not_applicable` for `clock` and `sentence`. The schema reserves `targets` for a later trail-making task.
 
+A bench task is one figure at one scale. `scriptkin.bench` lists the bench tasks, and `scriptkin.battery` writes them into the battery. The scale multiplies every stimulus coordinate about the origin of the stimulus frame. So a figure at scale 1.0 has the geometry of its study task. These are the bench tasks:
+
+| id | figure | scale | mode |
+|---|---|---|---|
+| `bench-loops-l` | the loops of `loops` | 1.0 | copy |
+| `bench-loops-s` | the loops of `loops` | 0.7 | copy |
+| `bench-spiral-l` | the spiral of `spiral-trace` | 1.0 | trace |
+| `bench-spiral-s` | the spiral of `spiral-trace` | 0.7 | trace |
+| `bench-line` | a straight line of 124 mm in x, in a frame of 132 × 16 mm | 1.0 | trace |
+
+The battery also gives each bench task a time limit (`maxSeconds`, 60 to 120 s). The apps and the fold do not apply it, because a bench run has no time limit (section 3.4).
+
+`contract/bench_programs.json` is the programs file. `scriptkin contract regenerate` writes it from `scriptkin.bench`, and `./check` fails when the checked-in file differs. It holds the protocol version (`1.1`) and the protocol SHA-256, and 15 programs: 12 main programs and 3 fault programs. Each program has `id`, `task`, `scale`, `speedMMPerS`, `oscillation` (`null` or `{hz, mm}`), `fault`, `base`, and `trajectorySHA256`. A fault program changes the main program that its `base` names. Both capture apps bundle the file, and `decide` checks each bench run against it (section 5).
+
+The two digests are placeholders until the protocol lock (`docs/BENCH_PROTOCOL.md` section 14). The protocol SHA-256 is 64 zeros. Each trajectory digest is the SHA-256 of a placeholder text that names its program.
+
 ## 5. Swift shape
 
-`app/Package.swift` defines `ScriptCore`. It uses only system frameworks (Foundation, CryptoKit, CommonCrypto, Security, Synchronization) and no UIKit, so `swift test` runs it on the Mac in seconds. The app target `ScriptApp` holds the SwiftUI screens and one UIKit view.
+`app/Package.swift` defines `ScriptCore`. It uses only system frameworks (Foundation, CryptoKit, CommonCrypto, Security, Synchronization) and no UIKit, so `swift test` runs it on the Mac in seconds. The iPadOS app target `ScriptApp` holds the SwiftUI screens and one UIKit view. The macOS app target `ScriptBench` holds the SwiftUI screens of SCRIPT Bench and one AppKit view. `app/ScriptApp.xcodeproj` holds both app targets and their test targets.
 
 ```
 app/Sources/ScriptCore/
@@ -226,8 +287,8 @@ app/Sources/ScriptCore/
   Battery.swift             Battery, TaskSpec, Stimulus, Completion
   Ink.swift                 PenReading, PreviewPoint, ChannelPlan, InkRecorder
   Storage.swift             JournalWriter, recover, reconcile, publish, publishDamaged, withdraw
-  Scale.swift               MillimetreScale and the device table
-  Study.swift               instruments, StudyConfiguration, validate, SessionRules, OperatorPin
+  Scale.swift               MillimetreScale, the device table, and the tablet table
+  Study.swift               instruments, StudyConfiguration, validate, BenchPrograms, SessionRules, OperatorPin
 app/ScriptApp/
   ScriptApp.swift           @main and scene phase
   SessionStore.swift        the store: storage, writer, frozen rules, folded state, and the stage
@@ -237,23 +298,40 @@ app/ScriptApp/
   HomeScreen.swift          Home, configuration import, and withdrawal
   SetupScreen.swift         Setup and the reference measurement
   ParticipantScreens.swift  code confirmation, Ready, hand, disclosure, task, item, crisis list, and thank-you
-  OperatorScreens.swift     Paused, Review, qualification result, stopped, and Export
+  OperatorScreens.swift     Paused, Review, sample timing, stopped, and Export
+  BenchScreens.swift        the bench run screen and the bench task screen
   CaptureView.swift         the UIKit capture view
+app/ScriptBench/
+  BenchApp.swift            @main, the tablet event monitor, and Home
+  BenchStore.swift          the store: storage, writer, rules, folded state, and the ink of the open run
+  BenchEnvironment.swift    the bundled contract, the Mac facts, the clocks, and the qualification registry
+  BenchSetup.swift          Setup and line 0 of a bench or qualification session
+  BenchRunScreen.swift      the run screen
+  TabletInput.swift         TabletEvent, TabletMapper, and the clock check
+  TabletCaptureView.swift   the copy of each NSEvent, and the AppKit view of the tablet area
 ```
 
 Key decisions:
 
-- **Decider.** `decide(state, command, rules) -> Result<[Event], Rejection>` turns an intent into events. `rules` is the frozen study configuration for the session (instruments, safety items, crisis-list version, action codes, battery), because the fold does not hold it. `apply(state, entry) -> SessionState` turns a fact into the next state. `fold` applies every entry. Live operation and replay share `apply`.
+- **Decider.** `decide(state, command, rules) -> Result<[Event], Rejection>` turns an intent into events. `rules` is the frozen study configuration for the session (instruments, safety items, crisis-list version, action codes, battery), because the fold does not hold it. `apply(state, entry) -> SessionState` turns a fact into the next state. `fold` applies every entry. Live operation and replay share `apply`. A bench session has no configuration, so its `SessionRules` hold the battery, the instruments, and the programs file.
+- **Purpose gate.** `Battery.tasks(for:)` is a table from purpose to task set. A study session takes every task that is neither a qualification task nor a bench task. A qualification session takes `Battery.qualificationTasks`, and a bench session takes `Battery.benchTasks`.
+- **Bench sessions in `decide`.** A bench session refuses every handoff, questionnaire, safety, and `expire` command with `Rejection.noParticipant`. A `BenchRunPlan` names a program and a run index only. `decide` refuses a program outside the programs file, a program of another task, and a run index outside 1 to 7. It refuses the program and run index of an earlier trial of the session, whatever its outcome (`Rejection.repeatedRun`). So each run id names one run. It refuses a bench run planned as practice (`practiceBenchRun`), and every run when the header protocol differs from the protocol of the programs file (`otherProtocol`). It refuses `endTrial` with `timeLimit` for a bench run (`noTimeLimit`). `SessionState.benchRun(_:rules:)` holds the run checks, so both run screens ask it before they offer a run. A bench run plan in a session with a participant fails with `Rejection.notABenchSession`. `decide` copies the trajectory digest from the programs file and writes the run id as the clip.
+- **Marks of a bench run.** `decide` refuses an `exclude` mark on a fault run with `Rejection.excludeOnFaultRun`. The quality gate of the bench protocol needs every fault run as an ordinary trial. `BenchProgram.markCodes` gives the marks that both apps offer: `disturbance` and `deviceProblem`, and `exclude` for a main program.
 - **States.** `ready(Session)`, `drawing(Session, OpenTrial)`, `answering(Session, OpenBlock)`, `suspended(Session)` (the last line is `recovered`), `closed(Session)`. `sessionOpened` gives `ready`. `trialStarted` moves `ready` or `suspended` to `drawing`. `trialEnded` moves `drawing` to `ready`. `questionnaireStarted` moves `ready` or `suspended` to `answering`, and `questionnaireEnded` moves it back to `ready`. `recovered` moves `ready`, `drawing`, or `answering` to `suspended`, and an open trial or block becomes interrupted. `sessionClosed` moves `ready` or `suspended` to `closed`. A correction is legal in every state before `closed`.
 - **Further refusals in `decide`.** An operator alert or action in a self-administered session; an action with no open flag (each action answers the oldest open flag); a block start without a crisis list for the session's jurisdiction; an unverified instrument; a self-administered safety item without `remoteReview`; an `expire` of a supervised session, of a session that is not interrupted, or of a session inside its resume window.
 - **Unreached safety items in `decide`.** `endQuestionnaire` flags each safety item of the block that has no response before it ends the block, and a self-administered session shows the crisis list with the flag. `recovery` does the same for a block that a crash interrupted (section 3.3), and it needs the instrument set to know the safety items.
 - **Safety rules in `decide`.** In a supervised session, `close` is rejected while a safety flag has no `safetyAction`. In a session with at least one questionnaire block, `close` is rejected until the crisis list has been shown after the last block. `expire` closes an interrupted self-administered session after its resume window with no crisis list, because no participant is present. Section 15 gives the full protocol.
-- **InkRecorder** hides the contact lifecycle, the coalesced iteration, and the update-index map. It lives for the whole session, so a correction that arrives after a lift or after a trial still finds its contact. It is UIKit-free and testable on the Mac.
+- **InkRecorder** hides the contact lifecycle, the coalesced iteration, and the update-index map. It lives for the whole session, so a correction that arrives after a lift or after a trial still finds its contact. It is UIKit-free and testable on the Mac. It records the tablet readings of SCRIPT Bench too, and it drops every channel that the plan does not name.
+- **Tablet table.** `TabletTable` holds a `TabletGeometry` for each tablet model. A geometry has the product code, the lines per millimetre, the active area in tablet lines, `yDown`, and `confirmed`. Setup offers only confirmed entries. A tablet trial records the active area as `view`.
+- **The bench tablet.** The one entry is the Wacom Intuos Pro Medium (2025), product code `PTK670`. It has 200 lines per mm and an active area of 52600 × 29600 lines (263 × 148 mm). Both values come from the Wacom product page that the bench protocol cites as W1. Its `yDown` is false, and it stays provisional until the device test confirms the direction of `absoluteY`.
+- **AppKit adapter.** One app-level local event monitor reads every tablet event of SCRIPT Bench, wherever the pointer is in the window. `TabletCaptureView.swift` copies the fields of each `NSEvent` into a `TabletEvent`, so `TabletMapper` and the tests need no AppKit event. The app turns mouse coalescing off at launch.
+- **Tablet readings.** `TabletMapper` reads a mouse-down as the start of a contact and a mouse-drag as a move. It reads a tablet-point event in contact as a stationary sample, and a mouse-up as the end of the contact. A mouse-moved report without contact is a hover reading. A proximity leave during a contact cancels the contact. The mapper ignores the events of a device whose latest proximity event names an eraser or another device that is not a pen.
 - **JournalWriter** is an actor with one `AsyncStream` and one consumer, so line order equals call order on the main actor. It flushes at 64 KB, at 250 ms, or at `contactEnded`. It runs fsync at `trialEnded`, `questionnaireEnded`, `safetyFlagged`, `safetyAction`, `sessionClosed`, and when the scene goes to the background, so that no safety line can be lost in a crash. After a command that appends `safetyFlagged`, the store awaits the writer's `sync()` before the stage changes, so no screen that follows a flag shows before the flag is on storage.
 - **recover** keeps the complete lines, appends the `recovered` line (after the flags of the unreached safety items of an open block), writes the result to a temporary file, and renames it over the journal. A crash at any point leaves either the old file or the new one, so a second launch writes identical bytes. Recovery is a fact about the launch (`SessionState.recovery`), not a `Command`. A `recovered` line is legal in `suspended` too, because a second crash on a new boot must record its boot. Damage before the final line is not repaired. The file moves unchanged to `Damaged/`.
 - **publish** clones the journal into `Staging/<name>/`, writes the manifest, runs fsync, verifies the staged copy (decode, fold, counts, SHA-256), and renames the folder into `Exports/`. Only then does it delete the source journal.
 - **reconcile** runs at launch and converges from any crash point. Two launches in a row give identical bytes.
 - UIKit types stop at `CaptureView.swift`. The ink layer is a `CAShapeLayer` path for each contact plus one temporary layer for predicted points. The app does not use PencilKit, because a PencilKit canvas takes the touches itself.
+- `TabletCaptureView` is the one AppKit view of SCRIPT Bench. It draws the active area, the stimulus at the origin, the ink, and the pen position, scaled to fit the window. It puts its window in full screen while it shows, and it reports each change of the full-screen state to the store. The store fills the ink from the recorded lines, so the view shows what the journal holds.
 
 App container layout:
 
@@ -267,6 +345,19 @@ Library/Application Support/Deletions.jsonl         the deletion log
 Library/Application Support/Configurations/         imported configurations, by SHA-256
 ```
 
+SCRIPT Bench keeps all its data in one folder of the Mac user, `~/Library/Application Support/SCRIPT Bench/`. The button **Show the exports in Finder** on Home opens its `Exports/` folder.
+
+```
+~/Library/Application Support/SCRIPT Bench/
+  Sessions/<uuid>.jsonl     journals not yet exported
+  Staging/<name>/           publication in progress
+  Exports/<name>/           verified exports
+  Damaged/<uuid>.jsonl      journals with damage before the last line
+  ExportIndex.jsonl         {name, participantHMAC} per qualification export, which indexes the code QUAL
+  DeviceSecret              the key of the export index, in a file that only this user can read
+  Qualifications.json       the last qualification session of each tablet asset and pen
+```
+
 ## 6. Python shape
 
 Package `scriptkin`. Runtime dependencies: numpy, scipy, scikit-learn, cryptography, jsonschema. Python 3.12 or later.
@@ -276,6 +367,7 @@ python/src/scriptkin/
   __init__.py        public surface
   recording.py       Recording, Trial, Stroke, Channel, Device, TaskRef, session and trial context, questionnaire blocks
   battery.py         stimulus geometry and battery.json
+  bench.py           the bench tasks, the bench programs, and bench_programs.json
   instruments.py     questionnaire text and scoring rules, instruments.json
   studyconfig.py     the demo configuration and the configuration rules
   formats/journal.py fold, summarize: line checks and the session state machine
@@ -302,6 +394,9 @@ Key decisions:
 
 - **Library frame.** Millimetres, x to the right, y up. Readers convert units and flip y at the boundary. When the source scale is unknown, coordinates stay in source units, `Device.spatial_unit` is `"source"`, and features that need millimetres refuse with `unknown_scale`.
 - **Readers** parse one source into a `Recording`. The journal reader applies matched corrections to the last value received and keeps a mask of unresolved estimates. The journal keeps the originals. The journal reader also keeps the session context from the header, the trial context, the Begin time, and the end reason. Questionnaire blocks and their responses stay in `Recording.questionnaires`. They never enter strokes.
+- **Context union.** `SessionContext.subject` is a `ParticipantContext` for a study or qualification session, and a `BenchContext` for a bench session. `SessionContext.tablet` is a `TabletContext` when `input` is `tablet`, else `None`. `Trial.context` is a `TrialContext` or a `BenchRunContext`. Each consumer matches on the type.
+- **Bench and tablet recordings.** `Recording.participant` is `None` for a bench session. When `input` is `tablet`, `Device.model` is the tablet model. A `tablet` scale reads as a `TabletScale`. A planned `hover` channel is observed when an in-air stroke exists, with or without `z`.
+- **Bench registry.** `scriptkin.bench` holds the bench tasks and the programs in one table module. `python/studies/bench_programs.py` imports them, so the study script and the programs file share one registry.
 - **QC.** `assess` is the only function that builds a `Segment`. A segment is a run inside one stroke with strictly increasing time, no step longer than `max_gap_s`, finite positions, and at least `min_segment_s` duration. A gap splits a stroke. Nothing bridges a gap. `Accepted` has a private constructor.
 - **Timing QC for each pen state.** Duplicate times, decreasing times, or a low rate in a contact stroke reject the trial. The same defects in an in-air stroke refuse only the in-air features, for example `timing.in_air_s`. The contact features stay.
 - **Refusals.** A failed requirement returns `Refusal(code, detail)`, never a silent number. Structural errors in a file raise `JournalError` or `FormatError`.
@@ -309,7 +404,7 @@ Key decisions:
 - **Pooling.** Each per-segment feature declares a pool rule and `min_values`. Fewer finite segment values give `Refusal(too_few_values)`.
 - **Spectral pooling by Welch windows.** The spectral feature averages the Welch spectra of all segments, weighted by the number of windows in each segment, and then integrates the band. Its `min_values` counts Welch windows, not segments. A segment shorter than one window adds no window. The window length never shrinks.
 - **Feature families.** Kinematic, timing, pressure, tilt and roll, spatial error, spectral band power, entropy, and micro-movement spikes with a Gamma fit (Torres method: speed peaks normalized by the peak plus the mean speed between its neighbouring minima; location fixed at 0; maximum likelihood; intervals from the observed information). `timing.initiation_latency_s` is the time of the first contact sample minus the time of the Begin tap. A trial without a Begin tap gives a refusal.
-- **Feature table.** Practice trials and qualification sessions never enter `feature_table`. Each row has `administration`, `hand`, and `accommodations`, so that an analysis can stratify. A source without this context gives `unknown` and no accommodations.
+- **Feature table.** Practice trials, qualification sessions, and bench sessions never enter `feature_table`, which takes only sessions with `purpose: study`. Each row has `administration`, `hand`, and `accommodations`, so that an analysis can stratify. A source without this context gives `unknown` and no accommodations.
 - **Provenance.** A `FeatureTable` carries the library version, the QC policy, the preprocessing settings, the catalog digest, the source hashes, and the reader profiles. A reader profile is canonical JSON that names the reader and its unit conversions (for example the tablet resolution of an SVC file). Two tables from different reader settings therefore have different provenance.
 - **Labels.** `labels.labels(recording)` scores each questionnaire block with the scoring rule in `contract/instruments.json`. A `sum` rule adds the scored items. A DASS-21 subscale is its sum times 2. One missing item in a subscale is prorated (sum times 7/6). More missing items than the rule allows give a refusal, never a score of zero. Unscored items, such as `difficulty`, never enter a score. Each label has the instrument, version, locale, administration, block time, and score or refusal. `labels.safety_flag_count` counts safety flags for audit. It is never a label.
 - **Pen-only copy.** `pen_only(export, target)` writes a copy without questionnaire, response, and safety lines, and without `recovered.interruptedBlock`. It also ends at the last `trialEnded`: every later line is dropped, and `sessionClosed.t` is set to the time of that `trialEnded`. The time after the last task depends on whether an operator handled a safety flag, so keeping it would leak the label. It renumbers `seq`, recounts `sessionClosed.counts`, writes a new manifest, and writes `derivation.json` with the source session identifier and the SHA-256 of the source journal. The copy must pass I1 to I7 before the function returns. It refuses a session with a questionnaire or safety line before the last `trialEnded`, for example a `beforeTasks` block. The time gap around the dropped lines would show how long the block took.
@@ -323,7 +418,7 @@ Key decisions:
   - `intake.jsonl`: every intake, in order.
 - **Intake results.** A session with one journal is `accepted` into `sessions/`. The same journal again is a `duplicate`, and intake copies nothing. A journal is the same when its plaintext bytes are the same, so a copy that was encrypted again is a duplicate. A different journal for a session is a `conflict`: every version goes to `quarantine/`, and `sessions/` keeps none, because the store cannot know which one is correct. A failed check is `quarantined`. An absent or wrong study key raises `StudyKeyError`. Intake then refuses that export and writes nothing, so a second run with the correct key can take it.
 - **Idempotent intake.** The log records each export by its source folder and the SHA-256 of its files. Intake skips an export that the log already records, so a second run on the same sources changes no byte in the store. A folder or a receipt file gets its final name only when it is complete. The log is append-only. A crash leaves at most a torn last log line, and the next run removes it. Intake never writes into a source folder, and it never reads its own store as a source.
-- **QC report.** `qc_report(store, *, private_key)` reads every session in `store/sessions/`. It counts sessions by site, device asset, configuration digest, app version, administration, and purpose. It counts the measured trials of study sessions that `assess` accepts or refuses, with the refusal codes. These are the trials that `feature_table` uses. For each device asset and declared Pencil, it gives the sample rate from the intervals inside contact strokes (median, 5th and 95th percentile) and the latest qualification session in the store. It also gives the planned and observed channels, the rates of unresolved estimates and unmatched corrections, the interrupted trials and blocks, the recovered sessions, and the safety counts of the fold summary, for audit. `qc_markdown` writes two short tables. No label, score, response, feature value, or participant code enters the report.
+- **QC report.** `qc_report(store, *, private_key)` reads every session in `store/sessions/`. It counts sessions by the asset of the device that samples the pen, by app version, and by purpose. It counts the sessions with a participant by site, configuration digest, and administration. It counts the measured trials of study sessions that `assess` accepts or refuses, with the refusal codes. These are the trials that `feature_table` uses. For each device that samples the pen, it gives the sample rate from the intervals inside contact strokes (median, 5th and 95th percentile) and the latest qualification session in the store. That device is the iPad asset with its declared Pencil, or the tablet asset with its declared pen. It also gives the planned and observed channels, the rates of unresolved estimates and unmatched corrections, the interrupted trials and blocks, the recovered sessions, and the safety counts of the fold summary, for audit. `qc_markdown` writes two short tables. No label, score, response, feature value, or participant code enters the report.
 - **ParkinsonHW.** `read_parkinsonhw` reads the public UCI files for reader and feature tests only. A row is `X;Y;Z;Pressure;GripAngle;Timestamp;Test ID`. Time is in milliseconds; the real files have a median sample interval of 7 ms. A positive pressure is contact, and zero pressure is in-air. Z is not a pen state: it is nonzero in single samples inside contact. No source gives a unit for X, Y, Z, or the grip angle, so positions stay in source units, and Z and the grip angle are not channels. Each test ID is a trial named `parkinsonhw-static-spiral`, `parkinsonhw-dynamic-spiral`, or `parkinsonhw-circular-motion`, from the dataset readme. A file is known only by the SHA-256 of its bytes. Class folders and class file name prefixes never decide a value, an order, or an error message, and no label is read.
 
 ## 7. Evaluation
@@ -435,22 +530,24 @@ SCRIPT/
   contract/
     journal.schema.json       JSON Schema 2020-12
     battery.json              generated, checked in
+    bench_programs.json       generated, checked in
     fixtures/journal/*.jsonl and *.fold.json
     fixtures/svc/  fixtures/parkinsonhw/
     fixtures/doubles.json
   app/
     Package.swift  Sources/ScriptCore/  Tests/ScriptCoreTests/
     ScriptApp.xcodeproj  ScriptApp/  ScriptAppUITests/
+    ScriptBench/  ScriptBenchTests/
   python/
     pyproject.toml  uv.lock  src/scriptkin/  tests/  studies/
 ```
 
-`./check` stops at the first failure. It runs the contract check, the `ScriptCore` tests on the Mac, the app tests on the "iPad Pro 11-inch (M5)" simulator, and then the Python checks. The Python checks are the lint, the type check, and the tests. The tests read the exports of the Swift and app tests. The `core` and `app` sections first delete the exports of an earlier run. When the `app` section ran, the Python tests fail if the app exports are absent. Build output goes to `~/Library/Caches/SCRIPT/<checkout>-<hash>/`, outside the repository, so that the repository can sit on an exFAT drive.
+`./check` stops at the first failure. Its default order is `contract core bench app python`. It runs the contract check, the `ScriptCore` tests on the Mac, and the `ScriptBench` tests on the Mac. Then it runs the app tests on the "iPad Pro 11-inch (M5)" simulator and the Python checks. The Python checks are the lint, the type check, and the tests. The tests read the exports of the Swift, bench, and app tests. The `core`, `bench`, and `app` sections first delete the exports of an earlier run. The `bench` and `app` sections also check that the String Catalog of their app matches the strings in the source. When the `bench` or `app` section ran, the Python tests fail if its exports are absent. Build output goes to `~/Library/Caches/SCRIPT/<checkout>-<hash>/`, outside the repository, so that the repository can sit on an exFAT drive.
 
 The fixtures tie the two languages in three directions:
 
 1. **Python to both.** `scriptkin contract regenerate` writes the journal fixtures and their `.fold.json` summaries. The generator writes each summary from what it built, not from a reader. Swift and Python both fold each fixture and compare with `.fold.json`.
-2. **Swift to Python.** A Swift test drives `decide` and `InkRecorder`, writes through `JournalWriter`, and publishes through `Storage` into `$SCRIPT_CONTRACT_OUT`. pytest reads that export with `read_journal` and compares its summary with the Swift summary.
+2. **Swift to Python.** A Swift test drives `decide` and `InkRecorder`, writes through `JournalWriter`, and publishes through `Storage` into `$SCRIPT_CONTRACT_OUT`. pytest reads that export with `read_journal` and compares its summary with the Swift summary. The `ScriptBench` tests drive the bench store with tablet events and publish into `$SCRIPT_CONTRACT_OUT/bench/`. They write a bench export and a qualification export, each with its Swift summary. The app UI tests write the Swift summary beside each export too. Then pytest compares each of these summaries with its Python fold.
 3. **Schema to both.** pytest validates each fixture line and each Swift output line against `journal.schema.json`.
 
 Each test names the defect that it detects.
@@ -472,6 +569,7 @@ Three runners designed the platform independently: GPT-6.1 Sol, GPT-6 Astra, and
 - We accept an operator declaration of the Pencil model, because no public API reports it. QC checks the declaration against the data.
 - We accept one row per participant in screening. Within-participant variability must be an explicit feature.
 - We accept that the UIKit capture adapter is verified on a real device, not in automated checks, because the simulator cannot make Pencil force or tilt.
+- We accept that the AppKit capture adapter is verified on a real tablet, not in automated checks. The `ScriptBench` tests drive the store with `TabletEvent` values. So only the bench Mac with the tablet can check the copy from `NSEvent` and the values of the Wacom driver (`docs/DEVICE_TESTING.md`).
 
 ## 12. Open questions
 
@@ -480,6 +578,15 @@ Three runners designed the platform independently: GPT-6.1 Sol, GPT-6 Astra, and
 - Which iPad models go in the pixel-density table?
 - Are the default QC thresholds and the 200 Hz analysis grid correct for cross-device comparison?
 - Is the micro-movement normalization exactly the published Torres definition?
+- Does the Wacom driver fill `absoluteX` and `absoluteY` for every pen event? In which direction does `absoluteY` grow? The tablet table keeps `yDown: false` until the device test confirms it.
+- Does `NSEvent.pressure` reach 1.0 on the Intuos Pro Medium (2025)? `maxForce` 1 records this assumption, so an analysis can correct it.
+- Do `NSEvent.timestamp` and `ProcessInfo.systemUptime` share one clock on the bench Mac, and how does each behave across sleep? The launch clock check tests the first point at each launch.
+- What is the report rate of the tablet with mouse coalescing off? The qualification report of a tablet qualification session measures it.
+- Do `tabletPoint` events arrive beside the mouse events with the tablet subtype? The capture reads a tablet-point event in contact as a stationary sample.
+- Does the driver report rotation for the Pro Pen 3? No pen plans `rotation` now, so the journal cannot show it.
+- Can an API read the version of the Wacom driver? Now the operator types it in Setup.
+- Does `kern.bootsessionuuid` exist on macOS? Without it, `Clock.boot` in SCRIPT Bench is a new random UUID at each launch.
+- How does the scaled `NSEvent.tilt` map to an angle? The journal keeps the native value, so the answer changes no journal.
 
 ## 13. Build order
 
@@ -554,11 +661,15 @@ The operator gives the attestation in supervised sessions. In self-administered 
 
 ## 16. Device qualification
 
-A qualification session has `purpose: qualification` and a fixed task set: a reference-length check with a steel rule or an ID-1 card, a 10-second still hold, and a straight-line stroke along a guide. Channel presence comes from the samples of these three tasks. It writes an ordinary journal. `scriptkin` computes the sample-interval distribution, gaps, jitter, scale error, and channel presence from it. The app records a qualification session with the participant code `QUAL` and an operator attestation without documents. A study session records the identifier of the last qualification session on its device and Pencil. "Can record" differs from "qualified for comparison"; only the analysis plan decides the second.
+A qualification session has `purpose: qualification` and a fixed task set: a reference-length check with a steel rule or an ID-1 card, a 10-second still hold, and a straight-line stroke along a guide. Channel presence comes from the samples of these three tasks. It writes an ordinary journal. From it, `qualification.qualify` reports the sample intervals, the still-hold jitter, the straight-line deviation, the scale source, and the channels (section 6). The app records a qualification session with the participant code `QUAL` and an operator attestation without documents. A study or bench session records the identifier of the last qualification session on its device and pen. "Can record" differs from "qualified for comparison"; only the analysis plan decides the second.
+
+SCRIPT Bench records a tablet qualification session with the same three tasks. The operator picks each task on the run screen and draws it with the pen on the tablet. The header has `input: tablet`, the `tablet` object, and the tablet scale. As on the iPad, it records the code `QUAL` and an operator attestation without documents, under the study of the demo configuration.
+
+The Mac screen shows the tablet area at a reduced size, so a steel rule on the screen cannot check the scale. The operator draws the reference stroke along a steel rule on the tablet instead. The device test compares its length in tablet lines with the rule (`docs/DEVICE_TESTING.md`). A closed tablet qualification becomes the last qualification of its tablet asset and pen, and the next bench header on the Mac names it.
 
 ## 17. Privacy and withdrawal
 
-- Journals and exports use iOS file protection `completeUntilFirstUserAuthentication`.
+- Journals and exports use iOS file protection `completeUntilFirstUserAuthentication`. On the Mac, SCRIPT Bench sets no file protection class. It excludes `Sessions/`, `Staging/`, `Exports/`, `Damaged/`, and the export index from backups.
 - Research data never enter a device backup. The app sets `isExcludedFromBackup` on `Sessions/`, `Staging/`, `Exports/`, `Damaged/`, the deletion log, and the export index. So no journal, export, or log reaches iCloud or a computer backup. Exports leave the device only by a person's action: through Files, or through file sharing in Finder on a connected Mac. The device secret for the deletion log is a `ThisDeviceOnly` Keychain item, so the log is checkable only on the device that wrote it.
 - When the configuration has an export key, the export is encrypted to the study's public key with HPKE (RFC 9180, base mode, DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, ChaCha20-Poly1305). This is CryptoKit's `HPKE.Ciphersuite.Curve25519_SHA256_ChachaPoly`. The export folder then holds `journal.jsonl.hpke` in place of `journal.jsonl`. The `info` parameter is the UTF-8 text `SCRIPT export 1.0`, and the associated data is the UTF-8 session identifier. The manifest gains this block:
 
@@ -569,7 +680,7 @@ A qualification session has `purpose: qualification` and a fixed task set: a ref
                  "ciphertext": {"bytes": 18234128, "sha256": "..."}}
   ```
 
-  The `journal` block of the manifest is then absent. `keyID` is the lowercase hex SHA-256 of the raw 32-byte X25519 public key; a configuration may state it, and then it must match. `scriptkin` refuses a private key whose public key does not give the manifest `keyID`. A plaintext export has `"demo": true` in its manifest; any configuration with an export key encrypts. `scriptkin` decrypts with the study's private key and then applies the normal integrity rules to the plaintext.
+  The `journal` block of the manifest is then absent. `keyID` is the lowercase hex SHA-256 of the raw 32-byte X25519 public key; a configuration may state it, and then it must match. `scriptkin` refuses a private key whose public key does not give the manifest `keyID`. A plaintext export has `"demo": true` in its manifest; any configuration with an export key encrypts. Both apps export a bench session as plaintext, because the bench data are released. SCRIPT Bench also exports its qualification sessions as plaintext, under the demo configuration. `scriptkin` decrypts with the study's private key and then applies the normal integrity rules to the plaintext.
 - **Damaged packages.** A journal in `Damaged/` can hold safety flags, so the operator action "Export damaged journal" on Home publishes it under the same export policy: the policy of the configuration that its `sessionOpened` line names, or of the active configuration when that line does not decode. A configuration with an export key encrypts. The folder is `Exports/SCRIPT_DAMAGED_<file name of the damaged journal, lowercase>/`, and the file name is the session identifier. The journal is the bytes as found. The manifest has the normal shape and one more member, after `sessionID`:
 
   ```json
@@ -582,5 +693,5 @@ A qualification session has `purpose: qualification` and a fixed task set: a ref
 
 ## 18. Intended use
 
-SCRIPT is a research platform. It records drawing movement and reference questionnaire responses in supervised and self-administered sessions with people aged 13 to 24, and it tests whether movement features relate to symptom scores. It does not diagnose, screen, triage, or advise. It shows no score or interpretation to anyone. Any screening claim needs a separate intended-use statement, a validation study in the intended population and setting, and the applicable regulatory review.
+SCRIPT is a research platform. It records drawing movement and reference questionnaire responses in supervised and self-administered sessions with people aged 13 to 24, and it tests whether movement features relate to symptom scores. It does not diagnose, screen, triage, or advise. It shows no score or interpretation to anyone. Its bench capture records a motion system for the bench study, and no person. Any screening claim needs a separate intended-use statement, a validation study in the intended population and setting, and the applicable regulatory review.
 

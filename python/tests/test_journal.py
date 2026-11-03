@@ -13,18 +13,27 @@ from conftest import CONTRACT, FIXTURES, write_encrypted_export, write_export
 from conftest import fixture_lines as lines
 from jsonschema import Draft202012Validator
 
-from scriptkin import Channel, PenState
+from scriptkin import Channel, PenState, bench
 from scriptkin.contract import FORCE, JournalBuilder
 from scriptkin.formats.export import load_export, read_journal
 from scriptkin.formats.journal import JournalError, fold, summarize
 from scriptkin.recording import (
+    BenchContext,
+    BenchRunContext,
     BlockOutcome,
+    DocumentRef,
     EndReason,
     LocalizedRef,
     ModelTableScale,
+    ParticipantContext,
     ReferenceScale,
+    TabletContext,
+    TabletScale,
+    TrialContext,
     TrialOutcome,
 )
+
+SCHEMA = Draft202012Validator(json.loads((CONTRACT / "journal.schema.json").read_bytes()))
 
 FOLD_CASES = sorted(
     p for p in (FIXTURES / "journal").glob("*.jsonl") if not p.name.startswith("._")
@@ -95,31 +104,34 @@ def test_reader_keeps_session_context() -> None:
 
     context = fold(lines("supervised_minor_safety")).context
     assert context is not None
-    assert (context.purpose, context.administration, context.age_band) == ("study", "supervised", "13-17")
-    assert (context.jurisdiction, context.locale, context.device_asset) == ("GB", "en", "IPAD-01")
-    assert (context.visit.id, context.visit.number) == ("V1", 1)
-    assert context.study.config_sha256 == demo_config_sha256()
-    assert (context.consent.model, context.consent.attested_role) == ("guardianAndAssent", "operator")
-    assert [d.id for d in context.consent.documents] == ["demo-guardian-permission", "demo-assent"]
-    assert context.ethics.approval_id == "DEMO-NOT-APPROVED"
+    person = context.subject
+    assert isinstance(person, ParticipantContext)
+    assert (context.purpose, person.administration, person.age_band) == ("study", "supervised", "13-17")
+    assert (person.jurisdiction, person.locale, context.device_asset) == ("GB", "en", "IPAD-01")
+    assert (person.visit.id, person.visit.number) == ("V1", 1)
+    assert person.study.config_sha256 == demo_config_sha256()
+    assert (person.consent.model, person.consent.attested_role) == ("guardianAndAssent", "operator")
+    assert [d.id for d in person.consent.documents] == ["demo-guardian-permission", "demo-assent"]
+    assert person.ethics.approval_id == "DEMO-NOT-APPROVED"
     assert (context.surface.protector, context.surface.nib) == ("none", "new")
     assert isinstance(context.scale, ModelTableScale) and context.scale.ppi == 264.0
-    assert context.qualification is None
+    assert context.qualification is None and context.tablet is None
     self_context = fold(lines("self_administered")).context
-    assert self_context is not None and self_context.administration == "self"
-    assert self_context.consent.attested_role == "enrolment"
+    assert self_context is not None and isinstance(self_context.subject, ParticipantContext)
+    assert self_context.subject.administration == "self"
+    assert self_context.subject.consent.attested_role == "enrolment"
     assert self_context.scale == ReferenceScale("idCard", 0.1925, 85.6, 444.67532467532465)
 
 
 def test_reader_keeps_trial_context_begin_time_and_end_reason() -> None:
     # Detects a trial that loses its practice flag, position, hand, accommodations, Begin time, or end reason.
     trials = fold(lines("multi_trial")).trials
-    contexts = [t.context for t in trials]
-    assert all(c is not None for c in contexts)
-    assert [c.practice for c in contexts if c] == [True, False, False, False, False, False]
-    assert [c.position for c in contexts if c] == [1, 2, 3, 4, 5, 6]
-    assert [c.accommodations for c in contexts if c][5] == ("readAloud",)
-    assert [c.instruction for c in contexts if c][1] == LocalizedRef("spiral-trace", "1.0", "en")
+    contexts = [t.context for t in trials if isinstance(t.context, TrialContext)]
+    assert len(contexts) == len(trials)
+    assert [c.practice for c in contexts] == [True, False, False, False, False, False]
+    assert [c.position for c in contexts] == [1, 2, 3, 4, 5, 6]
+    assert contexts[5].accommodations == ("readAloud",)
+    assert contexts[1].instruction == LocalizedRef("spiral-trace", "1.0", "en")
     assert [t.began for t in trials] == [1005.5, 1010.4, 1013.1, 1016.2, None, 1147.0]
     assert [t.end_reason for t in trials] == [
         EndReason.PARTICIPANT_DONE,
@@ -131,7 +143,229 @@ def test_reader_keeps_trial_context_begin_time_and_end_reason() -> None:
     ]
     assert trials[4].outcome == TrialOutcome.DECLINED
     left = fold(lines("usbc_no_force")).trials[0].context
-    assert left is not None and left.hand == "left"
+    assert isinstance(left, TrialContext) and left.hand == "left"
+
+
+def test_bench_header_and_run_facts_reach_the_recording() -> None:
+    # Detects a reader that loses the bench header, a run fact, the clip, a mark, or the end reason.
+    rec = fold(lines("bench_ipad"))
+    assert rec.participant is None and rec.questionnaires == ()
+    context = rec.context
+    assert context is not None and context.purpose == "bench" and context.tablet is None
+    assert context.subject == BenchContext(
+        "P", "M1", DocumentRef("nextdraw-8511", "unknown"), bench.PROTOCOL_VERSION, bench.PROTOCOL_SHA256
+    )
+    assert context.device_asset == "IPAD-02"
+    assert [t.context for t in rec.trials] == [
+        BenchRunContext(
+            False, 1, "loops-l-v20", 1, bench.trajectory_sha256("loops-l-v20"), "P-M1-loops-l-v20-r1"
+        ),
+        BenchRunContext(
+            False, 2, "spiral-s-v40", 1, bench.trajectory_sha256("spiral-s-v40"), "P-M1-spiral-s-v40-r1"
+        ),
+        BenchRunContext(
+            False, 3, "fault-lift", 1, bench.trajectory_sha256("fault-lift"), "P-M1-fault-lift-r1"
+        ),
+    ]
+    assert [t.task.id for t in rec.trials] == ["bench-loops-l", "bench-spiral-s", "bench-loops-l"]
+    assert [t.attempt for t in rec.trials] == [1, 1, 2]
+    assert {t.end_reason for t in rec.trials} == {EndReason.OPERATOR_DONE}
+    assert {t.outcome for t in rec.trials} == {TrialOutcome.COMPLETED}
+    assert [t.marks for t in rec.trials] == [(), ("disturbance",), ()]
+    rerun = fold(lines("bench_wacom")).trials[0]
+    assert rerun.task.id == "bench-line" and rerun.context == BenchRunContext(
+        False, 1, "line-osc8", 2, bench.trajectory_sha256("line-osc8"), "W-M3-line-osc8-r2"
+    )
+
+
+def test_tablet_samples_keep_native_tilt_pressure_and_lines() -> None:
+    # Detects a tablet sample converted to Pencil angles, scaled by the wrong factor, or named after the Mac.
+    rec = fold(lines("bench_wacom"))
+    assert (rec.device.model, rec.device.input) == ("Wacom Intuos Pro Medium (2025)", "tablet")
+    assert rec.device.planned_channels == {Channel.FORCE, Channel.TILT_X, Channel.TILT_Y, Channel.HOVER}
+    context = rec.context
+    assert context is not None and context.device_asset == "MAC-01"
+    assert context.tablet == TabletContext(
+        "Wacom Intuos Pro Medium (2025)", "WACOM-01", "6.4.10-3", "proPen3"
+    )
+    assert context.scale == TabletScale(200.0, 0.005)
+    first = next(s for s in rec.trials[0].strokes if s.state == PenState.CONTACT)
+    np.testing.assert_allclose(first.xy[1], [10016 * 0.005, -8000.5 * 0.005])
+    assert set(first.channels) == {Channel.FORCE, Channel.TILT_X, Channel.TILT_Y}
+    assert first.channels[Channel.FORCE].tolist() == pytest.approx([0.3 + 0.02 * i for i in range(5)])
+    assert first.channels[Channel.TILT_X].tolist() == pytest.approx([0.1 + 0.01 * i for i in range(5)])
+    assert first.channels[Channel.TILT_Y].tolist() == [-0.2] * 5
+    assert first.max_force == 1 and not first.unresolved.any()
+
+
+def test_hover_without_height_builds_an_in_air_stroke() -> None:
+    # Detects a tablet hover line dropped for its absent height, or a hover channel invented for it.
+    trial = fold(lines("bench_wacom")).trials[0]
+    air = [s for s in trial.strokes if s.state == PenState.IN_AIR]
+    assert [len(s.t) for s in air] == [3, 2]
+    assert all(Channel.HOVER not in s.channels for s in air)
+    assert air[0].t[0] == 1010.8 and air[0].xy[0].tolist() == [9800 * 0.005, -8000 * 0.005]
+    ipad = [s for s in fold(lines("multi_trial")).trials[1].strokes if s.state == PenState.IN_AIR]
+    assert ipad[0].channels[Channel.HOVER].tolist() == [0.4]
+
+
+@pytest.mark.parametrize(
+    ("fixture", "kind", "key", "donor"),
+    [
+        ("bench_ipad", "sessionOpened", "participant", "basic"),
+        ("bench_ipad", "sessionOpened", "administration", "basic"),
+        ("basic", "sessionOpened", "bench", "bench_ipad"),
+        ("bench_ipad", "trialStarted", "hand", "basic"),
+        ("basic", "trialStarted", "bench", "bench_ipad"),
+    ],
+)
+def test_a_participant_key_on_a_bench_session_is_refused(
+    fixture: str, kind: str, key: str, donor: str
+) -> None:
+    # Detects a bench journal with a participant fact, or a participant journal with a run fact.
+    rows = lines(fixture)
+    row = next(r for r in rows if r["kind"] == kind)
+    row[key] = next(r for r in lines(donor) if r["kind"] == kind)[key]
+    with pytest.raises(JournalError, match=f"I1, line {row['seq']}"):
+        summarize(rows)
+    assert list(SCHEMA.iter_errors(row))
+
+
+def _set(rows: list[dict[str, Any]], kind: str, keys: tuple[str, ...], value: Any) -> dict[str, Any]:
+    """Set the value under `keys` on the first line of `kind`, and return that line."""
+    row = next(r for r in rows if r["kind"] == kind)
+    target = row
+    for key in keys[:-1]:
+        target = target[key]
+    target[keys[-1]] = value
+    return row
+
+
+@pytest.mark.parametrize(
+    ("kind", "keys", "value"),
+    [
+        ("trialStarted", ("bench", "run"), 0),
+        ("trialStarted", ("bench", "run"), 8),
+        ("sessionOpened", ("bench", "mounting"), "M9"),
+        ("mark", ("code",), "cameraSync"),
+    ],
+)
+def test_a_run_index_mounting_or_mark_outside_the_protocol_is_refused(
+    kind: str, keys: tuple[str, ...], value: Any
+) -> None:
+    # Detects a reader or schema that accepts a run index outside 1 to 7, a mounting outside M1 to M8, or
+    # a synchronisation mark, which the protocol does not define.
+    rows = lines("bench_ipad")
+    row = _set(rows, kind, keys, value)
+    with pytest.raises(JournalError, match=f"I1, line {row['seq']}"):
+        summarize(rows)
+    assert list(SCHEMA.iter_errors(row))
+
+
+@pytest.mark.parametrize(
+    ("kind", "keys", "value"),
+    [
+        ("sample", ("tiltX",), 1.5),
+        ("hover", ("tiltY",), -2.0),
+        ("sessionOpened", ("bench", "protocol", "sha256"), "abc"),
+        ("sessionOpened", ("bench", "protocol", "version"), ""),
+        ("sessionOpened", ("bench", "motion", "id"), ""),
+        ("sessionOpened", ("bench", "motion", "version"), ""),
+        ("sessionOpened", ("tablet", "model"), ""),
+        ("sessionOpened", ("tablet", "driver"), ""),
+        ("sessionOpened", ("tablet", "asset"), "WACOM 01"),
+        ("trialStarted", ("bench", "program"), "Line-osc8"),
+        ("trialStarted", ("bench", "trajectorySHA256"), "xyz"),
+        ("trialStarted", ("bench", "clip"), ""),
+        ("trialStarted", ("bench", "clip"), "x" * 65),
+    ],
+)
+def test_a_bench_or_tablet_value_that_the_schema_refuses_is_refused(
+    kind: str, keys: tuple[str, ...], value: Any
+) -> None:
+    # Detects a Python reader that accepts a tilt outside -1 to 1, a digest that is not SHA-256 hex, an
+    # empty bench or tablet name, an asset that is not a code, a program that is not a program id, or a
+    # clip outside 1 to 64 characters, which the schema and the Swift reader refuse.
+    rows = lines("bench_wacom")
+    row = _set(rows, kind, keys, value)
+    with pytest.raises(JournalError, match=f"I1, line {row['seq']}"):
+        summarize(rows)
+    assert list(SCHEMA.iter_errors(row))
+
+
+def test_a_tablet_channel_on_a_correction_line_is_not_read() -> None:
+    # Detects a reader that refuses a correction line for a tablet key, which the Swift reader ignores, or
+    # that copies the key into the corrected samples.
+    rows = lines("bench_ipad")
+    next(r for r in rows if r["kind"] == "correction")["tiltX"] = "a"
+    assert summarize(rows) == summarize(lines("bench_ipad"))
+    assert all(Channel.TILT_X not in s.channels for s in fold(rows).trials[0].strokes)
+
+
+def test_a_bench_run_that_ends_at_a_time_limit_is_refused() -> None:
+    # Detects a reader that accepts a bench run cut by a time limit, which the protocol does not define.
+    # The Swift fold refuses the same line of the same fixture.
+    rows = lines("bench_ipad")
+    assert _set(rows, "trialEnded", ("reason",), "timeLimit")["seq"] == 14
+    with pytest.raises(JournalError, match="I6, line 14"):
+        summarize(rows)
+
+
+def test_the_last_rerun_and_the_eighth_mounting_are_accepted() -> None:
+    # Detects a reader or schema whose run or mounting range stops short of the protocol's last values.
+    rows = lines("bench_ipad")
+    head = _set(rows, "sessionOpened", ("bench", "mounting"), "M8")
+    run = _set(rows, "trialStarted", ("bench", "run"), 7)
+    assert summarize(rows)["state"] == "closed"
+    assert not list(SCHEMA.iter_errors(head)) and not list(SCHEMA.iter_errors(run))
+
+
+@pytest.mark.parametrize("kind", ["handoff", "questionnaireStarted", "safetyShown", "safetyAction"])
+def test_a_questionnaire_line_in_a_bench_session_is_refused(kind: str) -> None:
+    # Detects a bench journal that can hold a handoff, a questionnaire, or a safety line.
+    rows = lines("bench_ipad")
+    donor = next(r for r in lines("supervised_minor_safety") if r["kind"] == kind)
+    index = next(i for i, r in enumerate(rows) if r["kind"] == "trialEnded") + 1
+    rows.insert(index, {**donor, "t": rows[index - 1]["t"]})
+    renumber(rows)
+    rows[-1]["counts"][kind] += 1
+    with pytest.raises(JournalError, match=f"I6, line {index}"):
+        summarize(rows)
+
+
+def test_format_1_headers_read_and_format_3_is_refused(tmp_path: Path) -> None:
+    # Detects a 2.0 reader that refuses a 1.0 journal or manifest, or accepts a major it does not know.
+    rows = lines()
+    rows[0]["format"] = "1.0"
+    for key in ("tiltX", "tiltY", "rotation"):
+        del rows[0]["channels"][key]
+    assert fold(rows).device.planned_channels == {
+        Channel.FORCE,
+        Channel.ALTITUDE,
+        Channel.AZIMUTH,
+        Channel.ROLL,
+        Channel.HOVER,
+    }
+    write_export(tmp_path, rows)
+    manifest_path = tmp_path / "manifest.json"
+    manifest = json.loads(manifest_path.read_bytes())
+    manifest_path.write_text(json.dumps({**manifest, "version": "1.0"}))
+    assert read_journal(tmp_path).session_id == rows[0]["sessionID"]
+    manifest_path.write_text(json.dumps({**manifest, "version": "3.0"}))
+    with pytest.raises(JournalError, match="I5, line 0"):
+        read_journal(tmp_path)
+    rows[0]["format"] = "3.0"
+    with pytest.raises(JournalError, match="I3, line 0"):
+        summarize(rows)
+
+
+def test_bench_summary_has_no_administration() -> None:
+    # Detects a bench summary with an administration key, null or not, or a participant summary without one.
+    for name in ("bench_ipad", "bench_wacom"):
+        summary = summarize(lines(name))
+        assert "administration" not in summary
+        assert summary == json.loads((FIXTURES / "journal" / f"{name}.fold.json").read_bytes())
+    assert summarize(lines())["administration"] == "supervised"
 
 
 def test_questionnaire_blocks_stay_apart_from_strokes() -> None:
@@ -191,7 +425,7 @@ def test_i3_rejects_invalid_session_bounds(tmp_path: Path, change: str) -> None:
     if change == "first":
         rows[0] = {"kind": "hover", "seq": 0, "t": 0, "clock": "callback", "x": 0, "y": 0, "z": 0}
     elif change == "version":
-        rows[0]["format"] = "2.0"
+        rows[0]["format"] = "3.0"
     else:
         rows.pop()
     write_export(tmp_path, rows)

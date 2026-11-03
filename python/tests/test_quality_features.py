@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from conftest import make_trial
+from conftest import fixture_lines, make_trial
 
 from scriptkin import (
     CATALOG,
@@ -26,6 +26,7 @@ from scriptkin import (
     battery,
     extract,
     feature_table,
+    fold,
 )
 from scriptkin.features import catalog_digest
 from scriptkin.recording import FloatArray
@@ -96,6 +97,36 @@ def test_simulator_refuses_pen_channels() -> None:
     assert isinstance(qc, Accepted)
     cell = extract(qc)["pressure.force_mean"]
     assert isinstance(cell, Refusal) and cell.code == "simulated_input"
+
+
+def test_tablet_input_computes_kinematics_and_refuses_pen_tilt_features() -> None:
+    # Detects a tablet treated as simulated input, or a Pencil tilt feature computed without its channel.
+    t = np.arange(101, dtype=float) / 100
+    planned = frozenset({Channel.FORCE, Channel.TILT_X, Channel.TILT_Y, Channel.HOVER})
+    channels = {
+        Channel.FORCE: np.full(len(t), 0.5),
+        Channel.TILT_X: np.full(len(t), 0.1),
+        Channel.TILT_Y: np.full(len(t), -0.2),
+    }
+    stroke = Stroke(t, np.column_stack((t * 10, np.zeros(len(t)))), channels=channels)
+    device = Device("Wacom Intuos Pro Medium (2025)", "tablet", planned, planned)
+    qc = assess(make_trial(t, strokes=(stroke,), device=device))
+    assert isinstance(qc, Accepted)
+    cells = extract(qc)
+    assert cells["kinematic.speed_mean"] == pytest.approx(10)
+    assert cells["pressure.force_mean"] == pytest.approx(0.5)
+    for name in ("tilt.altitude_mean", "tilt.azimuth_variance", "tilt.roll_variance"):
+        cell = cells[name]
+        assert isinstance(cell, Refusal) and cell.code == "missing_channel"
+
+
+def test_planned_hover_is_observed_from_in_air_strokes_without_height() -> None:
+    # Detects QC that reports the planned hover channel absent for a tablet whose hover lines have no height.
+    rec = fold(fixture_lines("bench_wacom"))
+    assert Channel.HOVER in rec.device.planned_channels
+    assert Channel.HOVER in rec.device.observed_channels
+    findings = {r.code for r in assess(rec.trials[0]).report.findings}
+    assert "missing_channel" not in findings
 
 
 @pytest.mark.parametrize(

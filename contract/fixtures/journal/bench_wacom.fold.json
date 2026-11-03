@@ -1,0 +1,50 @@
+{
+ "sessionID": "3F2A9C1E-0000-4000-8000-000000000014",
+ "purpose": "bench",
+ "state": "closed",
+ "counts": {
+  "sessionOpened": 1,
+  "handoff": 0,
+  "trialStarted": 1,
+  "trialBegan": 1,
+  "contactBegan": 2,
+  "sample": 13,
+  "correction": 0,
+  "contactEnded": 2,
+  "hover": 5,
+  "finger": 0,
+  "trialEnded": 1,
+  "questionnaireStarted": 0,
+  "response": 0,
+  "questionnaireEnded": 0,
+  "safetyFlagged": 0,
+  "safetyShown": 0,
+  "safetyAction": 0,
+  "mark": 0,
+  "recovered": 0,
+  "sessionClosed": 1
+ },
+ "trials": [
+  {
+   "index": 0,
+   "task": "bench-line",
+   "attempt": 1,
+   "practice": false,
+   "began": true,
+   "outcome": "completed",
+   "contacts": 2,
+   "samples": 13,
+   "corrections": 0,
+   "unresolved": 0
+  }
+ ],
+ "questionnaires": [],
+ "safety": {
+  "flags": 0,
+  "crisisListShown": 0,
+  "operatorAlerts": 0,
+  "actions": 0
+ },
+ "unmatchedCorrections": 0,
+ "truncatedBytes": 0
+}

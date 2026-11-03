@@ -179,13 +179,19 @@ def validate(config: dict[str, Any]) -> list[str]:
     """Rules a schema cannot express. An empty list means the configuration passes."""
     problems: list[str] = []
     known = {t["id"] for t in battery.battery()["tasks"]}
+    # The purpose that owns each task that a study session must not use.
+    reserved = dict.fromkeys(battery.QUALIFICATION_TASKS, "qualification") | dict.fromkeys(
+        battery.BENCH_TASKS, "bench"
+    )
     if config["battery"]["sha256"] != battery.battery_sha256():
         problems.append("battery.sha256 does not match the battery that this build ships")
     for task in config["tasks"]:
         if task["task"] not in known:
             problems.append(f"task {task['task']!r} is not in the battery")
-        elif task["task"] in battery.QUALIFICATION_TASKS:
-            problems.append(f"task {task['task']!r} belongs to qualification sessions, not study sessions")
+        elif task["task"] in reserved:
+            problems.append(
+                f"task {task['task']!r} belongs to {reserved[task['task']]} sessions, not study sessions"
+            )
     for block in config["questionnaires"]:
         band = block["ageBand"]
         low = int(band.split("-")[0])

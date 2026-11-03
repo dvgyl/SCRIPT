@@ -347,7 +347,7 @@ Home shows only the last 4 characters of each participant code. To see the full 
 
 The study store is the site's folder of verified sessions. The `scriptkin intake` command checks each export folder, copies each session into the store once, and writes a receipt for each export. Use it at stage 4 of the [data flow](DATA_GOVERNANCE.md#data-flow).
 
-1. Put the transferred export folders in one incoming folder, for example `incoming/`.
+1. Put the transferred export folders in one incoming folder, for example `incoming/`. Leave out every bench export, whose name starts with `SCRIPT_BENCH_`.
 2. Run `scriptkin intake incoming --store <study store> --key <key folder>/study-export-key.bin --out intake-report.json`.
 3. Read the result of each export in `intake-report.json`.
 4. Add the `sessionID` of each receipt to the row of its export name in the session register.
@@ -385,7 +385,7 @@ The `scriptkin qc-report` command counts what the store holds. It reads every se
 
 The report gives these counts:
 
-- Sessions by site, device asset code, configuration digest, app version, administration mode, and purpose.
+- Sessions by site, device asset code, configuration digest, app version, administration mode, and purpose. A bench session has no site, configuration, or administration mode, so those three counts leave it out.
 - The measured trials of study sessions that quality control accepted or refused, with the refusal codes.
 - For each iPad and declared Pencil: the sample rate (median, 5th percentile, and 95th percentile) and the latest qualification session in the store.
 - For each channel: the sessions that planned it, recorded it, or planned it but did not record it.

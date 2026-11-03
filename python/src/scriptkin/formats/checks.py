@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Callable, Mapping
 from typing import Any, cast
 
@@ -11,6 +12,10 @@ Check = Callable[[Any], bool]
 
 def number(v: Any) -> bool:
     return type(v) in (int, float) and math.isfinite(v)
+
+
+def between(low: float, high: float) -> Check:
+    return lambda v: number(v) and low <= v <= high
 
 
 def uptime(v: Any) -> bool:
@@ -27,6 +32,21 @@ def boolean(v: Any) -> bool:
 
 def text(v: Any) -> bool:
     return isinstance(v, str)
+
+
+def nonempty(v: Any) -> bool:
+    return isinstance(v, str) and v != ""
+
+
+def sized(low: int, high: int) -> Check:
+    """A string of `low` to `high` code points, as the schema keywords `minLength` and `maxLength` count."""
+    return lambda v: isinstance(v, str) and low <= len(v) <= high
+
+
+def matches(pattern: str) -> Check:
+    """A string that `pattern` matches in full, as a schema `pattern` anchored with `^` and `$` does."""
+    compiled = re.compile(pattern)
+    return lambda v: isinstance(v, str) and compiled.fullmatch(v) is not None
 
 
 def integer(low: int | None = None, high: int | None = None) -> Check:

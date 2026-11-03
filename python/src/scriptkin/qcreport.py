@@ -35,6 +35,9 @@ class _Session:
 
     @property
     def device(self) -> tuple[str, str]:
+        """The asset and the declared pen of the device that samples the pen: the tablet, or the iPad."""
+        if self.head["input"] == "tablet":
+            return self.head["tablet"]["asset"], self.head["tablet"]["pen"]["declared"]
         return self.head["device"]["asset"], self.head["pencil"]["declared"]
 
 
@@ -117,7 +120,7 @@ def _qualification(session: _Session) -> dict[str, Any]:
 
 
 def _devices(sessions: list[_Session]) -> list[dict[str, Any]]:
-    """Each device asset and declared Pencil: its sample rates and its latest qualification session."""
+    """Each device asset and declared pen: its sample rates and its latest qualification session."""
     groups: dict[tuple[str, str], list[_Session]] = {}
     for s in sessions:
         groups.setdefault(s.device, []).append(s)
@@ -130,7 +133,7 @@ def _devices(sessions: list[_Session]) -> list[dict[str, Any]]:
             {
                 "deviceAsset": asset,
                 "pencil": pencil,
-                "models": sorted({s.head["device"]["model"] for s in group}),
+                "models": sorted({s.recording.device.model for s in group}),
                 "sampleRateHz": _sample_rate(group),
                 "latestQualification": _qualification(qualified[-1]) if qualified else None,
             }
@@ -145,6 +148,8 @@ def qc_report(store: str | Path, *, private_key: bytes | None = None) -> dict[st
     """
     sessions = [_Session.of(verify_export(f, private_key=private_key)) for f in session_folders(store)]
     heads = [s.head for s in sessions]
+    # A bench session has no study and no administration, so those counts cover participant sessions.
+    participant_heads = [h for h in heads if h["purpose"] != "bench"]
     trials = [t for s in sessions for t in s.summary["trials"]]
     samples = sum(t["samples"] for t in trials)
     unresolved = sum(t["unresolved"] for t in trials)
@@ -158,11 +163,11 @@ def qc_report(store: str | Path, *, private_key: bytes | None = None) -> dict[st
         "library": f"scriptkin {__version__}",
         "sessions": len(sessions),
         "sessionsBy": {
-            "site": _count(h["study"]["site"] for h in heads),
-            "deviceAsset": _count(h["device"]["asset"] for h in heads),
-            "configSHA256": _count(h["study"]["configSHA256"] for h in heads),
+            "site": _count(h["study"]["site"] for h in participant_heads),
+            "deviceAsset": _count(s.device[0] for s in sessions),
+            "configSHA256": _count(h["study"]["configSHA256"] for h in participant_heads),
             "appVersion": _count(h["app"]["version"] for h in heads),
-            "administration": _count(h["administration"] for h in heads),
+            "administration": _count(h["administration"] for h in participant_heads),
             "purpose": _count(h["purpose"] for h in heads),
         },
         "trials": _trials(sessions),

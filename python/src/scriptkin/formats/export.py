@@ -17,7 +17,7 @@ from typing import Any, cast
 from cryptography.exceptions import InvalidTag
 
 from scriptkin import __version__, hpke
-from scriptkin.contract import KINDS, encode_line, manifest_bytes
+from scriptkin.contract import KINDS, READABLE_MAJORS, encode_line, manifest_bytes
 from scriptkin.formats.checks import any_of, integer, one_of, record, text
 from scriptkin.formats.journal import QUESTIONNAIRE_KINDS, FoldState, JournalError, Line, recording, replay
 from scriptkin.recording import Recording
@@ -93,7 +93,7 @@ def load_export(folder: Path, private_key: bytes | None = None) -> tuple[dict[st
         manifest: Any = json.loads((folder / "manifest.json").read_bytes())
     except (OSError, ValueError) as e:
         raise JournalError("I5", 0, "Invalid or absent manifest.") from e
-    if not _MANIFEST(manifest) or str(manifest["version"]).split(".")[0] != "1":
+    if not _MANIFEST(manifest) or str(manifest["version"]).split(".")[0] not in READABLE_MAJORS:
         raise JournalError("I5", 0, "Invalid manifest or unknown major version.")
     manifest = cast(dict[str, Any], manifest)
     if "encryption" in manifest:

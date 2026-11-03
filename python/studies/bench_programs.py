@@ -36,27 +36,24 @@ import inspect
 import json
 import math
 import random
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import numpy as np
 
 from scriptkin import battery
+from scriptkin.bench import FAULT_BASE, FAULTS, LINE_FRAME_MM, LINE_START_MM, MAIN, Design
 from scriptkin.quality import Refusal
 from scriptkin.recording import FloatArray
 from scriptkin.signal import DEFAULT_PREPROCESSING, derivatives, welch_band_power
 
-SCALES = {"l": 1.0, "s": 0.7}
 MOVE_S = 0.010
 GRID_HZ = 200.0
 RADIUS_CAP_MM = 40.0
 RAMP_S = 0.2
 PROBE = 40000
 LINE_CRUISE_MM = 120.0
-LINE_SPEED_MM_S = 20.0
-LINE_FRAME_MM = (132.0, 16.0)
-LINE_START_MM = (4.0, 8.0)
 DWELL_S = 0.5
 LIFT_MM = 2.0
 LIFT_SPEED_MM_S = 10.0
@@ -67,46 +64,6 @@ PLANNED_BLOCKS = 12
 BLOCKS = 16
 ORDER_SEED = 20261103
 WELCH_MIN_WINDOWS = 3
-
-Geometry = Literal["loops", "spiral", "line"]
-
-
-@dataclass(frozen=True)
-class Design:
-    """The registered definition of one program."""
-
-    id: str
-    task: str
-    geometry: Geometry
-    scale: float
-    speed_mm_s: float
-    oscillation_hz: float = 0.0
-    oscillation_mm: float = 0.0
-    fault: str | None = None
-
-
-def _figure(geometry: Geometry, size: str, speed: float) -> Design:
-    return Design(f"{geometry}-{size}-v{speed:g}", f"bench-{geometry}-{size}", geometry, SCALES[size], speed)
-
-
-MAIN: tuple[Design, ...] = (
-    _figure("loops", "l", 20.0),
-    _figure("loops", "l", 40.0),
-    _figure("loops", "l", 80.0),
-    _figure("loops", "s", 20.0),
-    _figure("loops", "s", 40.0),
-    _figure("spiral", "l", 20.0),
-    _figure("spiral", "l", 40.0),
-    _figure("spiral", "s", 20.0),
-    _figure("spiral", "s", 40.0),
-    Design("line-osc5", "bench-line", "line", 1.0, LINE_SPEED_MM_S, 5.0, 0.4),
-    Design("line-osc8", "bench-line", "line", 1.0, LINE_SPEED_MM_S, 8.0, 0.25),
-    Design("line-osc11", "bench-line", "line", 1.0, LINE_SPEED_MM_S, 11.0, 0.18),
-)
-FAULT_BASE = MAIN[0]
-FAULTS: tuple[Design, ...] = tuple(
-    replace(FAULT_BASE, id=f"fault-{fault}", fault=fault) for fault in ("dwell", "lift", "truncated")
-)
 
 
 @dataclass(frozen=True)
@@ -326,6 +283,12 @@ def program(design: Design) -> tuple[Program, list[Move]]:
     return summary, move_list
 
 
+def registered(program: Any) -> dict[str, Any]:
+    """The program fields of a move list without `Design.base`, so the files keep the bytes that protocol 1.1
+    registered. A fault file names its base at the top level."""
+    return asdict(program, dict_factory=lambda pairs: {k: v for k, v in pairs if k != "base"})
+
+
 def write_program(folder: Path, payload: dict[str, Any], program_id: str) -> None:
     folder.mkdir(parents=True, exist_ok=True)
     payload["battery"] = {"id": battery.BATTERY_ID, "version": battery.BATTERY_VERSION}
@@ -351,7 +314,7 @@ def main() -> None:
         summary, move_list = program(design)
         rows.append(summary)
         if args.write:
-            payload = {"program": asdict(summary), "moves": [asdict(m) for m in move_list]}
+            payload = {"program": registered(summary), "moves": [asdict(m) for m in move_list]}
             write_program(args.write, payload, design.id)
     fault_rows: list[tuple[Design, float, float, int]] = []
     for design in FAULTS:
@@ -359,7 +322,7 @@ def main() -> None:
         fault_rows.append((design, length, duration, len(move_list)))
         if args.write:
             payload = {
-                "program": asdict(design),
+                "program": registered(design),
                 "base": FAULT_BASE.id,
                 "path_length_mm": length,
                 "duration_s": duration,

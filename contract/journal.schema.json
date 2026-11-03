@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/dvgyl/SCRIPT/contract/journal.schema.json",
-  "title": "SCRIPT journal line, format 1.0",
+  "title": "SCRIPT journal line, format 2.0",
   "description": "One line of journal.jsonl. docs/DESIGN.md section 3 explains each kind.",
   "oneOf": [
     {
@@ -267,15 +267,55 @@
       }
     },
     "sessionOpened": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/sessionCommon"
+        },
+        {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/participantSession"
+            },
+            {
+              "$ref": "#/$defs/benchSession"
+            }
+          ]
+        },
+        {
+          "if": {
+            "properties": {
+              "input": {
+                "const": "tablet"
+              }
+            },
+            "required": [
+              "input"
+            ]
+          },
+          "then": {
+            "required": [
+              "tablet"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "tablet"
+              ]
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "sessionCommon": {
       "type": "object",
-      "additionalProperties": false,
       "required": [
         "seq",
         "kind",
         "format",
         "purpose",
         "sessionID",
-        "participant",
         "openedAt",
         "openedUptime",
         "boot",
@@ -286,14 +326,6 @@
         "pencil",
         "channels",
         "input",
-        "administration",
-        "study",
-        "visit",
-        "ageBand",
-        "jurisdiction",
-        "locale",
-        "consent",
-        "ethics",
         "battery"
       ],
       "properties": {
@@ -304,14 +336,10 @@
           "const": "sessionOpened"
         },
         "format": {
-          "const": "1.0"
+          "const": "2.0"
         },
         "sessionID": {
           "$ref": "#/$defs/uuid"
-        },
-        "participant": {
-          "type": "string",
-          "pattern": "^[A-Z0-9-]{3,16}$"
         },
         "openedAt": {
           "type": "string",
@@ -368,6 +396,9 @@
               "$ref": "#/$defs/code"
             }
           }
+        },
+        "tablet": {
+          "$ref": "#/$defs/tablet"
         },
         "scale": {
           "oneOf": [
@@ -436,6 +467,28 @@
               "type": "object",
               "additionalProperties": false,
               "required": [
+                "kind",
+                "linesPerMM",
+                "mmPerPoint"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "tablet"
+                },
+                "linesPerMM": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "mmPerPoint": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
                 "kind"
               ],
               "properties": {
@@ -488,13 +541,23 @@
             },
             "hover": {
               "type": "boolean"
+            },
+            "tiltX": {
+              "type": "boolean"
+            },
+            "tiltY": {
+              "type": "boolean"
+            },
+            "rotation": {
+              "type": "boolean"
             }
           }
         },
         "input": {
           "enum": [
             "pencil",
-            "directTouchAsPen"
+            "directTouchAsPen",
+            "tablet"
           ]
         },
         "battery": {
@@ -521,7 +584,8 @@
         "purpose": {
           "enum": [
             "study",
-            "qualification"
+            "qualification",
+            "bench"
           ]
         },
         "surface": {
@@ -566,6 +630,32 @@
               "format": "date-time"
             }
           }
+        }
+      }
+    },
+    "participantSession": {
+      "required": [
+        "purpose",
+        "participant",
+        "administration",
+        "study",
+        "visit",
+        "ageBand",
+        "jurisdiction",
+        "locale",
+        "consent",
+        "ethics"
+      ],
+      "properties": {
+        "purpose": {
+          "enum": [
+            "study",
+            "qualification"
+          ]
+        },
+        "participant": {
+          "type": "string",
+          "pattern": "^[A-Z0-9-]{3,16}$"
         },
         "administration": {
           "enum": [
@@ -713,6 +803,101 @@
         }
       }
     },
+    "benchSession": {
+      "required": [
+        "purpose",
+        "bench"
+      ],
+      "properties": {
+        "purpose": {
+          "const": "bench"
+        },
+        "bench": {
+          "$ref": "#/$defs/benchSession_bench"
+        }
+      }
+    },
+    "benchSession_bench": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "mounting",
+        "motion",
+        "protocol"
+      ],
+      "properties": {
+        "role": {
+          "enum": [
+            "P",
+            "W"
+          ]
+        },
+        "mounting": {
+          "type": "string",
+          "pattern": "^M[1-8]$"
+        },
+        "motion": {
+          "$ref": "#/$defs/docRef"
+        },
+        "protocol": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "version",
+            "sha256"
+          ],
+          "properties": {
+            "version": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        }
+      }
+    },
+    "tablet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model",
+        "asset",
+        "driver",
+        "pen"
+      ],
+      "properties": {
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "asset": {
+          "$ref": "#/$defs/code"
+        },
+        "driver": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pen": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "declared"
+          ],
+          "properties": {
+            "declared": {
+              "enum": [
+                "proPen3",
+                "unknown"
+              ]
+            }
+          }
+        }
+      }
+    },
     "handoff": {
       "type": "object",
       "additionalProperties": false,
@@ -741,8 +926,25 @@
       }
     },
     "trialStarted": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/trialCommon"
+        },
+        {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/participantTrial"
+            },
+            {
+              "$ref": "#/$defs/benchTrial"
+            }
+          ]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "trialCommon": {
       "type": "object",
-      "additionalProperties": false,
       "required": [
         "seq",
         "kind",
@@ -751,9 +953,6 @@
         "spec",
         "practice",
         "position",
-        "hand",
-        "instruction",
-        "accommodations",
         "view",
         "stimulusOrigin"
       ],
@@ -831,7 +1030,16 @@
         "position": {
           "type": "integer",
           "minimum": 1
-        },
+        }
+      }
+    },
+    "participantTrial": {
+      "required": [
+        "hand",
+        "instruction",
+        "accommodations"
+      ],
+      "properties": {
         "hand": {
           "enum": [
             "left",
@@ -872,6 +1080,45 @@
               "other"
             ]
           }
+        }
+      }
+    },
+    "benchTrial": {
+      "required": [
+        "bench"
+      ],
+      "properties": {
+        "bench": {
+          "$ref": "#/$defs/benchTrial_bench"
+        }
+      }
+    },
+    "benchTrial_bench": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "program",
+        "run",
+        "trajectorySHA256"
+      ],
+      "properties": {
+        "program": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]{1,32}$"
+        },
+        "run": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 7
+        },
+        "trajectorySHA256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "clip": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
         }
       }
     },
@@ -971,6 +1218,19 @@
         },
         "roll": {
           "$ref": "#/$defs/angle"
+        },
+        "tiltX": {
+          "type": "number",
+          "minimum": -1,
+          "maximum": 1
+        },
+        "tiltY": {
+          "type": "number",
+          "minimum": -1,
+          "maximum": 1
+        },
+        "rotation": {
+          "type": "number"
         },
         "phase": {
           "enum": [
@@ -1091,8 +1351,7 @@
         "t",
         "clock",
         "x",
-        "y",
-        "z"
+        "y"
       ],
       "properties": {
         "seq": {
@@ -1106,7 +1365,8 @@
         },
         "clock": {
           "enum": [
-            "callback"
+            "callback",
+            "event"
           ]
         },
         "x": {
@@ -1127,6 +1387,19 @@
         },
         "roll": {
           "$ref": "#/$defs/angle"
+        },
+        "tiltX": {
+          "type": "number",
+          "minimum": -1,
+          "maximum": 1
+        },
+        "tiltY": {
+          "type": "number",
+          "minimum": -1,
+          "maximum": 1
+        },
+        "rotation": {
+          "type": "number"
         }
       }
     },
@@ -1197,7 +1470,8 @@
             "unable",
             "operatorAbort",
             "backgrounded",
-            "technicalFailure"
+            "technicalFailure",
+            "operatorDone"
           ]
         }
       }

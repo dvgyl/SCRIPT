@@ -10,6 +10,21 @@ public struct Battery: Hashable, Sendable {
 
     /// The fixed task set of a qualification session (docs/DESIGN.md section 16), as in `scriptkin.battery`.
     public static let qualificationTasks: Set<TaskID> = ["qual-reference", "qual-hold", "qual-line"]
+    /// The task set of a bench session: the loops and the spiral at scale 1.0 and 0.7, and the line, as in
+    /// `scriptkin.bench`.
+    public static let benchTasks: Set<TaskID> = [
+        "bench-loops-l", "bench-loops-s", "bench-spiral-l", "bench-spiral-s", "bench-line",
+    ]
+
+    /// The tasks that a session of `purpose` may start. A study session takes every task that is neither a
+    /// qualification task nor a bench task.
+    public func tasks(for purpose: Purpose) -> Set<TaskID> {
+        switch purpose {
+        case .study: Set(tasks.map(\.id)).subtracting(Self.qualificationTasks).subtracting(Self.benchTasks)
+        case .qualification: Self.qualificationTasks
+        case .bench: Self.benchTasks
+        }
+    }
 
     public enum LoadError: Error, Hashable, Sendable {
         case decode(DecodeError)

@@ -94,24 +94,29 @@ The `dev` group in `python/pyproject.toml` declares three tools. `./check` uses 
 
 ## Apple frameworks
 
-The Apple frameworks are part of the iOS and macOS SDKs (software development kits) in Xcode. Apple's licence for Xcode and its SDKs covers them. Package metadata does not give their licence names. `ScriptCore` and the app need iOS 18 or later. `ScriptCore` also builds for macOS 15 or later, so that its tests run on a Mac.
+The Apple frameworks are part of the iOS and macOS SDKs (software development kits) in Xcode. Apple's licence for Xcode and its SDKs covers them. Package metadata does not give their licence names. `ScriptCore` and the app need iOS 18 or later. `ScriptCore` also builds for macOS 15 or later, so that its tests run on a Mac. SCRIPT Bench needs macOS 15 or later.
 
 | Framework | Imported by | Role |
 | --- | --- | --- |
 | Foundation | `app/Sources/ScriptCore/Storage.swift`, every other `ScriptCore` file, and the app store | Files, data, URLs, and dates |
-| CryptoKit | `app/Sources/ScriptCore/Storage.swift`, `app/Sources/ScriptCore/Study.swift`, and `app/Sources/ScriptCore/Journal.swift` | HPKE export encryption, HMAC-SHA256 for the deletion log and the export index, and SHA-256 (Secure Hash Algorithm, 256-bit) digests |
+| CryptoKit | `app/Sources/ScriptCore/Storage.swift`, `app/Sources/ScriptCore/Study.swift`, `app/Sources/ScriptCore/Journal.swift`, and `app/ScriptBench/BenchEnvironment.swift` | HPKE export encryption, HMAC-SHA256 for the deletion log and the export index, and SHA-256 (Secure Hash Algorithm, 256-bit) digests. SCRIPT Bench makes the key of its export index. |
 | CommonCrypto | `app/Sources/ScriptCore/Study.swift` | PBKDF2 (Password-Based Key Derivation Function 2) for the operator PIN |
 | Security | `app/Sources/ScriptCore/Storage.swift` | The Keychain item that holds the device secret of the deletion log |
 | Synchronization | `app/Sources/ScriptCore/Storage.swift` | `Mutex` for the state of the journal writer |
-| SwiftUI | `app/ScriptApp/ScriptApp.swift`, `app/ScriptApp/HomeScreen.swift`, and the other screen files | The app entry point, the window, and every screen |
+| SwiftUI | `app/ScriptApp/ScriptApp.swift`, `app/ScriptApp/HomeScreen.swift`, `app/ScriptBench/BenchApp.swift`, and the other screen files | The entry point, the window, and every screen of both apps |
 | UIKit | `app/ScriptApp/CaptureView.swift`, `app/ScriptApp/Environment.swift`, and `app/ScriptApp/SessionStore.swift` | The capture view, the device facts, and the background task at the scene change |
-| Observation | `app/ScriptApp/SessionStore.swift` | The observable session store |
-| os | `app/ScriptApp/SessionStore.swift` | `Logger` for error lines that name no participant |
+| AppKit | `app/ScriptBench/BenchApp.swift`, `app/ScriptBench/TabletCaptureView.swift`, `app/ScriptBench/TabletInput.swift`, `app/ScriptBench/BenchStore.swift`, and `app/ScriptBench/BenchEnvironment.swift` | The tablet event monitor, the tablet events, and the view of the tablet area. Also the Finder window of the exports and the screen scale of the Mac. |
+| Observation | `app/ScriptApp/SessionStore.swift` and `app/ScriptBench/BenchStore.swift` | The observable session store of each app |
+| os | `app/ScriptApp/SessionStore.swift` and `app/ScriptBench/BenchStore.swift` | `Logger` for error lines that name no participant |
 | UniformTypeIdentifiers | `app/ScriptApp/HomeScreen.swift` | The JSON file type for the configuration import |
-| Testing | `app/Tests/ScriptCoreTests/StorageTests.swift`, the other `ScriptCore` tests, and `app/ScriptAppTests/StoreTests.swift` | The Swift test framework for `swift test` and the app unit tests |
+| Testing | `app/Tests/ScriptCoreTests/StorageTests.swift`, the other `ScriptCore` tests, `app/ScriptAppTests/StoreTests.swift`, and `app/ScriptBenchTests/BenchTests.swift` | The Swift test framework for `swift test`, the app unit tests, and the SCRIPT Bench tests |
 | XCTest | `app/ScriptAppUITests/SessionFlowTests.swift` | The UI tests on the simulator |
 
 `ScriptCore` uses no UIKit, so its tests run on a Mac.
+
+## The Wacom driver
+
+SCRIPT Bench reads the tablet through AppKit events, which the Wacom driver makes. The repository does not hold or pin the driver. The operator types the driver version in Setup, and each tablet journal records it in `tablet.driver`.
 
 ## Tools that `./check` uses
 
@@ -126,8 +131,8 @@ The Apple frameworks are part of the iOS and macOS SDKs (software development ki
 | pyright | 1.1.414 | Strict type check of `python/src`, `python/tests`, and `python/studies` |
 | pytest | 9.2.0 | Python tests |
 | Swift | 6.4.2, from Xcode | `swift test` runs the `ScriptCore` tests on the Mac |
-| Xcode | 27.2 (build 27B52) | `xcodebuild` builds and tests the app on the iOS simulator "iPad Pro 11-inch (M5)" |
-| xcstringstool | From Xcode | Checks that every UI string is in `app/ScriptApp/Localizable.xcstrings` |
+| Xcode | 27.2 (build 27B52) | `xcodebuild` builds and tests the app on the iOS simulator "iPad Pro 11-inch (M5)", and SCRIPT Bench on the Mac |
+| xcstringstool | From Xcode | Checks that every UI string is in `app/ScriptApp/Localizable.xcstrings` and `app/ScriptBench/Localizable.xcstrings` |
 | shasum | The system command | Makes the name of the build folder from the repository path |
 
 ## Public test data: ParkinsonHW

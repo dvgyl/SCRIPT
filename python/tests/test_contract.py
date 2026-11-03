@@ -3,17 +3,20 @@ from __future__ import annotations
 import base64
 import copy
 import hashlib
+import importlib.util
 import itertools
 import json
 import math
+import re
 import struct
+import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
 from jsonschema import Draft202012Validator
 
-from scriptkin import battery, contract, instruments, studyconfig
+from scriptkin import battery, bench, contract, instruments, studyconfig
 
 CONTRACT = Path(__file__).resolve().parents[2] / "contract"
 SCHEMA = Draft202012Validator(
@@ -92,9 +95,10 @@ def test_every_stimulus_fits_its_frame_and_has_short_chords() -> None:
 
 
 def test_every_stimulus_fits_the_smallest_supported_ipad() -> None:
-    # Detects a frame that would not fit an iPad mini (A17 Pro) screen, about 115 mm wide.
+    # Detects a frame that would not fit an iPad mini (A17 Pro) screen, about 115 mm wide. A bench task
+    # runs on the iPad of the bench protocol only, so its frame is outside this rule.
     for task in battery.battery()["tasks"]:
-        if task["stimulus"] is not None:
+        if task["stimulus"] is not None and task["id"] not in battery.BENCH_TASKS:
             assert task["stimulus"]["frameMM"][0] <= 112.0, task["id"]
 
 
@@ -187,6 +191,98 @@ def test_qualification_tasks_cannot_enter_a_study_session() -> None:
     config = _demo()
     config["tasks"].append({"task": "qual-hold", "practice": False, "attempts": 1, "hands": "dominant"})
     assert any("qualification" in p for p in studyconfig.validate(config))
+
+
+def test_bench_tasks_cannot_enter_a_study_session() -> None:
+    # Detects a study configuration that mixes bench geometry into participant sessions.
+    config = _demo()
+    config["tasks"].append({"task": "bench-loops-s", "practice": False, "attempts": 1, "hands": "dominant"})
+    assert any("bench" in p for p in studyconfig.validate(config))
+
+
+def _bench_programs_script(monkeypatch: pytest.MonkeyPatch) -> Any:
+    path = Path(__file__).resolve().parents[1] / "studies" / "bench_programs.py"
+    spec = importlib.util.spec_from_file_location("bench_programs_study", path)
+    assert spec is not None and spec.loader is not None
+    script = importlib.util.module_from_spec(spec)
+    # The script's dataclasses resolve their string annotations through sys.modules.
+    monkeypatch.setitem(sys.modules, spec.name, script)
+    spec.loader.exec_module(script)
+    return script
+
+
+def test_bench_programs_script_uses_the_package_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Detects a study script that keeps its own copy of the program table instead of the package registry.
+    script = _bench_programs_script(monkeypatch)
+    assert script.MAIN is bench.MAIN and script.FAULTS is bench.FAULTS and script.Design is bench.Design
+
+
+def test_bench_move_lists_keep_the_program_keys_of_protocol_1_1(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Detects a Design field, such as base, that reaches the program object of a move-list file, which
+    # changes the files that the protocol lock hashes.
+    script = _bench_programs_script(monkeypatch)
+    keys = ["id", "task", "geometry", "scale", "speed_mm_s", "oscillation_hz", "oscillation_mm", "fault"]
+    summary, _ = script.program(bench.MAIN[0])
+    assert list(script.registered(summary)["design"]) == keys
+    assert list(script.registered(bench.FAULTS[0])) == keys
+
+
+def test_bench_programs_match_the_generator_and_the_battery() -> None:
+    # Detects a programs file with a wrong entry list, key order, task, scale, oscillation, base, or digest,
+    # a bench fixture run that differs from the table, or a bench task whose geometry is not the scaled base
+    # geometry or the line of the protocol.
+    programs = json.loads((CONTRACT / "bench_programs.json").read_text())
+    assert programs == json.loads(bench.programs_json())
+    assert programs["protocol"] == {"version": "1.1", "sha256": bench.PROTOCOL_SHA256}
+    table = {p["id"]: p for p in programs["programs"]}
+    assert list(table) == [
+        "loops-l-v20", "loops-l-v40", "loops-l-v80", "loops-s-v20", "loops-s-v40",
+        "spiral-l-v20", "spiral-l-v40", "spiral-s-v20", "spiral-s-v40",
+        "line-osc5", "line-osc8", "line-osc11",
+        "fault-dwell", "fault-lift", "fault-truncated",
+    ]  # fmt: skip
+    keys = ["id", "task", "scale", "speedMMPerS", "oscillation", "fault", "base", "trajectorySHA256"]
+    assert all(list(p) == keys for p in table.values())
+    main = [p for p in table.values() if p["fault"] is None]
+    faults = [p for p in table.values() if p["fault"] is not None]
+    assert len(main) == 12 and all(p["base"] is None for p in main)
+    assert [(p["id"], p["fault"], p["base"]) for p in faults] == [
+        ("fault-dwell", "dwell", "loops-l-v20"),
+        ("fault-lift", "lift", "loops-l-v20"),
+        ("fault-truncated", "truncated", "loops-l-v20"),
+    ]
+    own = ("id", "fault", "base", "trajectorySHA256")
+    for p in faults:
+        base = table[p["base"]]
+        assert base in main
+        assert {k: v for k, v in p.items() if k not in own} == {k: v for k, v in base.items() if k not in own}
+    assert (table["loops-s-v40"]["task"], table["loops-s-v40"]["scale"]) == ("bench-loops-s", 0.7)
+    assert (table["spiral-l-v20"]["speedMMPerS"], table["spiral-l-v20"]["oscillation"]) == (20.0, None)
+    assert (table["line-osc8"]["task"], table["line-osc8"]["scale"]) == ("bench-line", 1.0)
+    assert table["line-osc8"]["oscillation"] == {"hz": 8.0, "mm": 0.25}
+    assert {p["task"] for p in table.values()} == set(battery.BENCH_TASKS)
+    digests = {p["trajectorySHA256"] for p in table.values()}
+    assert len(digests) == 15 and all(re.fullmatch(r"[0-9a-f]{64}", d) for d in digests)
+    for name in ("bench_ipad", "bench_wacom"):
+        runs = [r for r in _fixture_rows(name) if r["kind"] == "trialStarted"]
+        assert runs
+        for run in runs:
+            program = table[run["bench"]["program"]]
+            assert run["trial"]["task"] == program["task"]
+            assert run["bench"]["trajectorySHA256"] == program["trajectorySHA256"]
+    loops, spiral = battery.task_spec("loops")["stimulus"], battery.task_spec("spiral-trace")["stimulus"]
+    assert battery.task_spec("bench-loops-l")["stimulus"] == loops
+    assert battery.task_spec("bench-spiral-l")["stimulus"] == spiral
+    for bench_id, base in (("bench-loops-s", loops), ("bench-spiral-s", spiral)):
+        small = battery.task_spec(bench_id)["stimulus"]
+        assert small["frameMM"] == pytest.approx([v * 0.7 for v in base["frameMM"]], abs=5e-5)
+        assert small["start"] == pytest.approx([v * 0.7 for v in base["start"]], abs=5e-5)
+        assert len(small["paths"][0]) == len(base["paths"][0])
+        assert small["paths"][0][7] == pytest.approx([v * 0.7 for v in base["paths"][0][7]], abs=5e-5)
+    line = battery.task_spec("bench-line")["stimulus"]
+    assert (line["frameMM"], line["start"], len(line["paths"])) == ([132.0, 16.0], [4.0, 8.0], 1)
+    assert (line["paths"][0][0], line["paths"][0][-1]) == ([4.0, 8.0], [128.0, 8.0])
+    assert {y for _, y in line["paths"][0]} == {8.0}
 
 
 def test_phq9_item_9_is_the_only_safety_item_in_the_default_instruments() -> None:

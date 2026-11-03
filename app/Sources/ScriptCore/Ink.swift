@@ -5,20 +5,28 @@ public enum PencilModel: String, Hashable, Sendable, CaseIterable {
     case pro, second, usbC, none
 }
 
-/// The planned channel set. QC compares the plan with the data.
+/// The planned channel set. QC compares the plan with the data. A Pencil plans `altitude`, `azimuth`, and `roll`. A
+/// tablet pen plans `tiltX`, `tiltY`, and `rotation`.
 public struct ChannelPlan: Hashable, Sendable {
     public var force: Bool
     public var altitude: Bool
     public var azimuth: Bool
     public var roll: Bool
     public var hover: Bool
+    public var tiltX: Bool
+    public var tiltY: Bool
+    public var rotation: Bool
 
-    public init(force: Bool, altitude: Bool, azimuth: Bool, roll: Bool, hover: Bool) {
+    public init(force: Bool, altitude: Bool, azimuth: Bool, roll: Bool, hover: Bool, tiltX: Bool = false,
+                tiltY: Bool = false, rotation: Bool = false) {
         self.force = force
         self.altitude = altitude
         self.azimuth = azimuth
         self.roll = roll
         self.hover = hover
+        self.tiltX = tiltX
+        self.tiltY = tiltY
+        self.rotation = rotation
     }
 
     /// The channels of the declared Pencil. USB-C has no force channel until a device test confirms what it reports
@@ -29,6 +37,15 @@ public struct ChannelPlan: Hashable, Sendable {
         case .second: ChannelPlan(force: true, altitude: true, azimuth: true, roll: false, hover: hoverSupported)
         case .usbC: ChannelPlan(force: false, altitude: true, azimuth: true, roll: false, hover: hoverSupported)
         case .none: ChannelPlan(force: false, altitude: false, azimuth: false, roll: false, hover: false)
+        }
+    }
+
+    /// The channels of the declared tablet pen. A pen in proximity gives hover lines on every tablet. Rotation is
+    /// planned only for a pen that reports it, and the Pro Pen 3 does not.
+    public static func plan(tabletPen pen: TabletPen) -> ChannelPlan {
+        switch pen {
+        case .proPen3: ChannelPlan(force: true, altitude: false, azimuth: false, roll: false, hover: true, tiltX: true, tiltY: true)
+        case .unknown: ChannelPlan(force: true, altitude: false, azimuth: false, roll: false, hover: true)
         }
     }
 
@@ -49,7 +66,8 @@ public struct TouchKey: Hashable, Sendable {
     public init(_ rawValue: UInt) { self.rawValue = rawValue }
 }
 
-/// One coalesced Pencil touch, in view points and native UIKit units.
+/// One coalesced Pencil touch in view points and native UIKit units, or one tablet event in tablet lines and native
+/// AppKit units. A tablet reading has no estimated properties and no update index.
 public struct PenReading: Sendable {
     public var key: TouchKey
     public var t: Double
@@ -60,6 +78,9 @@ public struct PenReading: Sendable {
     public var altitude: Double?
     public var azimuth: Double?
     public var roll: Double?
+    public var tiltX: Double?
+    public var tiltY: Double?
+    public var rotation: Double?
     public var phase: PenPhase
     public var estimated: TouchProperties
     public var expectingUpdates: TouchProperties
@@ -67,8 +88,9 @@ public struct PenReading: Sendable {
 
     public init(
         key: TouchKey, t: Double, x: Double, y: Double, force: Double? = nil, maxForce: Double? = nil,
-        altitude: Double? = nil, azimuth: Double? = nil, roll: Double? = nil, phase: PenPhase,
-        estimated: TouchProperties = [], expectingUpdates: TouchProperties = [], update: UpdateIndex? = nil
+        altitude: Double? = nil, azimuth: Double? = nil, roll: Double? = nil, tiltX: Double? = nil,
+        tiltY: Double? = nil, rotation: Double? = nil, phase: PenPhase, estimated: TouchProperties = [],
+        expectingUpdates: TouchProperties = [], update: UpdateIndex? = nil
     ) {
         self.key = key
         self.t = t
@@ -79,6 +101,9 @@ public struct PenReading: Sendable {
         self.altitude = altitude
         self.azimuth = azimuth
         self.roll = roll
+        self.tiltX = tiltX
+        self.tiltY = tiltY
+        self.rotation = rotation
         self.phase = phase
         self.estimated = estimated
         self.expectingUpdates = expectingUpdates
@@ -98,23 +123,33 @@ public struct PreviewPoint: Hashable, Sendable {
 
 public struct HoverReading: Sendable {
     public var t: Double
+    /// `callback` for a UIKit hover recognizer, `event` for an AppKit tablet event.
+    public var clock: HoverClock
     public var x: Double
     public var y: Double
-    /// 0 at contact, 1 at the maximum range.
-    public var z: Double
+    /// 0 at contact, 1 at the maximum range. Nil for a tablet, which reports no height.
+    public var z: Double?
     public var altitude: Double?
     public var azimuth: Double?
     public var roll: Double?
+    public var tiltX: Double?
+    public var tiltY: Double?
+    public var rotation: Double?
 
-    public init(t: Double, x: Double, y: Double, z: Double, altitude: Double? = nil, azimuth: Double? = nil,
-                roll: Double? = nil) {
+    public init(t: Double, clock: HoverClock = .callback, x: Double, y: Double, z: Double? = nil,
+                altitude: Double? = nil, azimuth: Double? = nil, roll: Double? = nil, tiltX: Double? = nil,
+                tiltY: Double? = nil, rotation: Double? = nil) {
         self.t = t
+        self.clock = clock
         self.x = x
         self.y = y
         self.z = z
         self.altitude = altitude
         self.azimuth = azimuth
         self.roll = roll
+        self.tiltX = tiltX
+        self.tiltY = tiltY
+        self.rotation = rotation
     }
 }
 
@@ -209,6 +244,9 @@ public struct InkRecorder: Sendable {
                 altitude: plan.altitude ? finite(r.altitude) : nil,
                 azimuth: plan.azimuth ? finite(r.azimuth) : nil,
                 roll: plan.roll ? finite(r.roll) : nil,
+                tiltX: plan.tiltX ? tilt(r.tiltX) : nil,
+                tiltY: plan.tiltY ? tilt(r.tiltY) : nil,
+                rotation: plan.rotation ? finite(r.rotation) : nil,
                 phase: r.phase, est: r.estimated.intersection(plan.properties), pending: pending
             )))
             if lifts {
@@ -255,13 +293,17 @@ public struct InkRecorder: Sendable {
         return contacts.map { .contactEnded(ContactEnded(t: t, contact: $0, cancelled: true)) }
     }
 
+    /// An in-air reading. A non-finite height is an absent height, as a non-finite channel value is an absent channel.
     public func hover(_ r: HoverReading) -> Event? {
-        guard plan.hover, isUptime(r.t), r.x.isFinite, r.y.isFinite, r.z.isFinite else { return nil }
+        guard plan.hover, isUptime(r.t), r.x.isFinite, r.y.isFinite else { return nil }
         return .hover(Hover(
-            t: r.t, clock: .callback, x: r.x, y: r.y, z: max(0, r.z),
+            t: r.t, clock: r.clock, x: r.x, y: r.y, z: finite(r.z).map { max(0, $0) },
             altitude: plan.altitude ? finite(r.altitude) : nil,
             azimuth: plan.azimuth ? finite(r.azimuth) : nil,
-            roll: plan.roll ? finite(r.roll) : nil
+            roll: plan.roll ? finite(r.roll) : nil,
+            tiltX: plan.tiltX ? tilt(r.tiltX) : nil,
+            tiltY: plan.tiltY ? tilt(r.tiltY) : nil,
+            rotation: plan.rotation ? finite(r.rotation) : nil
         ))
     }
 
@@ -282,21 +324,31 @@ public struct InkRecorder: Sendable {
         value.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
     }
 
+    /// A tilt component is -1 to 1. The decoder refuses a value outside that range.
+    private func tilt(_ value: Double?) -> Double? {
+        value.flatMap { (-1...1).contains($0) ? $0 : nil }
+    }
+
     private func isUptime(_ t: Double) -> Bool { t.isFinite && t >= 0 }
 }
 
 // MARK: - JSON
 
 extension ChannelPlan {
+    /// A 1.0 header has the five Pencil keys only. An absent tablet key reads as false.
     init(_ f: Fields) throws(DecodeError) {
         self.init(force: try f.bool("force"), altitude: try f.bool("altitude"), azimuth: try f.bool("azimuth"),
-                  roll: try f.bool("roll"), hover: try f.bool("hover"))
+                  roll: try f.bool("roll"), hover: try f.bool("hover"),
+                  tiltX: f.has("tiltX") ? try f.bool("tiltX") : false,
+                  tiltY: f.has("tiltY") ? try f.bool("tiltY") : false,
+                  rotation: f.has("rotation") ? try f.bool("rotation") : false)
     }
 
     var json: JSON {
         .object([
             ("force", .bool(force)), ("altitude", .bool(altitude)), ("azimuth", .bool(azimuth)),
-            ("roll", .bool(roll)), ("hover", .bool(hover)),
+            ("roll", .bool(roll)), ("hover", .bool(hover)), ("tiltX", .bool(tiltX)), ("tiltY", .bool(tiltY)),
+            ("rotation", .bool(rotation)),
         ])
     }
 }

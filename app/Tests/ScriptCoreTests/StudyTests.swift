@@ -52,11 +52,39 @@ private func withProbeBlock(_ config: StudyConfiguration) -> StudyConfiguration 
     #expect(try problems(config) == [.noExportKey, .noOperatorPin])
 }
 
-@Test func aQualificationTaskCannotEnterAStudyConfiguration() throws {
-    // Detects a study configuration that mixes device-qualification tasks into participant sessions.
+@Test func aQualificationOrBenchTaskCannotEnterAStudyConfiguration() throws {
+    // Detects a study configuration that mixes device-qualification or bench tasks into participant sessions.
     var config = try Contract.demoConfiguration()
     config.tasks.append(.init(task: "qual-hold", practice: false, attempts: 1, hands: .dominant))
-    #expect(try problems(config) == [.qualificationTask("qual-hold")])
+    config.tasks.append(.init(task: "bench-spiral-l", practice: false, attempts: 1, hands: .dominant))
+    #expect(try problems(config) == [.reservedTask("qual-hold", .qualification), .reservedTask("bench-spiral-l", .bench)])
+    #expect(ConfigProblem.reservedTask("bench-spiral-l", .bench).description
+        == "task 'bench-spiral-l' belongs to bench sessions, not study sessions")
+}
+
+@Test func theProgramsFileLoadsAndRefusesAProgramOutsideTheBenchTasks() throws {
+    // Detects a shipped programs file that the app refuses or reads with a lost value, a program whose task is not a
+    // bench task, which the purpose gate could never start, or a fault program whose base is not a main program.
+    let programs = try Contract.benchPrograms()
+    #expect(programs.programs.count == 15)
+    #expect(programs.protocol.version == "1.1")
+    #expect(programs.program("fault-dwell")?.fault == "dwell" && programs.program("loops-s-v40")?.fault == nil)
+    #expect(programs.program("loops-s-v40")?.speedMMPerS == 40 && programs.program("loops-s-v40")?.scale == 0.7)
+    #expect(programs.program("fault-lift")?.base == "loops-l-v20" && programs.program("loops-l-v20")?.base == nil)
+    #expect(programs.program("line-osc8")?.oscillation == BenchProgram.Oscillation(hz: 8.0, mm: 0.25))
+    #expect(programs.program("loops-l-v20").map { $0.oscillation == nil } == true)
+    #expect(Set(programs.programs.values.map(\.trajectorySHA256)).count == 15)
+
+    let text = String(decoding: try Contract.data("bench_programs.json"), as: UTF8.self)
+    for (original, replacement, expected) in [
+        (#""task": "bench-loops-s""#, #""task": "loops""#, BenchPrograms.LoadError.unknownTask("loops-s-v20", "loops")),
+        (#""base": "loops-l-v20""#, #""base": "fault-lift""#, .invalidBase("fault-dwell", "fault-lift")),
+        (#""base": "loops-l-v20""#, #""base": "loops-l-v30""#, .invalidBase("fault-dwell", "loops-l-v30")),
+    ] {
+        let range = try #require(text.range(of: original))
+        let changed = text.replacingCharacters(in: range, with: replacement)
+        #expect(throws: expected) { try BenchPrograms(data: Data(changed.utf8)) }
+    }
 }
 
 @Test(arguments: [
@@ -121,6 +149,20 @@ private func pinJSON(salt: String, iterations: Int) -> String {
     #expect(MillimetreScale.lookup(model: "iPad16,3", nativeScale: 2) == opened.scale)
     #expect(DeviceTable.density(model: "iPad16,3")?.ppiConfirmed == true)
     #expect(MillimetreScale.lookup(model: "iPad99,9", nativeScale: 2) == nil)
+}
+
+@Test func theTabletScaleMatchesTheContractFormula() throws {
+    // Detects a tablet scale whose mmPerPoint differs from 1 / linesPerMM as the contract records it, or a tablet
+    // table without the bench tablet.
+    let line = Contract.lines(try Contract.data("fixtures/journal/bench_wacom.jsonl"))[0]
+    guard case .sessionOpened(let opened) = try LineCodec.decode(line).event else { throw DecodeError.notAnObject }
+    let model = try #require(opened.tablet).model
+    let tablet = try #require(TabletTable.geometry(model: model))
+    #expect(tablet.scale == opened.scale)
+    #expect(MillimetreScale.tablet(linesPerMM: 200) == .tablet(linesPerMM: 200, mmPerPoint: 0.005))
+    #expect(tablet.productCode == "PTK670" && tablet.confirmed)
+    #expect(tablet.activeAreaLines == ViewSize(width: 52600, height: 29600))
+    #expect(MillimetreScale.tablet(linesPerMM: 0) == nil)
 }
 
 @Test func theIDCardScaleUsesTheCardWidth() throws {

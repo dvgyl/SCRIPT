@@ -5,8 +5,46 @@ import Testing
 @Test func formatVersionMatchesTheSchema() throws {
     // Detects a Swift format constant that drifts from the schema's sessionOpened.format.
     let schema = try Fields(try Contract.json("journal.schema.json"), path: "")
-    let format = try schema.object("$defs").object("sessionOpened").object("properties").object("format")
+    let format = try schema.object("$defs").object("sessionCommon").object("properties").object("format")
     #expect(try format.string("const") == JournalFormat.version)
+}
+
+/// The header of `basic.jsonl` with `format` replaced and, when `channels` is given, its `channels` object replaced.
+private func header(format: String, channels: String? = nil) throws -> Data {
+    var text = String(decoding: Contract.lines(try Contract.data("fixtures/journal/basic.jsonl"))[0], as: UTF8.self)
+    let formatRange = try #require(text.range(of: #""format":"2.0""#))
+    text.replaceSubrange(formatRange, with: #""format":"\#(format)""#)
+    if let channels {
+        let start = try #require(text.range(of: #""channels":{"#))
+        let end = try #require(text.range(of: "}", range: start.upperBound..<text.endIndex))
+        text.replaceSubrange(start.lowerBound..<end.upperBound, with: #""channels":\#(channels)"#)
+    }
+    return Data(text.utf8)
+}
+
+private func manifest(version: String) -> Data {
+    Data(#"{"format":"script.journal","version":"\#(version)","sessionID":"3F2A9C1E-0000-4000-8000-000000000001","#.utf8)
+        + Data(#""demo":true,"journal":{"bytes":1,"lines":1,"sha256":"\#(String(repeating: "0", count: 64))"}}"#.utf8)
+}
+
+@Test func aFormat1HeaderDecodesWithAbsentPlanKeysAsFalse() throws {
+    // Detects a 2.0 reader that refuses the 1.0 journals of the first device tests, whose channels object has the
+    // five Pencil keys only.
+    let line = try header(format: "1.0", channels: #"{"force":true,"altitude":true,"azimuth":true,"roll":false,"hover":true}"#)
+    let entry = try LineCodec.decode(line)
+    guard case .sessionOpened(let opened) = entry.event else { throw DecodeError.notAnObject }
+    #expect(opened.format == "1.0")
+    #expect(opened.channels == ChannelPlan(force: true, altitude: true, azimuth: true, roll: false, hover: true,
+                                           tiltX: false, tiltY: false, rotation: false))
+    #expect(throws: Never.self) { try SessionState(opening: entry) }
+    #expect(throws: Never.self) { try Manifest(json: try JSON.decodeDocument(manifest(version: "1.0"))) }
+}
+
+@Test func aFormat3HeaderIsRefused() throws {
+    // Detects a reader that accepts a major version it does not know, in the journal or in the manifest.
+    let entry = try LineCodec.decode(try header(format: "3.0"))
+    #expect(throws: FoldError(line: 0, violation: .unsupportedFormat("3.0"))) { try SessionState(opening: entry) }
+    #expect(throws: DecodeError.invalid("version")) { try Manifest(json: try JSON.decodeDocument(manifest(version: "3.0"))) }
 }
 
 @Test(arguments: Contract.journalFixtures.map { "fixtures/journal/\($0).jsonl" } + ["\(Contract.exportFixture)/journal.jsonl"])
@@ -67,10 +105,58 @@ func everyFixtureLineEncodesBackToItsBytes(path: String) throws {
     (#"{"seq":1,"kind":"sample","contact":1,"t":1.0,"x":1.0,"y":1.0,"phase":"moved","est":0,"pending":{"expect":0,"update":3}}"#,
      .invalid("pending.expect")),
     (#"{"seq":1,"kind":"recovered","t":1.0,"at":"x","boot":"not-a-uuid","truncatedBytes":0}"#, .invalid("boot")),
+    (#"{"seq":1,"kind":"sample","contact":1,"t":1.0,"x":1.0,"y":1.0,"tiltX":1.5,"phase":"moved","est":0}"#, .invalid("tiltX")),
+    (#"{"seq":1,"kind":"sample","contact":1,"t":1.0,"x":1.0,"y":1.0,"force":-0.1,"phase":"moved","est":0}"#, .invalid("force")),
+    (#"{"seq":1,"kind":"hover","t":1.0,"clock":"event","x":1.0,"y":1.0,"z":-0.1}"#, .invalid("z")),
 ])
 func decodeErrorsNameTheKeyPath(line: String, expected: DecodeError) {
     // Detects a decoder that accepts a malformed line or reports the wrong key, which hides the damaged field.
     #expect(throws: expected) { try LineCodec.decode(Data(line.utf8)) }
+}
+
+/// A fixture line, by the name a test gives it, with the first `original` replaced. The lines are `basic.jsonl` lines
+/// 0 and 1, `bench_wacom.jsonl` lines 0 and 1, and the mark line of `bench_ipad.jsonl`.
+private func fixtureLine(_ name: String, replacing original: String, with replacement: String) throws -> Data {
+    let participant = Contract.lines(try Contract.data("fixtures/journal/basic.jsonl"))
+    let bench = Contract.lines(try Contract.data("fixtures/journal/bench_wacom.jsonl"))
+    let mark = try #require(Contract.lines(try Contract.data("fixtures/journal/bench_ipad.jsonl"))
+        .first { String(decoding: $0, as: UTF8.self).contains(#""kind":"mark""#) })
+    let lines = ["participant header": participant[0], "participant trial": participant[1],
+                 "bench header": bench[0], "bench trial": bench[1], "bench mark": mark]
+    let line = String(decoding: try #require(lines[name]), as: UTF8.self)
+    let range = try #require(line.range(of: original))
+    return Data(line.replacingCharacters(in: range, with: replacement).utf8)
+}
+
+@Test(arguments: [
+    ("participant header", #""purpose":"study","#, #""purpose":"study","bench":{"role":"P"},"#, DecodeError.unexpected("bench")),
+    ("bench header", #""purpose":"bench","#, #""purpose":"bench","participant":"P0001","#, .unexpected("participant")),
+    ("bench header", #""purpose":"bench","#, #""purpose":"bench","consent":{},"#, .unexpected("consent")),
+    ("bench header", #""input":"tablet","#, #""input":"pencil","#, .unexpected("tablet")),
+    ("participant header", #""input":"pencil","#, #""input":"tablet","#, .missing("tablet")),
+    ("bench trial", #""bench":{"#, #""hand":"right","bench":{"#, .unexpected("hand")),
+    ("bench trial", #""clip":"W-M3-line-osc8-r2""#, #""clip":"""#, .invalid("bench.clip")),
+])
+func theSubjectShapeFollowsThePurposeAndTheBenchKey(name: String, original: String, replacement: String,
+                                                     expected: DecodeError) throws {
+    // Detects a decoder that accepts a participant key on a bench line, a bench key on a participant line, or a
+    // tablet object that disagrees with the input, which the Python reader refuses.
+    let line = try fixtureLine(name, replacing: original, with: replacement)
+    #expect(throws: expected) { try LineCodec.decode(line) }
+}
+
+@Test(arguments: [
+    ("bench trial", #""run":2,"#, #""run":0,"#, DecodeError.invalid("bench.run")),
+    ("bench trial", #""run":2,"#, #""run":8,"#, .invalid("bench.run")),
+    ("bench header", #""mounting":"M3""#, #""mounting":"M9""#, .invalid("bench.mounting")),
+    ("bench mark", #""code":"disturbance""#, #""code":"cameraSync""#, .invalid("code")),
+])
+func aBenchValueOutsideTheProtocolIsRefused(name: String, original: String, replacement: String,
+                                            expected: DecodeError) throws {
+    // Detects a decoder that accepts a run index outside 1 to 7, a mounting outside M1 to M8, or the cameraSync mark,
+    // which bench protocol 1.1 and the Python reader refuse.
+    let line = try fixtureLine(name, replacing: original, with: replacement)
+    #expect(throws: expected) { try LineCodec.decode(line) }
 }
 
 extension String {

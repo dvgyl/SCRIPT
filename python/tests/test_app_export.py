@@ -1,7 +1,8 @@
 """The exports that the SCRIPT Capture UI tests leave in `$SCRIPT_CONTRACT_OUT/app/`.
 
-`./check app` runs the UI tests on the simulator and copies every export out of the app container. These
-tests read each export as an analyst does. They skip when no app exports exist, unless
+`./check app` runs the UI tests on the simulator and copies every export out of the app container. A UI test
+run of the app also writes the Swift fold summary of each export beside it, as `<export name>.summary.json`.
+These tests read each export as an analyst does. They skip when no app exports exist, unless
 `SCRIPT_REQUIRE_APP_EXPORTS=1`: `./check` sets it when the `app` section ran in the same invocation.
 """
 
@@ -18,9 +19,12 @@ from conftest import CONTRACT, write_export
 from conftest import fixture_lines as lines
 from jsonschema import Draft202012Validator
 
-from scriptkin.formats.export import read_journal
+from scriptkin import bench
+from scriptkin.formats.export import load_export, read_journal
+from scriptkin.formats.journal import summarize
 from scriptkin.labels import labels
 from scriptkin.quality import Refusal
+from scriptkin.recording import BenchContext, BenchRunContext, DocumentRef, EndReason
 
 
 def app_exports() -> list[Path]:
@@ -56,6 +60,18 @@ def study_exports(administration: str) -> list[tuple[Path, list[dict[str, Any]]]
     return found
 
 
+def bench_exports() -> list[tuple[Path, list[dict[str, Any]]]]:
+    exports = [(folder, journal_rows(folder)) for folder in app_exports()]
+    found = [(folder, rows) for folder, rows in exports if rows[0]["purpose"] == "bench"]
+    assert found, "No bench export in the app exports."
+    return found
+
+
+def swift_summary(folder: Path) -> Any:
+    """The app's Swift fold summary of an export folder."""
+    return json.loads((folder.parent / f"{folder.name}.summary.json").read_bytes())
+
+
 def test_app_exports_read_and_match_the_schema() -> None:
     # Detects an app export that the reader refuses, a line outside the schema, a real-Pencil claim from the
     # simulator, or a participant code in an export name.
@@ -66,7 +82,45 @@ def test_app_exports_read_and_match_the_schema() -> None:
         for row in rows:
             schema.validate(row)
         assert rows[0]["input"] == "directTouchAsPen", folder.name
-        assert rows[0]["participant"] not in folder.name, folder.name
+        if rows[0]["purpose"] == "bench":
+            assert "participant" not in rows[0], folder.name
+        else:
+            assert rows[0]["participant"] not in folder.name, folder.name
+
+
+def test_app_exports_fold_to_the_swift_summary() -> None:
+    # Detects an app export whose Python fold differs from the Swift fold of the app that wrote it.
+    for folder in app_exports():
+        _, data = load_export(folder)
+        assert summarize(data.splitlines(keepends=True)) == swift_summary(folder), folder.name
+
+
+def test_bench_export_is_plaintext_and_keeps_every_bench_fact() -> None:
+    # Detects a bench export that is encrypted or names a person, or that loses a header fact, a run fact, a
+    # clip, a mark, or the operatorDone end of a run.
+    for folder, _ in bench_exports():
+        manifest, _ = load_export(folder)
+        assert manifest["demo"] is True and "encryption" not in manifest, folder.name
+        assert folder.name.startswith("SCRIPT_BENCH_PM2_"), folder.name
+        recording = read_journal(folder)
+        assert recording.participant is None and recording.questionnaires == ()
+        context = recording.context
+        assert context is not None and context.purpose == "bench" and context.tablet is None
+        assert context.subject == BenchContext(
+            "P", "M2", DocumentRef("nextdraw-8511", "2.4"), bench.PROTOCOL_VERSION, bench.PROTOCOL_SHA256
+        )
+        assert context.device_asset == "IPAD-01"
+        assert [t.context for t in recording.trials] == [
+            BenchRunContext(
+                False, 1, "loops-l-v20", 1, bench.trajectory_sha256("loops-l-v20"), "P-M2-loops-l-v20-r1"
+            ),
+            BenchRunContext(
+                False, 2, "fault-lift", 1, bench.trajectory_sha256("fault-lift"), "P-M2-fault-lift-r1"
+            ),
+        ]
+        assert [t.marks for t in recording.trials] == [("disturbance",), ()]
+        assert {t.end_reason for t in recording.trials} == {EndReason.OPERATOR_DONE}
+        assert all(t.strokes for t in recording.trials)
 
 
 def test_supervised_export_has_one_flag_alert_action_and_crisis_list() -> None:
@@ -133,6 +187,26 @@ def test_app_export_checks_fail_without_exports_after_check_ran_the_app(
     assert outcome() is pytest.fail.Exception
     monkeypatch.delenv("SCRIPT_REQUIRE_APP_EXPORTS")
     assert outcome() is pytest.skip.Exception
+
+
+def test_app_export_checks_need_a_bench_export_and_its_swift_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Detects a configured app export check that passes when the bench UI test left no export, or that does
+    # not compare the Python fold with the Swift summary.
+    folder = tmp_path / "app" / "SCRIPT_DEMO_DEMO_3f2a9c1e"
+    write_export(folder, lines("self_administered"))
+    oracle = json.loads((CONTRACT / "fixtures" / "journal" / "self_administered.fold.json").read_bytes())
+    summary = folder.parent / f"{folder.name}.summary.json"
+    summary.write_text(json.dumps(oracle))
+    monkeypatch.setenv("SCRIPT_CONTRACT_OUT", str(tmp_path))
+    with pytest.raises(AssertionError, match="No bench export"):
+        test_bench_export_is_plaintext_and_keeps_every_bench_fact()
+    test_app_exports_fold_to_the_swift_summary()
+    oracle["unmatchedCorrections"] = 99
+    summary.write_text(json.dumps(oracle))
+    with pytest.raises(AssertionError, match=folder.name):
+        test_app_exports_fold_to_the_swift_summary()
 
 
 def test_app_export_checks_need_both_administrations(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -384,7 +384,8 @@ public struct OperatorPin: Hashable, Sendable {
 public enum ConfigProblem: Error, Hashable, Sendable, CustomStringConvertible {
     case batteryMismatch
     case unknownTask(TaskID)
-    case qualificationTask(TaskID)
+    /// A task that belongs to qualification or bench sessions, which a study session must not use.
+    case reservedTask(TaskID, Purpose)
     case unknownInstrument(InstrumentID)
     case unverifiedInstrument(InstrumentID)
     case notValidatedForAgeBand(InstrumentID, AgeBand)
@@ -403,7 +404,7 @@ public enum ConfigProblem: Error, Hashable, Sendable, CustomStringConvertible {
         switch self {
         case .batteryMismatch: "battery.sha256 does not match the battery that this build ships"
         case .unknownTask(let t): "task '\(t)' is not in the battery"
-        case .qualificationTask(let t): "task '\(t)' belongs to qualification sessions, not study sessions"
+        case .reservedTask(let t, let purpose): "task '\(t)' belongs to \(purpose.rawValue) sessions, not study sessions"
         case .unknownInstrument(let i): "instrument '\(i)' is not in contract/instruments.json"
         case .unverifiedInstrument(let i): "instrument '\(i)' text is not verified"
         case .notValidatedForAgeBand(let i, let band): "instrument '\(i)' is not validated for age band \(band.rawValue)"
@@ -426,12 +427,15 @@ public enum ConfigProblem: Error, Hashable, Sendable, CustomStringConvertible {
 /// section 17. An empty list means the configuration passes.
 public func validate(config: StudyConfiguration, battery: Battery, instruments: InstrumentSet) -> [ConfigProblem] {
     var problems: [ConfigProblem] = []
+    // The purpose that owns each task that a study session must not use.
+    let reserved = Dictionary(uniqueKeysWithValues: Battery.qualificationTasks.map { ($0, Purpose.qualification) }
+        + Battery.benchTasks.map { ($0, Purpose.bench) })
     if config.battery.sha256 != battery.sha256 { problems.append(.batteryMismatch) }
     for entry in config.tasks {
         if battery.task(entry.task) == nil {
             problems.append(.unknownTask(entry.task))
-        } else if Battery.qualificationTasks.contains(entry.task) {
-            problems.append(.qualificationTask(entry.task))
+        } else if let owner = reserved[entry.task] {
+            problems.append(.reservedTask(entry.task, owner))
         }
     }
     for block in config.questionnaires {
@@ -475,6 +479,95 @@ public func validate(config: StudyConfiguration, battery: Battery, instruments: 
     return problems
 }
 
+// MARK: - Bench programs
+
+/// One registered motion of the bench protocol: a bench task driven at one speed, with or without an oscillation or a
+/// fault.
+public struct BenchProgram: Hashable, Sendable {
+    /// The oscillation `mm (1 - cos 2π hz t)` of the position along a line (bench protocol section 5.1).
+    public struct Oscillation: Hashable, Sendable {
+        public let hz: Double
+        public let mm: Double
+    }
+
+    public let id: ProgramID
+    public let task: TaskID
+    /// The scale of the task's figure.
+    public let scale: Double
+    public let speedMMPerS: Double
+    public let oscillation: Oscillation?
+    /// `dwell`, `lift`, or `truncated` for a fault program, nil for a main program.
+    public let fault: String?
+    /// The main program that a fault program changes, nil for a main program.
+    public let base: ProgramID?
+    /// The digest of the registered move list, which every run of this program records.
+    public let trajectorySHA256: SHA256Digest
+}
+
+extension BenchProgram {
+    /// The marks that an operator can add to a run of this program. `decide` refuses `exclude` on a fault run, because
+    /// the quality gate needs every fault run as an ordinary trial (bench protocol section 5.3).
+    public var markCodes: [MarkCode] {
+        fault == nil ? [.disturbance, .deviceProblem, .exclude] : [.disturbance, .deviceProblem]
+    }
+}
+
+/// The programs from `contract/bench_programs.json`, keyed by program identifier, with the protocol they belong to.
+public struct BenchPrograms: Hashable, Sendable {
+    public let `protocol`: BenchProtocolRef
+    public let programs: [ProgramID: BenchProgram]
+
+    public enum LoadError: Error, Hashable, Sendable {
+        case decode(DecodeError)
+        case duplicateProgram(ProgramID)
+        /// A program whose task is not a bench task of the battery.
+        case unknownTask(ProgramID, TaskID)
+        /// A program whose `base` names no main program of the file.
+        case invalidBase(ProgramID, ProgramID)
+    }
+
+    public init(data: Data) throws(LoadError) {
+        var entries: [BenchProgram] = []
+        do throws(DecodeError) {
+            let f = try Fields(try JSON.decodeDocument(data), path: "")
+            let p = try f.object("protocol")
+            self.protocol = BenchProtocolRef(version: try p.nonEmptyString("version"),
+                                             sha256: try p.text("sha256", SHA256Digest.init(hex:)))
+            entries = try f.objects("programs", minimum: 1) { e throws(DecodeError) in
+                var oscillation: BenchProgram.Oscillation?
+                if !e.isNull("oscillation") {
+                    let o = try e.object("oscillation")
+                    oscillation = BenchProgram.Oscillation(hz: try o.positive("hz"), mm: try o.positive("mm"))
+                }
+                return BenchProgram(
+                    id: try e.text("id", ProgramID.init(_:)), task: try e.text("task", TaskID.init(_:)),
+                    scale: try e.positive("scale"), speedMMPerS: try e.positive("speedMMPerS"),
+                    oscillation: oscillation,
+                    fault: e.isNull("fault") ? nil : try e.nonEmptyString("fault"),
+                    base: e.isNull("base") ? nil : try e.text("base", ProgramID.init(_:)),
+                    trajectorySHA256: try e.text("trajectorySHA256", SHA256Digest.init(hex:))
+                )
+            }
+        } catch {
+            throw .decode(error)
+        }
+        var programs: [ProgramID: BenchProgram] = [:]
+        for program in entries {
+            guard Battery.benchTasks.contains(program.task) else { throw .unknownTask(program.id, program.task) }
+            guard programs.updateValue(program, forKey: program.id) == nil else { throw .duplicateProgram(program.id) }
+        }
+        for program in entries {
+            guard let base = program.base else { continue }
+            guard let target = programs[base], target.fault == nil else { throw .invalidBase(program.id, base) }
+        }
+        self.programs = programs
+    }
+
+    public func program(_ id: ProgramID) -> BenchProgram? { programs[id] }
+}
+
+// MARK: - Session rules
+
 /// What `decide` needs from the frozen configuration and the shipped contract for one session.
 public struct SessionRules: Sendable {
     public let battery: Battery
@@ -485,7 +578,10 @@ public struct SessionRules: Sendable {
     public let remoteReview: StudyConfiguration.RemoteReview?
     /// The hours after `openedAt` in which an interrupted self-administered session can resume.
     public let resumeWithinHours: Double
+    /// The programs a bench session may run. Nil for a session with a participant, which runs no program.
+    public let benchPrograms: BenchPrograms?
 
+    /// The rules of a study or qualification session, from its frozen configuration.
     public init(battery: Battery, instruments: InstrumentSet, configuration: StudyConfiguration,
                 jurisdiction: Jurisdiction, locale: LocaleTag) {
         self.battery = battery
@@ -495,6 +591,19 @@ public struct SessionRules: Sendable {
         actionCodes = configuration.safety.actionCodes
         remoteReview = configuration.safety.remoteReview
         resumeWithinHours = configuration.selfAdministered.resumeWithinHours
+        benchPrograms = nil
+    }
+
+    /// The rules of a bench session, which has no study configuration: the battery and the programs file. The
+    /// decider refuses every questionnaire, safety, and handoff command in a bench session, so no list applies.
+    public init(battery: Battery, instruments: InstrumentSet, benchPrograms: BenchPrograms) {
+        self.battery = battery
+        self.instruments = instruments
+        crisisList = nil
+        actionCodes = []
+        remoteReview = nil
+        resumeWithinHours = StudyConfiguration.SelfAdministered.defaultResumeWithinHours
+        self.benchPrograms = benchPrograms
     }
 }
 

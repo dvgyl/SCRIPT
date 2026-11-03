@@ -88,8 +88,7 @@ private func driver(administration: Administration = .supervised, configuration:
 
 private func plan(position: Int = 1, accommodations: [Accommodation] = [],
                   origin: Point = Point(x: 147.5, y: 200)) -> TrialPlan {
-    var plan = Driver.plan("spiral-trace", position: position)
-    plan.accommodations = accommodations
+    var plan = Driver.plan("spiral-trace", position: position, accommodations: accommodations)
     plan.stimulusOrigin = origin
     return plan
 }
@@ -126,7 +125,7 @@ func decideRefusesAValueThatTheDecoderRefuses(command: Command, rejection: Rejec
     for (band, expected) in [(AgeBand.adolescent, Rejection.instrumentNotForAgeBand("probe")), (.youngAdult, nil)] {
         let opened = makeOpened(ageBand: band, configuration: config, battery: try Contract.battery())
         let rules = SessionRules(battery: try Contract.battery(), instruments: instruments, configuration: config,
-                                 jurisdiction: opened.jurisdiction, locale: opened.locale)
+                                 jurisdiction: "US", locale: "en")
         let d = try Driver(opened: opened, rules: rules)
         #expect(d.state.decide(.startQuestionnaire("probe", t: 200), rules: rules).rejection == expected, "\(band)")
     }
@@ -187,6 +186,193 @@ func aBlockThatEndsBeforeItsSafetyItemFlagsTheItemFirst(reason: QuestionnaireEnd
                              instruments: d.rules.instruments) == [])
     try d.run(.show(.crisisList, t: 7))
     #expect(!d.state.session.safety.flaggedSinceCrisisList)
+}
+
+private func benchDriver(role: BenchRole = .tablet, mounting: MountingCode = "M3") throws -> Driver {
+    let opened = makeBenchOpened(role: role, mounting: mounting, programs: try Contract.benchPrograms(),
+                                 battery: try Contract.battery())
+    return try Driver(opened: opened, rules: try benchRules())
+}
+
+/// The bench run of the `trialStarted` line that `decide` gives for `plan`, or nil when it gives none.
+private func decidedRun(_ d: Driver, _ plan: TrialPlan) throws -> BenchRun? {
+    let events = try d.state.decide(.startTrial(plan, t: 101), rules: d.rules).get()
+    guard case .trialStarted(let started) = events.first, case .bench(let run) = started.subject else { return nil }
+    return run
+}
+
+@Test func aBenchSessionRefusesEveryParticipantCommand() throws {
+    // Detects a bench journal that can hold a questionnaire, a safety line, or a handoff, which name a person who
+    // is not there (DESIGN section 3.4, I6).
+    var d = try benchDriver()
+    let commands: [Command] = [
+        .handoff(to: .participant, t: 101), .startQuestionnaire("gad7", t: 101),
+        .respond(item: "gad7-1", value: 0, t: 101), .endQuestionnaire(reason: .completed, t: 101),
+        .show(.crisisList, t: 101), .show(.operatorAlert, t: 101), .recordAction("clinicianAssessment", t: 101),
+        .expire(at: WallTime(text: "2026-11-05T10:00:00Z"), t: 101),
+    ]
+    for command in commands {
+        #expect(d.state.decide(command, rules: d.rules).rejection == .noParticipant, "\(command)")
+    }
+    #expect(throws: FoldError(line: 1, violation: .noParticipant(.handoff))) {
+        try d.state.apply(Entry(seq: 1, event: .handoff(Handoff(t: 101, to: .participant))))
+    }
+    #expect(throws: FoldError(line: 1, violation: .noParticipant(.safetyShown))) {
+        try d.state.apply(Entry(seq: 1, event: .safetyShown(SafetyShown(t: 101, what: .crisisList, listVersion: nil))))
+    }
+
+    try d.run(.startTrial(Driver.benchPlan("loops-l-v20", task: "bench-loops-l"), t: 102))
+    try d.run(.beginTrial(t: 102.5))
+    try d.run(.mark(trial: TrialIndex(count: 0), code: .disturbance, t: 103))
+    try d.run(.endTrial(reason: .operatorDone, t: 104))
+    try d.run(.close(t: 105))
+    let summary = d.state.summary
+    #expect(summary.trials.map(\.outcome) == [.completed])
+    #expect(summary.administration == nil)
+    #expect(!String(decoding: summary.jsonData(), as: UTF8.self).contains("administration"))
+}
+
+@Test func aBenchRunNeedsAProgramFromTheProgramsFile() throws {
+    // Detects a run with a typed or absent trajectory digest, a clip that is not the run id of the header's role and
+    // mounting, a program outside the programs file, a program run on another task's geometry, or a run index
+    // outside 1 to 7.
+    let d = try benchDriver()
+    let programs = try Contract.benchPrograms()
+    let lift = try decidedRun(d, Driver.benchPlan("fault-lift", task: "bench-loops-l", run: 2))
+    let digest = try #require(programs.program("fault-lift")).trajectorySHA256
+    #expect(lift == BenchRun(program: "fault-lift", run: 2, trajectorySHA256: digest, clip: "W-M3-fault-lift-r2"))
+    let spiral = try decidedRun(try benchDriver(role: .pencil, mounting: "M1"),
+                                Driver.benchPlan("spiral-s-v40", task: "bench-spiral-s"))
+    #expect(spiral?.clip == "P-M1-spiral-s-v40-r1")
+    let rerun = try decidedRun(d, Driver.benchPlan("line-osc8", task: "bench-line", run: 7))
+    #expect(rerun?.run == 7)
+
+    #expect(d.state.decide(.startTrial(Driver.benchPlan("loops-l-v30", task: "bench-loops-l"), t: 101), rules: d.rules).rejection
+        == .unknownProgram("loops-l-v30"))
+    #expect(d.state.decide(.startTrial(Driver.benchPlan("spiral-l-v20", task: "bench-loops-l"), t: 101), rules: d.rules).rejection
+        == .programNotForTask("spiral-l-v20"))
+    for run in [0, 8] {
+        #expect(d.state.decide(.startTrial(Driver.benchPlan("loops-l-v20", task: "bench-loops-l", run: run), t: 101),
+                               rules: d.rules).rejection == .invalidRun(run), "run \(run)")
+    }
+    #expect(ProgramID("Loops-S1" as String) == nil && ProgramID(String(repeating: "a", count: 33)) == nil)
+    #expect(MountingCode("M8" as String) != nil)
+    #expect(MountingCode("M9" as String) == nil && MountingCode("M10" as String) == nil)
+    #expect(ClipName("" as String) == nil && ClipName(String(repeating: "c", count: 65)) == nil)
+}
+
+@Test func aRunIDIsUsedOncePerSession() throws {
+    // Detects a session that records a second run with the program and run index of an earlier run, aborted or
+    // interrupted, so two runs share one run id and one camera file name (bench protocol sections 6.4 and 15).
+    var d = try benchDriver()
+    let loops = Driver.benchPlan("loops-l-v20", task: "bench-loops-l", run: 2)
+    try d.run(.startTrial(loops, t: 101))
+    try d.run(.endTrial(reason: .operatorAbort, t: 102))
+    try d.run(.startTrial(Driver.benchPlan("spiral-l-v20", task: "bench-spiral-l", position: 2), t: 103))
+    try d.write(d.state.recovery(t: 5, at: Fixed.launch.at, boot: Fixed.laterBoot, truncatedBytes: 0,
+                                 instruments: d.rules.instruments))
+    for (plan, run) in [(loops, BenchRunPlan(program: "loops-l-v20", run: 2)),
+                        (Driver.benchPlan("spiral-l-v20", task: "bench-spiral-l"), BenchRunPlan(program: "spiral-l-v20", run: 1))] {
+        #expect(d.state.decide(.startTrial(plan, t: 6), rules: d.rules).rejection == .repeatedRun(run.program, run.run))
+        #expect(d.state.benchRun(run, rules: d.rules).rejection == .repeatedRun(run.program, run.run))
+    }
+    #expect(try decidedRun(d, Driver.benchPlan("loops-l-v20", task: "bench-loops-l", run: 6))?.clip == "W-M3-loops-l-v20-r6")
+    #expect(try decidedRun(d, Driver.benchPlan("loops-l-v40", task: "bench-loops-l", run: 2))?.clip == "W-M3-loops-l-v40-r2")
+}
+
+@Test func aBenchRunHasNoTimeLimit() throws {
+    // Detects a bench run that a time limit can end, which cuts a run that the operator ends with Done (bench
+    // protocol section 5.2), or a study trial that loses its time limit.
+    var d = try benchDriver()
+    try d.run(.startTrial(Driver.benchPlan("line-osc8", task: "bench-line"), t: 101))
+    guard case .drawing(let run) = d.state.phase else { throw DecodeError.missing("open trial") }
+    #expect(run.deadline == nil)
+    #expect(d.state.decide(.endTrial(reason: .timeLimit, t: 400), rules: d.rules).rejection == .noTimeLimit)
+    #expect(throws: Never.self) { try d.state.decide(.endTrial(reason: .operatorDone, t: 400), rules: d.rules).get() }
+
+    var study = try driver()
+    try study.run(.startTrial(Driver.plan("spiral-trace"), t: 101))
+    guard case .drawing(let trial) = study.state.phase else { throw DecodeError.missing("open trial") }
+    #expect(trial.deadline == 221)
+    #expect(throws: Never.self) { try study.state.decide(.endTrial(reason: .timeLimit, t: 221), rules: study.rules).get() }
+}
+
+@Test func aPracticeBenchRunIsRefused() throws {
+    // Detects a bench run recorded as practice, which the feature table and the bench analysis treat as not measured.
+    let d = try benchDriver()
+    var plan = Driver.benchPlan("loops-l-v20", task: "bench-loops-l")
+    plan.practice = true
+    #expect(d.state.decide(.startTrial(plan, t: 101), rules: d.rules).rejection == .practiceBenchRun)
+}
+
+@Test func aBenchSessionOfAnotherProtocolTakesNoRun() throws {
+    // Detects a bench session that a build with another programs file continues, so one journal mixes the runs of
+    // two protocol registrations.
+    let programs = try Contract.benchPrograms()
+    var opened = makeBenchOpened(programs: programs, battery: try Contract.battery())
+    guard case .bench(var facts) = opened.subject else { throw DecodeError.missing("bench") }
+    let other = try #require(SHA256Digest(hex: String(repeating: "a", count: 64)))
+    for header in [BenchProtocolRef(version: "1.0", sha256: programs.protocol.sha256),
+                   BenchProtocolRef(version: programs.protocol.version, sha256: other)] {
+        facts.protocol = header
+        opened.subject = .bench(facts)
+        let d = try Driver(opened: opened, rules: try benchRules())
+        #expect(d.state.decide(.startTrial(Driver.benchPlan("loops-l-v20", task: "bench-loops-l"), t: 101), rules: d.rules)
+            .rejection == .otherProtocol, "\(header)")
+        #expect(d.state.benchRun(BenchRunPlan(program: "loops-l-v20", run: 1), rules: d.rules).rejection == .otherProtocol)
+    }
+}
+
+@Test func anExcludeMarkOnAFaultRunIsRefused() throws {
+    // Detects a fault run that an operator can exclude, which removes it from the quality gate of bench protocol
+    // section 5.3, in either capture app.
+    var d = try benchDriver()
+    try d.run(.startTrial(Driver.benchPlan("loops-l-v20", task: "bench-loops-l"), t: 102))
+    try d.run(.beginTrial(t: 102.5))
+    try d.run(.mark(trial: TrialIndex(count: 0), code: .exclude, t: 103))
+    try d.run(.endTrial(reason: .operatorDone, t: 104))
+    try d.run(.startTrial(Driver.benchPlan("fault-lift", task: "bench-loops-l", position: 2), t: 105))
+    try d.run(.beginTrial(t: 105.5))
+    let fault = TrialIndex(count: 1)
+    #expect(d.state.decide(.mark(trial: fault, code: .exclude, t: 106), rules: d.rules).rejection
+        == .excludeOnFaultRun("fault-lift"))
+    try d.run(.mark(trial: fault, code: .disturbance, t: 106))
+    try d.run(.endTrial(reason: .operatorDone, t: 107))
+    #expect(d.state.decide(.mark(trial: fault, code: .exclude, t: 108), rules: d.rules).rejection
+        == .excludeOnFaultRun("fault-lift"))
+}
+
+@Test func aStudySessionRefusesABenchTaskAndABenchSessionRefusesAStudyTask() throws {
+    // Detects a purpose gate that lost its table: a bench geometry in a participant session, or a participant task
+    // run by the robot.
+    let study = try driver()
+    #expect(study.state.decide(.startTrial(Driver.plan("bench-loops-l"), t: 101), rules: study.rules).rejection
+        == .taskNotForPurpose("bench-loops-l"))
+    #expect(study.state.decide(.startTrial(Driver.benchPlan("loops-l-v20", task: "bench-loops-l"), t: 101), rules: study.rules).rejection
+        == .taskNotForPurpose("bench-loops-l"))
+    #expect(study.state.decide(.startTrial(Driver.benchPlan("loops-l-v20", task: "loops"), t: 101), rules: study.rules).rejection
+        == .notABenchSession)
+
+    let bench = try benchDriver(role: .pencil)
+    #expect(bench.state.decide(.startTrial(Driver.benchPlan("loops-l-v20", task: "loops"), t: 101), rules: bench.rules).rejection
+        == .taskNotForPurpose("loops"))
+    #expect(bench.state.decide(.startTrial(Driver.plan("qual-hold"), t: 101), rules: bench.rules).rejection
+        == .taskNotForPurpose("qual-hold"))
+    #expect(bench.state.decide(.startTrial(Driver.plan("bench-loops-l"), t: 101), rules: bench.rules).rejection
+        == .noParticipant)
+
+    let config = try Contract.demoConfiguration()
+    let qualification = makeOpened(purpose: .qualification, configuration: config, battery: try Contract.battery())
+    let q = try Driver(opened: qualification, rules: try rules(for: qualification, configuration: config))
+    #expect(q.state.decide(.startTrial(Driver.plan("bench-spiral-s"), t: 101), rules: q.rules).rejection
+        == .taskNotForPurpose("bench-spiral-s"))
+    #expect(throws: Never.self) { try q.state.decide(.startTrial(Driver.plan("qual-hold"), t: 101), rules: q.rules).get() }
+
+    var fold = study.state
+    let line = Contract.lines(try Contract.data("fixtures/journal/bench_wacom.jsonl"))[1]
+    #expect(throws: FoldError(line: 1, violation: .subjectMismatch)) {
+        try fold.apply(Entry(seq: 1, event: try LineCodec.decode(line).event))
+    }
 }
 
 @Test func anInterruptedSelfAdministeredSessionClosesOnlyAfterItsResumeWindow() throws {

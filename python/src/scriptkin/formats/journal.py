@@ -10,23 +10,30 @@ from typing import Any, cast
 
 import numpy as np
 
-from scriptkin.contract import KINDS, OUTCOME_OF_REASON, encode_line
+from scriptkin import bench
+from scriptkin.contract import KINDS, OUTCOME_OF_REASON, READABLE_MAJORS, encode_line
 from scriptkin.formats import FormatError
 from scriptkin.formats.checks import (
     Check,
     any_of,
     array,
+    between,
     boolean,
     integer,
+    matches,
+    nonempty,
     number,
     one_of,
     point,
     positive,
     record,
+    sized,
     text,
     uptime,
 )
 from scriptkin.recording import (
+    BenchContext,
+    BenchRunContext,
     BlockOutcome,
     Channel,
     Consent,
@@ -36,6 +43,7 @@ from scriptkin.recording import (
     Ethics,
     LocalizedRef,
     ModelTableScale,
+    ParticipantContext,
     PenState,
     QualificationRef,
     QuestionnaireBlock,
@@ -47,6 +55,8 @@ from scriptkin.recording import (
     Stroke,
     Study,
     Surface,
+    TabletContext,
+    TabletScale,
     TaskRef,
     Trial,
     TrialContext,
@@ -65,7 +75,9 @@ class JournalError(FormatError):
 
 Line = dict[str, Any]
 Lines = Iterable[Line | str | bytes]
-_CHANNELS = ("force", "altitude", "azimuth", "roll")
+_PENCIL_CHANNELS = ("force", "altitude", "azimuth", "roll")
+_TABLET_CHANNELS = ("tiltX", "tiltY", "rotation")
+_CHANNELS = (*_PENCIL_CHANNELS, *_TABLET_CHANNELS)
 QUESTIONNAIRE_KINDS = (
     "questionnaireStarted",
     "response",
@@ -74,6 +86,8 @@ QUESTIONNAIRE_KINDS = (
     "safetyShown",
     "safetyAction",
 )
+# The kinds that need a person. A bench session has none of them.
+_PARTICIPANT_KINDS = ("handoff", *QUESTIONNAIRE_KINDS)
 # App events use one uptime clock in one boot, so they must not go back in time. Touch times can.
 _APP_CLOCK_KINDS = (
     "trialStarted",
@@ -90,7 +104,10 @@ _CONTACT = integer(1)
 _BITS = integer(0, 31)
 _INDEX = integer(0)
 _LOCALIZED = record({"id": text, "version": text, "locale": text})
-_OPTIONAL_CHANNELS = {k: number for k in _CHANNELS}
+_SHA256 = matches("[0-9a-f]{64}")
+_PENCIL_VALUES = {k: number for k in _PENCIL_CHANNELS}
+# A tablet tilt component is the normalised tilt of AppKit, -1 to 1.
+_TABLET_VALUES = {"tiltX": between(-1, 1), "tiltY": between(-1, 1), "rotation": number}
 _SCALE = any_of(
     record({"kind": one_of("modelTable"), "mmPerPoint": positive, "ppi": positive, "nativeScale": positive}),
     record(
@@ -102,7 +119,16 @@ _SCALE = any_of(
             "drawnPoints": positive,
         }
     ),
+    record({"kind": one_of("tablet"), "linesPerMM": positive, "mmPerPoint": positive}),
     record({"kind": one_of("unknown")}),
+)
+_TABLET = record(
+    {
+        "model": nonempty,
+        "asset": matches("[A-Za-z0-9-]{1,32}"),
+        "driver": nonempty,
+        "pen": record({"declared": one_of("proPen3", "unknown")}),
+    }
 )
 _STIMULUS = any_of(
     lambda v: v is None,
@@ -132,13 +158,13 @@ _SPEC = record(
 _ANSWER = {"t": uptime, "block": _INDEX, "item": text, "skipped": boolean}
 
 # Required and optional payload fields of each line kind. Unknown keys pass: a minor version adds keys.
+# `sessionOpened` and `trialStarted` also have the keys of their subject shape, in `_SUBJECT_LINES`.
 _LINES: dict[str, tuple[dict[str, Check], dict[str, Check]]] = {
     "sessionOpened": (
         {
             "format": text,
-            "purpose": one_of("study", "qualification"),
+            "purpose": one_of("study", "qualification", "bench"),
             "sessionID": text,
-            "participant": text,
             "openedAt": text,
             "openedUptime": uptime,
             "boot": text,
@@ -152,35 +178,13 @@ _LINES: dict[str, tuple[dict[str, Check], dict[str, Check]]] = {
             ),
             "scale": _SCALE,
             "pencil": record({"declared": one_of("pro", "second", "usbC", "none")}),
-            "channels": record({k: boolean for k in (*_CHANNELS, "hover")}),
-            "input": one_of("pencil", "directTouchAsPen"),
-            "administration": one_of("supervised", "self"),
-            "study": record(
-                {
-                    k: text
-                    for k in ("id", "site", "configID", "configVersion", "configSHA256", "protocolVersion")
-                }
+            "channels": record(
+                {k: boolean for k in (*_PENCIL_CHANNELS, "hover")}, {k: boolean for k in _TABLET_CHANNELS}
             ),
-            "visit": record({"id": text, "number": integer(1)}),
-            "ageBand": one_of("13-17", "18-24"),
-            "jurisdiction": text,
-            "locale": text,
-            "consent": record(
-                {
-                    "model": one_of("adult", "guardianAndAssent", "waiver"),
-                    "attestedBy": record({"code": text, "role": one_of("operator", "enrolment")}),
-                    "attestedAt": text,
-                    "documents": array(record({"id": text, "version": text})),
-                },
-                {"waiverReference": text},
-            ),
-            "ethics": record(
-                {"approvalID": text, "protocolVersion": text, "safetyProtocolVersion": text},
-                {"monitoringDisclosureVersion": text},
-            ),
+            "input": one_of("pencil", "directTouchAsPen", "tablet"),
             "battery": record({"id": text, "version": text, "sha256": text}),
         },
-        {"qualification": record({"sessionID": text, "at": text})},
+        {"qualification": record({"sessionID": text, "at": text}), "tablet": _TABLET},
     ),
     "handoff": ({"t": uptime, "to": one_of("participant", "operator")}, {}),
     "trialStarted": (
@@ -190,11 +194,6 @@ _LINES: dict[str, tuple[dict[str, Check], dict[str, Check]]] = {
             "spec": _SPEC,
             "practice": boolean,
             "position": integer(1),
-            "hand": one_of("left", "right", "unknown"),
-            "instruction": _LOCALIZED,
-            "accommodations": array(
-                one_of("readAloud", "largerText", "extraTime", "positionAssist", "other"), unique=True
-            ),
             "view": record({"width": positive, "height": positive}),
             "stimulusOrigin": record({"x": number, "y": number}),
         },
@@ -211,16 +210,21 @@ _LINES: dict[str, tuple[dict[str, Check], dict[str, Check]]] = {
             "phase": one_of("began", "moved", "stationary", "ended", "cancelled"),
             "est": _BITS,
         },
-        {**_OPTIONAL_CHANNELS, "pending": record({"expect": integer(1, 31), "update": integer()})},
+        {
+            **_PENCIL_VALUES,
+            **_TABLET_VALUES,
+            "pending": record({"expect": integer(1, 31), "update": integer()}),
+        },
     ),
+    # A correction updates the estimated Pencil values only. A tablet sample has no estimate.
     "correction": (
         {"update": integer(), "arrived": uptime, "expect": _BITS},
-        {"contact": _CONTACT, "x": number, "y": number, **_OPTIONAL_CHANNELS},
+        {"contact": _CONTACT, "x": number, "y": number, **_PENCIL_VALUES},
     ),
     "contactEnded": ({"t": uptime, "contact": _CONTACT, "cancelled": boolean}, {}),
     "hover": (
-        {"t": uptime, "clock": one_of("callback"), "x": number, "y": number, "z": uptime},
-        {k: number for k in ("altitude", "azimuth", "roll")},
+        {"t": uptime, "clock": one_of("callback", "event"), "x": number, "y": number},
+        {"z": uptime, **{k: number for k in ("altitude", "azimuth", "roll")}, **_TABLET_VALUES},
     ),
     "finger": ({"t": uptime, "phase": one_of("began", "ended", "cancelled"), "x": number, "y": number}, {}),
     "trialEnded": ({"t": uptime, "trial": _INDEX, "reason": one_of(*OUTCOME_OF_REASON)}, {}),
@@ -248,9 +252,72 @@ _LINES: dict[str, tuple[dict[str, Check], dict[str, Check]]] = {
     "sessionClosed": ({"t": uptime, "counts": record({k: integer(0) for k in KINDS[:-1]})}, {}),
 }
 
+# The required keys of each subject shape. The purpose selects one shape, and the keys of the other
+# shape are refused. A study or qualification session has a participant, and a bench session has none.
+_PARTICIPANT_SESSION: dict[str, Check] = {
+    "participant": text,
+    "administration": one_of("supervised", "self"),
+    "study": record(
+        {k: text for k in ("id", "site", "configID", "configVersion", "configSHA256", "protocolVersion")}
+    ),
+    "visit": record({"id": text, "number": integer(1)}),
+    "ageBand": one_of("13-17", "18-24"),
+    "jurisdiction": text,
+    "locale": text,
+    "consent": record(
+        {
+            "model": one_of("adult", "guardianAndAssent", "waiver"),
+            "attestedBy": record({"code": text, "role": one_of("operator", "enrolment")}),
+            "attestedAt": text,
+            "documents": array(record({"id": text, "version": text})),
+        },
+        {"waiverReference": text},
+    ),
+    "ethics": record(
+        {"approvalID": text, "protocolVersion": text, "safetyProtocolVersion": text},
+        {"monitoringDisclosureVersion": text},
+    ),
+}
+_BENCH_SESSION: dict[str, Check] = {
+    "bench": record(
+        {
+            "role": one_of("P", "W"),
+            "mounting": one_of(*bench.MOUNTINGS),
+            "motion": record({"id": nonempty, "version": nonempty}),
+            "protocol": record({"version": nonempty, "sha256": _SHA256}),
+        }
+    ),
+}
+_PARTICIPANT_TRIAL: dict[str, Check] = {
+    "hand": one_of("left", "right", "unknown"),
+    "instruction": _LOCALIZED,
+    "accommodations": array(
+        one_of("readAloud", "largerText", "extraTime", "positionAssist", "other"), unique=True
+    ),
+}
+_BENCH_TRIAL: dict[str, Check] = {
+    "bench": record(
+        {
+            "program": matches("[a-z0-9-]{1,32}"),
+            "run": integer(min(bench.RUNS), max(bench.RUNS)),
+            "trajectorySHA256": _SHA256,
+        },
+        {"clip": sized(1, 64)},
+    ),
+}
+_SUBJECT_LINES: dict[str, dict[str, dict[str, Check]]] = {
+    "sessionOpened": {"participant": _PARTICIPANT_SESSION, "bench": _BENCH_SESSION},
+    "trialStarted": {"participant": _PARTICIPANT_TRIAL, "bench": _BENCH_TRIAL},
+}
 
-def _shape(line: Line, i: int) -> None:
-    required, optional = _LINES[line["kind"]]
+
+def _shape(line: Line, i: int, purpose: str) -> None:
+    """Check the payload of one line. `purpose` is the session purpose, which selects the subject shape."""
+    kind = line["kind"]
+    required, optional = _LINES[kind]
+    subject = "bench" if purpose == "bench" else "participant"
+    shapes = _SUBJECT_LINES.get(kind, {})
+    required = {**required, **shapes.get(subject, {})}
     for k, check in required.items():
         if k not in line:
             raise JournalError("I1", i, f"{k} is absent.")
@@ -259,7 +326,14 @@ def _shape(line: Line, i: int) -> None:
     for k, check in optional.items():
         if k in line and not check(line[k]):
             raise JournalError("I1", i, f"{k} is invalid.")
-    kind = line["kind"]
+    for other, keys in shapes.items():
+        if other == subject:
+            continue
+        for k in keys:
+            if k in line:
+                raise JournalError("I1", i, f"{k} is not a key of a {subject} {kind}.")
+    if kind == "sessionOpened" and (line["input"] == "tablet") != ("tablet" in line):
+        raise JournalError("I1", i, "tablet is present exactly when the input is a tablet.")
     if kind == "trialStarted" and line["trial"]["task"] != line["spec"]["id"]:
         raise JournalError("I1", i, "The task reference must match the task specification.")
     if kind in ("response", "safetyFlagged") and line["skipped"] == ("value" in line):
@@ -268,6 +342,7 @@ def _shape(line: Line, i: int) -> None:
 
 def _decode(lines: Lines) -> list[Line]:
     decoded: list[Line] = []
+    purpose = ""
     for i, raw in enumerate(lines):
         if isinstance(raw, dict):
             line = dict(raw)
@@ -288,7 +363,11 @@ def _decode(lines: Lines) -> list[Line]:
         row = cast(Line, line)
         if type(row.get("seq")) is not int or row["seq"] != i:
             raise JournalError("I2", i, "seq must equal the zero-based line index.")
-        _shape(row, i)
+        if i == 0:
+            if row["kind"] != "sessionOpened":
+                raise JournalError("I3", 0, "Line 0 must open the session.")
+            purpose = row.get("purpose", "")
+        _shape(row, i, purpose)
         decoded.append(row)
     return decoded
 
@@ -339,6 +418,7 @@ class FoldState:
 
     def __init__(self, head: Line):
         self.head = head
+        self.bench = head["purpose"] == "bench"
         self.state = "ready"
         self.counts: dict[str, int] = dict.fromkeys(KINDS, 0)
         self.counts["sessionOpened"] = 1
@@ -383,6 +463,8 @@ class FoldState:
         kind = row["kind"]
         if self.state == "closed":
             raise JournalError("I6", i, "The session is closed.")
+        if self.bench and kind in _PARTICIPANT_KINDS:
+            raise JournalError("I6", i, "A bench session has no questionnaire, safety, or handoff line.")
         self.handlers[kind](i, row)
         if kind in _APP_CLOCK_KINDS:
             now = float(row["t"])
@@ -458,7 +540,7 @@ class FoldState:
         target, samples = self.pending[key]
         target.corrections += 1
         for s in samples:
-            s.update({name: row[name] for name in ("x", "y", *_CHANNELS) if name in row})
+            s.update({name: row[name] for name in ("x", "y", *_PENCIL_CHANNELS) if name in row})
             s["remaining"] = row["expect"]
 
     def _hover(self, i: int, row: Line) -> None:
@@ -477,6 +559,8 @@ class FoldState:
         trial = self._open_trial(i, row["trial"], "trialEnded")
         if self.open_contacts:
             raise JournalError("I6", i, "A trial cannot end with an open contact.")
+        if self.bench and row["reason"] == "timeLimit":
+            raise JournalError("I6", i, "A bench run has no time limit, so it cannot end with timeLimit.")
         trial.outcome = OUTCOME_OF_REASON[row["reason"]]
         trial.reason = row["reason"]
         trial.end = row["t"]
@@ -542,13 +626,13 @@ class FoldState:
         self.state = "closed"
 
     def summary(self) -> Line:
-        return {
-            "sessionID": self.head["sessionID"],
-            "purpose": self.head["purpose"],
-            "administration": self.head["administration"],
-            "state": self.state,
-            "counts": dict(self.counts),
-            "trials": [
+        summary: Line = {"sessionID": self.head["sessionID"], "purpose": self.head["purpose"]}
+        if "administration" in self.head:
+            summary["administration"] = self.head["administration"]
+        summary.update(
+            state=self.state,
+            counts=dict(self.counts),
+            trials=[
                 {
                     "index": t.index,
                     "task": t.start["trial"]["task"],
@@ -563,7 +647,7 @@ class FoldState:
                 }
                 for t in self.trials
             ],
-            "questionnaires": [
+            questionnaires=[
                 {
                     "block": b.number,
                     "instrument": b.start["instrument"]["id"],
@@ -573,18 +657,19 @@ class FoldState:
                 }
                 for b in self.blocks
             ],
-            "safety": dict(self.safety),
-            "unmatchedCorrections": self.unmatched,
-            "truncatedBytes": self.truncated,
-        }
+            safety=dict(self.safety),
+            unmatchedCorrections=self.unmatched,
+            truncatedBytes=self.truncated,
+        )
+        return summary
 
 
 def replay(lines: Lines, *, closed: bool = False) -> tuple[list[Line], FoldState]:
     """Check rules I1 to I4, I6, and I7, and fold every line. `closed` requires a closed session."""
     rows = _decode(lines)
-    if not rows or rows[0]["kind"] != "sessionOpened":
+    if not rows:
         raise JournalError("I3", 0, "Line 0 must open the session.")
-    if str(rows[0]["format"]).split(".")[0] != "1":
+    if str(rows[0]["format"]).split(".")[0] not in READABLE_MAJORS:
         raise JournalError("I3", 0, "Unsupported major version.")
     if closed and rows[-1]["kind"] != "sessionClosed":
         raise JournalError("I3", len(rows) - 1, "An export must end with sessionClosed.")
@@ -604,14 +689,23 @@ def _scale(scale: Line) -> ScaleSource:
         return ModelTableScale(scale["mmPerPoint"], scale["ppi"], scale["nativeScale"])
     if scale["kind"] == "reference":
         return ReferenceScale(scale["object"], scale["mmPerPoint"], scale["lengthMM"], scale["drawnPoints"])
+    if scale["kind"] == "tablet":
+        return TabletScale(scale["linesPerMM"], scale["mmPerPoint"])
     return UnknownScale()
 
 
-def _context(head: Line) -> SessionContext:
+def _subject(head: Line) -> ParticipantContext | BenchContext:
+    if head["purpose"] == "bench":
+        bench = head["bench"]
+        return BenchContext(
+            bench["role"],
+            bench["mounting"],
+            DocumentRef(bench["motion"]["id"], bench["motion"]["version"]),
+            bench["protocol"]["version"],
+            bench["protocol"]["sha256"],
+        )
     study, consent, ethics = head["study"], head["consent"], head["ethics"]
-    qualification = head.get("qualification")
-    return SessionContext(
-        purpose=head["purpose"],
+    return ParticipantContext(
         administration=head["administration"],
         study=Study(
             study["id"],
@@ -639,12 +733,24 @@ def _context(head: Line) -> SessionContext:
             ethics["safetyProtocolVersion"],
             ethics.get("monitoringDisclosureVersion"),
         ),
+    )
+
+
+def _context(head: Line) -> SessionContext:
+    qualification = head.get("qualification")
+    tablet = head.get("tablet")
+    return SessionContext(
+        purpose=head["purpose"],
+        subject=_subject(head),
         device_asset=head["device"]["asset"],
         surface=Surface(head["surface"]["protector"], head["surface"]["nib"]),
         scale=_scale(head["scale"]),
         opened_at=head["openedAt"],
         qualification=QualificationRef(qualification["sessionID"], qualification["at"])
         if qualification
+        else None,
+        tablet=TabletContext(tablet["model"], tablet["asset"], tablet["driver"], tablet["pen"]["declared"])
+        if tablet
         else None,
     )
 
@@ -661,13 +767,14 @@ def _trial(t: _Trial, device: Device, scale: float) -> Trial:
     groups.sort(key=lambda group: group[1][0]["seq"] if group[1] else t.start["seq"])
     for contact, ss, state in groups:
         xy = np.array([[(s["x"] - origin["x"]) * scale, -(s["y"] - origin["y"]) * scale] for s in ss])
+        keys = {k: Channel(k) for k in _CHANNELS}
+        if state == PenState.IN_AIR:
+            keys["z"] = Channel.HOVER
         channels = {
-            Channel(k): np.array([s.get(k, np.nan) for s in ss], dtype=float)
-            for k in _CHANNELS
+            channel: np.array([s.get(k, np.nan) for s in ss], dtype=float)
+            for k, channel in keys.items()
             if any(k in s for s in ss)
         }
-        if state == PenState.IN_AIR:
-            channels[Channel.HOVER] = np.array([s["z"] for s in ss], dtype=float)
         strokes.append(
             Stroke(
                 np.array([s["t"] for s in ss], dtype=float),
@@ -681,6 +788,9 @@ def _trial(t: _Trial, device: Device, scale: float) -> Trial:
             )
         )
     observed = frozenset(k for s in strokes for k, v in s.channels.items() if np.isfinite(v).any())
+    # A planned hover channel is observed when the pen moved in the air, with or without a height.
+    if any(s.state == PenState.IN_AIR for s in strokes):
+        observed |= {Channel.HOVER}
     start = t.start
     spec = start["spec"]
     stimulus = spec["stimulus"]
@@ -689,6 +799,25 @@ def _trial(t: _Trial, device: Device, scale: float) -> Trial:
         if (stimulus and stimulus["kind"] == "paths")
         else ()
     )
+    context: TrialContext | BenchRunContext
+    if "bench" in start:
+        run = start["bench"]
+        context = BenchRunContext(
+            start["practice"],
+            start["position"],
+            run["program"],
+            run["run"],
+            run["trajectorySHA256"],
+            run.get("clip"),
+        )
+    else:
+        context = TrialContext(
+            start["practice"],
+            start["position"],
+            start["hand"],
+            _localized(start["instruction"]),
+            tuple(start["accommodations"]),
+        )
     return Trial(
         t.index,
         TaskRef(spec["id"], spec["mode"], paths),
@@ -702,13 +831,7 @@ def _trial(t: _Trial, device: Device, scale: float) -> Trial:
         t.fingers,
         t.unmatched,
         tuple(t.marks),
-        TrialContext(
-            start["practice"],
-            start["position"],
-            start["hand"],
-            _localized(start["instruction"]),
-            tuple(start["accommodations"]),
-        ),
+        context,
         t.began,
         EndReason(t.reason) if t.reason else None,
     )
@@ -730,16 +853,18 @@ def _block(b: _Block) -> QuestionnaireBlock:
 def recording(state: FoldState, source_hash: str) -> Recording:
     head = state.head
     known = head["scale"]["kind"] != "unknown"
+    # The device that samples the pen: the tablet when the input is a tablet, else the host computer.
+    sampler = head["tablet"] if head["input"] == "tablet" else head["device"]
     device = Device(
-        head["device"]["model"],
+        sampler["model"],
         head["input"],
-        frozenset(Channel(k) for k, v in head["channels"].items() if v),
+        frozenset(c for c in Channel if head["channels"].get(c.value, False)),
         spatial_unit="mm" if known else "source",
     )
     trials = tuple(_trial(t, device, head["scale"]["mmPerPoint"] if known else 1.0) for t in state.trials)
     return Recording(
         head["sessionID"],
-        head["participant"],
+        head.get("participant"),
         replace(device, observed_channels=frozenset(k for t in trials for k in t.device.observed_channels)),
         trials,
         reader_profile("script.journal"),

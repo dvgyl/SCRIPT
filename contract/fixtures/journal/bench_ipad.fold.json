@@ -1,0 +1,74 @@
+{
+ "sessionID": "3F2A9C1E-0000-4000-8000-000000000013",
+ "purpose": "bench",
+ "state": "closed",
+ "counts": {
+  "sessionOpened": 1,
+  "handoff": 0,
+  "trialStarted": 3,
+  "trialBegan": 3,
+  "contactBegan": 4,
+  "sample": 24,
+  "correction": 1,
+  "contactEnded": 4,
+  "hover": 0,
+  "finger": 0,
+  "trialEnded": 3,
+  "questionnaireStarted": 0,
+  "response": 0,
+  "questionnaireEnded": 0,
+  "safetyFlagged": 0,
+  "safetyShown": 0,
+  "safetyAction": 0,
+  "mark": 1,
+  "recovered": 0,
+  "sessionClosed": 1
+ },
+ "trials": [
+  {
+   "index": 0,
+   "task": "bench-loops-l",
+   "attempt": 1,
+   "practice": false,
+   "began": true,
+   "outcome": "completed",
+   "contacts": 1,
+   "samples": 8,
+   "corrections": 1,
+   "unresolved": 0
+  },
+  {
+   "index": 1,
+   "task": "bench-spiral-s",
+   "attempt": 1,
+   "practice": false,
+   "began": true,
+   "outcome": "completed",
+   "contacts": 1,
+   "samples": 6,
+   "corrections": 0,
+   "unresolved": 0
+  },
+  {
+   "index": 2,
+   "task": "bench-loops-l",
+   "attempt": 2,
+   "practice": false,
+   "began": true,
+   "outcome": "completed",
+   "contacts": 2,
+   "samples": 10,
+   "corrections": 0,
+   "unresolved": 0
+  }
+ ],
+ "questionnaires": [],
+ "safety": {
+  "flags": 0,
+  "crisisListShown": 0,
+  "operatorAlerts": 0,
+  "actions": 0
+ },
+ "unmatchedCorrections": 0,
+ "truncatedBytes": 0
+}

@@ -128,6 +128,54 @@ private func ends(_ events: [Event]) -> [ContactEnded] {
     #expect(ends(next).isEmpty)
 }
 
+private func tabletReading(_ t: Double, _ phase: PenPhase, tiltX: Double = 0.1, rotation: Double? = 15) -> PenReading {
+    PenReading(key: TouchKey(1), t: t, x: 10000, y: 8000, force: 0.3, maxForce: 1, altitude: 1, tiltX: tiltX, tiltY: -0.2,
+               rotation: rotation, phase: phase)
+}
+
+@Test func aTabletReadingKeepsOnlyPlannedChannelsAndNoEstimates() throws {
+    // Detects rotation written for a Pro Pen 3, a Pencil channel written for a tablet pen, or a nonzero est or a
+    // pending estimate on a tablet sample, which has no estimated properties.
+    #expect(ChannelPlan.plan(tabletPen: .proPen3)
+        == ChannelPlan(force: true, altitude: false, azimuth: false, roll: false, hover: true, tiltX: true, tiltY: true, rotation: false))
+    #expect(ChannelPlan.plan(tabletPen: .unknown)
+        == ChannelPlan(force: true, altitude: false, azimuth: false, roll: false, hover: true))
+
+    var recorder = InkRecorder(plan: ChannelPlan.plan(tabletPen: .proPen3))
+    let events = recorder.pen([tabletReading(1, .began), tabletReading(1.01, .ended, tiltX: 1.5)])
+    guard case .contactBegan(let began) = events[0], case .sample(let first) = events[1], case .sample(let second) = events[2] else {
+        Issue.record("unexpected events \(events)")
+        return
+    }
+    #expect(began.maxForce == 1)
+    #expect(first == Sample(contact: .first, t: 1, x: 10000, y: 8000, force: 0.3, tiltX: 0.1, tiltY: -0.2, phase: .began, est: []))
+    #expect(second.tiltX == nil && second.tiltY == -0.2 && second.rotation == nil && second.altitude == nil)
+    #expect(second.est == [] && second.pending == nil)
+    let line = String(decoding: try LineCodec.encode(Entry(seq: 1, event: events[1])), as: UTF8.self)
+    #expect(line == #"{"seq":1,"kind":"sample","contact":1,"t":1.0,"x":10000.0,"y":8000.0,"force":0.3,"tiltX":0.1,"tiltY":-0.2,"phase":"began","est":0}"# + "\n")
+
+    let hover = recorder.hover(HoverReading(t: 2, clock: .event, x: 9800, y: 8000, altitude: 0.9, tiltX: 0.05, tiltY: -0.1, rotation: 10))
+    #expect(hover == .hover(Hover(t: 2, clock: .event, x: 9800, y: 8000, tiltX: 0.05, tiltY: -0.1)))
+    let hoverLine = String(decoding: try LineCodec.encode(Entry(seq: 2, event: try #require(hover))), as: UTF8.self)
+    #expect(hoverLine == #"{"seq":2,"kind":"hover","t":2.0,"clock":"event","x":9800.0,"y":8000.0,"tiltX":0.05,"tiltY":-0.1}"# + "\n")
+
+    var unknownPen = InkRecorder(plan: ChannelPlan.plan(tabletPen: .unknown))
+    guard case .sample(let plain) = unknownPen.pen([tabletReading(3, .began)])[1] else { Issue.record("no sample"); return }
+    #expect(plain.tiltX == nil && plain.tiltY == nil && plain.force == 0.3)
+}
+
+@Test func aProximityLeaveEndsAnOpenContactAsCancelled() {
+    // Detects a contact left open when the pen leaves the tablet's range without a lift event, so the next stroke
+    // joins it or the trial cannot end.
+    var recorder = InkRecorder(plan: ChannelPlan.plan(tabletPen: .proPen3))
+    _ = recorder.pen([tabletReading(1, .began), tabletReading(1.01, .moved)])
+    #expect(recorder.cancelAll(t: 1.5) == [.contactEnded(ContactEnded(t: 1.5, contact: .first, cancelled: true))])
+    #expect(recorder.cancelAll(t: 1.6) == [])
+    let next = recorder.pen([tabletReading(2, .began), tabletReading(2.01, .ended)])
+    #expect(contacts(next) == [2])
+    #expect(ends(next) == [ContactEnded(t: 2.01, contact: ContactID(2)!, cancelled: false)])
+}
+
 @Test func aNegativeForceOrTimeNeverReachesTheJournal() throws {
     // Detects a reading that the recorder turns into a line the decoder refuses, which the writer then refuses.
     var recorder = InkRecorder(plan: pro)

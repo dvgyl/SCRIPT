@@ -1,0 +1,167 @@
+{
+ "protocol": {
+  "version": "1.1",
+  "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+ },
+ "programs": [
+  {
+   "id": "loops-l-v20",
+   "task": "bench-loops-l",
+   "scale": 1.0,
+   "speedMMPerS": 20.0,
+   "oscillation": null,
+   "fault": null,
+   "base": null,
+   "trajectorySHA256": "0d795c20faf659ffd3938481ec16dc65ce69d805e7df145c6356d2011d967608"
+  },
+  {
+   "id": "loops-l-v40",
+   "task": "bench-loops-l",
+   "scale": 1.0,
+   "speedMMPerS": 40.0,
+   "oscillation": null,
+   "fault": null,
+   "base": null,
+   "trajectorySHA256": "12a63cf0d053f52d13bfad2fa8012f9f0267838c5cb4a3891e81e17d3df55e51"
+  },
+  {
+   "id": "loops-l-v80",
+   "task": "bench-loops-l",
+   "scale": 1.0,
+   "speedMMPerS": 80.0,
+   "oscillation": null,
+   "fault": null,
+   "base": null,
+   "trajectorySHA256": "5cc1220c69b29209ca9418efb271524b4577ad82b32d5dc1a698c6757add2480"
+  },
+  {
+   "id": "loops-s-v20",
+   "task": "bench-loops-s",
+   "scale": 0.7,
+   "speedMMPerS": 20.0,
+   "oscillation": null,
+   "fault": null,
+   "base": null,
+   "trajectorySHA256": "2716207ffc125b8dbd455bdf776727b62898ba0caa080f6150d0f9c3622e9a2c"
+  },
+  {
+   "id": "loops-s-v40",
+   "task": "bench-loops-s",
+   "scale": 0.7,
+   "speedMMPerS": 40.0,
+   "oscillation": null,
+   "fault": null,
+   "base": null,
+   "trajectorySHA256": "61ddfe6c3aa0377edaa380f42613edcbda1c1dfcca6a522cb1b53179e8fca100"
+  },
+  {
+   "id": "spiral-l-v20",
+   "task": "bench-spiral-l",
+   "scale": 1.0,
+   "speedMMPerS": 20.0,
+   "oscillation": null,
+   "fault": null,
+   "base": null,
+   "trajectorySHA256": "967e0f51067c5d781436d3ab454d20cbe9ce4c77cfb1abad7efef5a81dfd0214"
+  },
+  {
+   "id": "spiral-l-v40",
+   "task": "bench-spiral-l",
+   "scale": 1.0,
+   "speedMMPerS": 40.0,
+   "oscillation": null,
+   "fault": null,
+   "base": null,
+   "trajectorySHA256": "bf7331fab6d957ac3705b814dd2435b6182da6f6d74f1fad3b77833f12d63550"
+  },
+  {
+   "id": "spiral-s-v20",
+   "task": "bench-spiral-s",
+   "scale": 0.7,
+   "speedMMPerS": 20.0,
+   "oscillation": null,
+   "fault": null,
+   "base": null,
+   "trajectorySHA256": "2d1447a2806a8e922ce89fbe184613861371ff95a6076db6adadb27a4ce98d0f"
+  },
+  {
+   "id": "spiral-s-v40",
+   "task": "bench-spiral-s",
+   "scale": 0.7,
+   "speedMMPerS": 40.0,
+   "oscillation": null,
+   "fault": null,
+   "base": null,
+   "trajectorySHA256": "a2b19696376a013c07cb24d3cab8d507e33c7c8433cf5e46a9af5c0d6d83dce2"
+  },
+  {
+   "id": "line-osc5",
+   "task": "bench-line",
+   "scale": 1.0,
+   "speedMMPerS": 20.0,
+   "oscillation": {
+    "hz": 5.0,
+    "mm": 0.4
+   },
+   "fault": null,
+   "base": null,
+   "trajectorySHA256": "09398dac24c2108320492281a7e6a094b01945e77de43b0a1c3a6d498ce4eb65"
+  },
+  {
+   "id": "line-osc8",
+   "task": "bench-line",
+   "scale": 1.0,
+   "speedMMPerS": 20.0,
+   "oscillation": {
+    "hz": 8.0,
+    "mm": 0.25
+   },
+   "fault": null,
+   "base": null,
+   "trajectorySHA256": "13320531fd5b8b8e7def3ab023869e515377e685b07bf69d690d70492415da39"
+  },
+  {
+   "id": "line-osc11",
+   "task": "bench-line",
+   "scale": 1.0,
+   "speedMMPerS": 20.0,
+   "oscillation": {
+    "hz": 11.0,
+    "mm": 0.18
+   },
+   "fault": null,
+   "base": null,
+   "trajectorySHA256": "a65c9ef23374b4f013932c376315dfa4fea03d4add2716572a2d965c7ca52e1f"
+  },
+  {
+   "id": "fault-dwell",
+   "task": "bench-loops-l",
+   "scale": 1.0,
+   "speedMMPerS": 20.0,
+   "oscillation": null,
+   "fault": "dwell",
+   "base": "loops-l-v20",
+   "trajectorySHA256": "739d79eec40ac90a8e5502ca4b86a53ae2a3dd988d108c8497557d3493212f3f"
+  },
+  {
+   "id": "fault-lift",
+   "task": "bench-loops-l",
+   "scale": 1.0,
+   "speedMMPerS": 20.0,
+   "oscillation": null,
+   "fault": "lift",
+   "base": "loops-l-v20",
+   "trajectorySHA256": "18cbec027fd8d947b1802bbff9a238f5327fc056b01d3d287a3bb630b5506300"
+  },
+  {
+   "id": "fault-truncated",
+   "task": "bench-loops-l",
+   "scale": 1.0,
+   "speedMMPerS": 20.0,
+   "oscillation": null,
+   "fault": "truncated",
+   "base": "loops-l-v20",
+   "trajectorySHA256": "34303ab9ee88cd13951440cdac558934f8d53b96cd6d95c6dd5b740c3347eea2"
+  }
+ ]
+}

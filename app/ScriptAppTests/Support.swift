@@ -35,20 +35,23 @@ func opened(_ administration: Administration = .supervised, participant: Partici
             configuration: StudyConfiguration, battery: Battery, id: SessionID = SessionID(),
             openedAt: Date = Date()) -> SessionOpened {
     let consent = configuration.consentModel[AgeBand.youngAdult.rawValue]!
+    let person = ParticipantFacts(
+        participant: participant, administration: administration, study: configuration.studyRef(site: "DEMO"),
+        visit: Visit(id: "V1", number: 1)!, ageBand: .youngAdult, jurisdiction: "GB", locale: "en",
+        consent: Consent(model: consent.model,
+                         attestedBy: Attestor(code: "OP1", role: administration == .supervised ? .operator : .enrolment),
+                         attestedAt: WallTime(Date()), documents: consent.documents),
+        ethics: configuration.ethics
+    )
     return SessionOpened(
-        purpose: .study, sessionID: id, participant: participant, openedAt: WallTime(openedAt),
+        purpose: .study, sessionID: id, openedAt: WallTime(openedAt),
         openedUptime: ProcessInfo.processInfo.systemUptime, boot: Clock.boot,
         app: AppInfo(version: "0.1.0", build: "1", sourceRevision: "test"),
         device: DeviceInfo(model: "iPad17,2", os: "iPadOS 27.0", nativeScale: 2, asset: "IPAD-01"),
         surface: Surface(protector: .none, nib: .new), qualification: nil,
         scale: MillimetreScale.lookup(model: "iPad17,2", nativeScale: 2)!, pencil: .none,
         channels: ChannelPlan.plan(pencil: .none, hoverSupported: false), input: .directTouchAsPen,
-        administration: administration, study: configuration.studyRef(site: "DEMO"), visit: Visit(id: "V1", number: 1)!,
-        ageBand: .youngAdult, jurisdiction: "GB", locale: "en",
-        consent: Consent(model: consent.model,
-                         attestedBy: Attestor(code: "OP1", role: administration == .supervised ? .operator : .enrolment),
-                         attestedAt: WallTime(Date()), documents: consent.documents),
-        ethics: configuration.ethics, battery: battery.reference
+        subject: .participant(person), battery: battery.reference
     )
 }
 

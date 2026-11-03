@@ -14,6 +14,9 @@ struct RootView: View {
             }
         }
         .tint(Palette.accent)
+        .onChange(of: store.keepsScreenAwake, initial: true) { _, awake in
+            UIApplication.shared.isIdleTimerDisabled = awake
+        }
         .alert(item: $store.notice) { notice in
             Alert(title: Text(notice.title), message: Text(notice.message))
         }
@@ -57,6 +60,8 @@ struct HomeScreen: View {
     @State private var exportResult: ExportResult?
     @State private var exportingID: String?
     @State private var askingPIN = false
+    /// A bench session runs under no configuration, so its Setup shows no demo banner.
+    @State private var benchSetupShown = false
 
     var body: some View {
         NavigationStack {
@@ -67,6 +72,12 @@ struct HomeScreen: View {
                         .accessibilityIdentifier("newSession")
                     NavigationLink("Device qualification") { SetupScreen(store: store, purpose: .qualification) }
                         .accessibilityIdentifier("newQualification")
+                    NavigationLink("Bench session") {
+                        SetupScreen(store: store, purpose: .bench)
+                            .onAppear { benchSetupShown = true }
+                            .onDisappear { benchSetupShown = false }
+                    }
+                    .accessibilityIdentifier("newBench")
                 }
                 .disabled(store.live != nil)
                 if store.listing.isEmpty {
@@ -105,7 +116,7 @@ struct HomeScreen: View {
                 if let pin = store.activeConfiguration.operatorPin { PINSheet(pin: pin, onUnlock: store.unlockCodes) }
             }
         }
-        .demoBanner(store.activeConfiguration.demo)
+        .demoBanner(store.activeConfiguration.demo && !benchSetupShown)
     }
 
     private var configurationSection: some View {
@@ -155,7 +166,7 @@ struct HomeScreen: View {
 
     @ViewBuilder
     private func rowFacts(_ row: Listed) -> some View {
-        if let purpose = row.purpose, purpose == .qualification { Text(purpose.name).fixedSize() }
+        if let purpose = row.purpose, purpose != .study { Text(purpose.name).fixedSize() }
         if let administration = row.administration { Text(administration.name).fixedSize() }
         if let openedAt = row.openedAt, let date = try? Date(openedAt, strategy: .iso8601) {
             Text(date, format: .dateTime.day().month().hour().minute()).fixedSize()
