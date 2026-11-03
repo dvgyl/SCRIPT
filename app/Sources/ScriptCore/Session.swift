@@ -66,8 +66,9 @@ public struct SessionState: Hashable, Sendable {
 public struct OpenTrial: Hashable, Sendable {
     public let index: TrialIndex
     public let task: TaskID
-    /// The uptime at which the time limit ends the trial.
-    public let deadline: Double
+    /// The uptime at which the time limit ends the trial. Nil for a bench run, which has no time limit: the operator
+    /// taps Done after the stylus lifts (bench protocol section 5.2).
+    public let deadline: Double?
 }
 
 public struct OpenBlock: Hashable, Sendable {
@@ -198,6 +199,8 @@ public struct FoldError: Error, Hashable, Sendable {
         case noParticipant(LineKind)
         /// A bench trial in a session with a participant, or a participant trial in a bench session.
         case subjectMismatch
+        /// A trial without a time limit, which is a bench run, ends with `timeLimit`.
+        case noTimeLimit
     }
 }
 
@@ -236,14 +239,13 @@ extension SessionState {
             case (.participant, .participant), (.bench, .bench): break
             case (.participant, .bench), (.bench, .participant): throw fail(.subjectMismatch)
             }
-            let bench: BenchRunPlan? = switch e.subject {
-            case .bench(let run): BenchRunPlan(program: run.program, run: run.run)
-            case .participant: nil
+            let (bench, deadline): (BenchRunPlan?, Double?) = switch e.subject {
+            case .bench(let run): (BenchRunPlan(program: run.program, run: run.run), nil)
+            case .participant: (nil, e.spec.completion.deadline(startedAt: e.t))
             }
             session.trials.append(TrialRecord(index: e.trial.index, task: e.trial.task, attempt: e.trial.attempt,
                                               practice: e.practice, bench: bench))
-            phase = .drawing(OpenTrial(index: e.trial.index, task: e.trial.task,
-                                       deadline: e.spec.completion.deadline(startedAt: e.t)))
+            phase = .drawing(OpenTrial(index: e.trial.index, task: e.trial.task, deadline: deadline))
 
         case .trialBegan(let e):
             guard case .drawing(let open) = phase else { throw notAllowed }
@@ -292,6 +294,7 @@ extension SessionState {
             guard case .drawing(let open) = phase else { throw notAllowed }
             guard e.trial == open.index else { throw fail(.wrongTrial(e.trial)) }
             guard session.openContacts.isEmpty else { throw fail(.contactsDown) }
+            guard e.reason != .timeLimit || open.deadline != nil else { throw fail(.noTimeLimit) }
             session.trials[open.index.rawValue].outcome = TrialOutcome(e.reason)
             phase = .ready
 
@@ -496,6 +499,8 @@ public enum Rejection: Error, Hashable, Sendable {
     /// A program and run index that an earlier trial of the session has, whatever its outcome. The run id names the
     /// camera files of the run, so a rerun takes run index 6 or 7 (bench protocol sections 6.4 and 15).
     case repeatedRun(ProgramID, Int)
+    /// `timeLimit` for a trial without a time limit, which is a bench run (bench protocol section 5.2).
+    case noTimeLimit
     /// An `exclude` mark on a fault run. The quality gate needs every fault run as an ordinary trial (bench protocol
     /// section 5.3).
     case excludeOnFaultRun(ProgramID)
@@ -588,6 +593,7 @@ extension SessionState {
         case .endTrial(let reason, let t):
             guard case .drawing(let open) = phase else { return .failure(.noOpenTrial) }
             guard session.openContacts.isEmpty else { return .failure(.contactsDown) }
+            guard reason != .timeLimit || open.deadline != nil else { return .failure(.noTimeLimit) }
             return .success([.trialEnded(TrialEnded(t: t, trial: open.index, reason: reason))])
 
         case .startQuestionnaire(let id, let t):

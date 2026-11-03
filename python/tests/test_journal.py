@@ -302,6 +302,15 @@ def test_a_tablet_channel_on_a_correction_line_is_not_read() -> None:
     assert all(Channel.TILT_X not in s.channels for s in fold(rows).trials[0].strokes)
 
 
+def test_a_bench_run_that_ends_at_a_time_limit_is_refused() -> None:
+    # Detects a reader that accepts a bench run cut by a time limit, which the protocol does not define.
+    # The Swift fold refuses the same line of the same fixture.
+    rows = lines("bench_ipad")
+    assert _set(rows, "trialEnded", ("reason",), "timeLimit")["seq"] == 14
+    with pytest.raises(JournalError, match="I6, line 14"):
+        summarize(rows)
+
+
 def test_the_last_rerun_and_the_eighth_mounting_are_accepted() -> None:
     # Detects a reader or schema whose run or mounting range stops short of the protocol's last values.
     rows = lines("bench_ipad")

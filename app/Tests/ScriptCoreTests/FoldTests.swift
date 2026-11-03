@@ -33,6 +33,17 @@ func eachRecoveryFixtureGivesItsExpectedResult(name: String) throws {
     #expect(found == (try Contract.json("fixtures/recovery/\(name).expected.json")))
 }
 
+@Test func aBenchRunThatEndsAtATimeLimitIsRefused() throws {
+    // Detects a fold that accepts a bench run cut by a time limit, which the protocol does not define. The Python
+    // reader refuses the same line of the same fixture.
+    var lines = Contract.lines(try Contract.data("fixtures/journal/bench_ipad.jsonl"))
+    let ended = String(decoding: lines[14], as: UTF8.self)
+    let reason = try #require(ended.range(of: #""kind":"trialEnded","t":1030.0,"trial":0,"reason":"operatorDone""#))
+    lines[14] = Data(ended.replacingCharacters(in: reason, with: #""kind":"trialEnded","t":1030.0,"trial":0,"reason":"timeLimit""#).utf8)
+    let entries = try lines.map { try LineCodec.decode($0) }
+    #expect(throws: FoldError(line: 14, violation: .noTimeLimit)) { try SessionState.fold(entries) }
+}
+
 @Test func theFoldRefusesLinesOutsideTheirNesting() throws {
     // Detects a fold that accepts ink outside a contact, a trial end with the pen down, or recounted totals (I4, I6).
     let lines = Contract.lines(try Contract.data("fixtures/journal/basic.jsonl"))

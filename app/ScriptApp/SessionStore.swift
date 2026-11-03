@@ -1096,7 +1096,6 @@ extension SessionStore {
         let view: ViewSize?
         let origin: Point?
         let began: Bool
-        let deadline: Double?
         let mmPerPoint: Double?
         let marks: [MarkCode]
         var markCodes: [MarkCode] { program.markCodes }
@@ -1114,12 +1113,12 @@ extension SessionStore {
             let geometry = live.trialGeometry.flatMap { $0.index == open.index ? $0 : nil }
             return RunModel(program: program, spec: spec, runID: runID, trial: open.index, view: geometry?.view,
                             origin: geometry?.origin, began: state.session.trials[open.index.rawValue].began,
-                            deadline: open.deadline, mmPerPoint: mm, marks: digested.marks)
+                            mmPerPoint: mm, marks: digested.marks)
         }
         guard let chosen = live.chosenRun, let program = programs.program(chosen.program),
               let spec = live.rules.battery.task(program.task), let runID = self.runID(chosen) else { return nil }
         return RunModel(program: program, spec: spec, runID: runID, trial: nil, view: nil, origin: nil, began: false,
-                        deadline: nil, mmPerPoint: mm, marks: [])
+                        mmPerPoint: mm, marks: [])
     }
 
     /// The item to answer in the open block. Items are answered in order and once.

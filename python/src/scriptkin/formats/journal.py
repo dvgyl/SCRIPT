@@ -559,6 +559,8 @@ class FoldState:
         trial = self._open_trial(i, row["trial"], "trialEnded")
         if self.open_contacts:
             raise JournalError("I6", i, "A trial cannot end with an open contact.")
+        if self.bench and row["reason"] == "timeLimit":
+            raise JournalError("I6", i, "A bench run has no time limit, so it cannot end with timeLimit.")
         trial.outcome = OUTCOME_OF_REASON[row["reason"]]
         trial.reason = row["reason"]
         trial.end = row["t"]

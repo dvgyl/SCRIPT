@@ -149,7 +149,6 @@ struct BenchTaskScreen: View {
             .padding(.vertical, 20)
         }
         .background(Color(UIColor.systemBackground))
-        .timeLimit(of: run.trial, at: run.deadline, store: store)
         .confirmationDialog("Stop this run?", isPresented: $stopping, titleVisibility: .visible) {
             Button("Stop the run", role: .destructive, action: store.stopRun)
         }

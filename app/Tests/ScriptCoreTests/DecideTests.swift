@@ -280,6 +280,23 @@ private func decidedRun(_ d: Driver, _ plan: TrialPlan) throws -> BenchRun? {
     #expect(try decidedRun(d, Driver.benchPlan("loops-l-v40", task: "bench-loops-l", run: 2))?.clip == "W-M3-loops-l-v40-r2")
 }
 
+@Test func aBenchRunHasNoTimeLimit() throws {
+    // Detects a bench run that a time limit can end, which cuts a run that the operator ends with Done (bench
+    // protocol section 5.2), or a study trial that loses its time limit.
+    var d = try benchDriver()
+    try d.run(.startTrial(Driver.benchPlan("line-osc8", task: "bench-line"), t: 101))
+    guard case .drawing(let run) = d.state.phase else { throw DecodeError.missing("open trial") }
+    #expect(run.deadline == nil)
+    #expect(d.state.decide(.endTrial(reason: .timeLimit, t: 400), rules: d.rules).rejection == .noTimeLimit)
+    #expect(throws: Never.self) { try d.state.decide(.endTrial(reason: .operatorDone, t: 400), rules: d.rules).get() }
+
+    var study = try driver()
+    try study.run(.startTrial(Driver.plan("spiral-trace"), t: 101))
+    guard case .drawing(let trial) = study.state.phase else { throw DecodeError.missing("open trial") }
+    #expect(trial.deadline == 221)
+    #expect(throws: Never.self) { try study.state.decide(.endTrial(reason: .timeLimit, t: 221), rules: study.rules).get() }
+}
+
 @Test func anExcludeMarkOnAFaultRunIsRefused() throws {
     // Detects a fault run that an operator can exclude, which removes it from the quality gate of bench protocol
     // section 5.3, in either capture app.
