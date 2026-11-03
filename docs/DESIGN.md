@@ -30,7 +30,7 @@ After the reader, each stage accepts only a type that the previous stage built a
 4. **Task.** One screen shows the instruction, the stimulus at true millimetre scale, and Begin. Begin enables ink. The task ends when the participant taps Done or the time limit occurs; no countdown is shown. The participant never sees a score, a replay, or a quality value.
 5. **Handoff** says "Please give the iPad back to the researcher." A visible Operator control (press and hold for 2 seconds, then the PIN when the configuration has one) opens the operator screens. The flow is the same whatever the answers were.
 6. **Review** shows each safety flag with its instrument and item (never a score), then shows each trial with its duration, sample count, rate, and channels. In a supervised session, each flag needs an action code. In a self-administered session, each flag reads "Reviewed by the study reviewer after export" and needs no action. The participant then sees the crisis list. Marks and repeat buttons in Review are planned, not built.
-7. **Export** puts a verified folder in Files under On My iPad > SCRIPT > Exports.
+7. **Export** puts a verified folder in Files under On My iPad > SCRIPT Capture > Exports. The Export screen shows the folder name.
 
 After a crash, Home shows the session as interrupted. The open trial is marked interrupted. The operator repeats it, continues, or closes the session. An interrupted self-administered session opens again at launch for its participant, who types their code first; after its resume window it closes instead (section 14). The operator can export a damaged journal from Home as a damaged package (section 17).
 
@@ -69,13 +69,15 @@ from scriptkin.evaluate import AnalysisPlan, Refused, Screening, Target, screeni
 cohort = syn.cohort(n=300, seed=11, scenario="signal")       # PHQ-9 answers come from a latent score
 plan = AnalysisPlan(target=Target(instrument="phq9", cut=10.0),
                     features=("spiral-trace/kinematic.speed_mean", "spiral-trace/spectral.tremor_power"),
-                    prevalence=0.08)                          # the plan digest is fixed before labels join
+                    prevalence=0.08)                          # the report records plan_digest(plan)
 match screening(sk.feature_table(cohort.recordings), cohort.labels, plan=plan, seed=11):
     case Screening(auc=auc):
         print(auc.point, auc.low, auc.high, auc.p_value)     # significance comes from the permutation p-value
     case Refused(reason=why):
         raise SystemExit(why)
 ```
+
+The report records the plan digest, but the digest does not show when the plan was fixed. To show that the plan was fixed before the labels joined, register the output of `scriptkin plan-digest plan.json` first. Then run `scriptkin evaluate --expect-plan-digest <digest>`. It refuses a plan with another digest before it reads the labels. The Python function `screening` does not check a registered digest.
 
 ### 2.3 Capture call site
 
@@ -267,7 +269,7 @@ Library/Application Support/Configurations/         imported configurations, by 
 
 ## 6. Python shape
 
-Package `scriptkin`. Runtime dependencies: numpy, scipy, scikit-learn, cryptography. Python 3.12 or later.
+Package `scriptkin`. Runtime dependencies: numpy, scipy, scikit-learn, cryptography, jsonschema. Python 3.12 or later.
 
 ```
 python/src/scriptkin/
@@ -289,10 +291,11 @@ python/src/scriptkin/
   qualification.py   the device qualification report
   intake.py          intake into a study store: verify, keep one copy of each session, quarantine, receipts
   qcreport.py        the QC report of a study store: counts and rates, never a label or a score
+  studytools.py      the configuration tools: skeleton, export key pair, PIN record, check
   synthetic.py       participants with latent traits and scores, device models, sites, scenarios, cohorts
   evaluate/          plan (digests), screening, participants, metrics, report, reliability, norms, planning
   contract.py        regenerate and verify the shared contract
-  cli.py             contract, evaluate, plan-size, intake, qc-report
+  cli.py             contract, evaluate, plan-digest, plan-size, intake, qc-report, config
 ```
 
 Key decisions:
@@ -309,7 +312,7 @@ Key decisions:
 - **Feature table.** Practice trials and qualification sessions never enter `feature_table`. Each row has `administration`, `hand`, and `accommodations`, so that an analysis can stratify. A source without this context gives `unknown` and no accommodations.
 - **Provenance.** A `FeatureTable` carries the library version, the QC policy, the preprocessing settings, the catalog digest, the source hashes, and the reader profiles. A reader profile is canonical JSON that names the reader and its unit conversions (for example the tablet resolution of an SVC file). Two tables from different reader settings therefore have different provenance.
 - **Labels.** `labels.labels(recording)` scores each questionnaire block with the scoring rule in `contract/instruments.json`. A `sum` rule adds the scored items. A DASS-21 subscale is its sum times 2. One missing item in a subscale is prorated (sum times 7/6). More missing items than the rule allows give a refusal, never a score of zero. Unscored items, such as `difficulty`, never enter a score. Each label has the instrument, version, locale, administration, block time, and score or refusal. `labels.safety_flag_count` counts safety flags for audit. It is never a label.
-- **Pen-only copy.** `pen_only(export, target)` writes a copy without questionnaire, response, and safety lines, and without `recovered.interruptedBlock`. It also ends at the last `trialEnded`: every later line is dropped, and `sessionClosed.t` is set to the time of that `trialEnded`. The time after the last task depends on whether an operator handled a safety flag, so keeping it would leak the label. It renumbers `seq`, recounts `sessionClosed.counts`, writes a new manifest, and writes `derivation.json` with the source session identifier and the SHA-256 of the source journal. The copy must pass I1 to I7 before the function returns.
+- **Pen-only copy.** `pen_only(export, target)` writes a copy without questionnaire, response, and safety lines, and without `recovered.interruptedBlock`. It also ends at the last `trialEnded`: every later line is dropped, and `sessionClosed.t` is set to the time of that `trialEnded`. The time after the last task depends on whether an operator handled a safety flag, so keeping it would leak the label. It renumbers `seq`, recounts `sessionClosed.counts`, writes a new manifest, and writes `derivation.json` with the source session identifier and the SHA-256 of the source journal. The copy must pass I1 to I7 before the function returns. It refuses a session with a questionnaire or safety line before the last `trialEnded`, for example a `beforeTasks` block. The time gap around the dropped lines would show how long the block took.
 - **Encrypted exports.** `read_journal(path, private_key=...)` reads an export whose manifest has an `encryption` block (section 17). The key is the study's raw 32-byte X25519 private key. The reader checks the ciphertext size and SHA-256, opens the ciphertext, checks the plaintext size, line count, and SHA-256, and then applies I1 to I7. A ciphertext that does not open gives `JournalError` with rule I5.
 - **Qualification.** `qualification.qualify(recording)` accepts only a session with `purpose: qualification`. It reports the sample intervals inside contact strokes (median, 5th and 95th percentile, and the share of intervals longer than 30 ms), the jitter during the still hold (root mean square distance from the mean position of each stroke, in millimetres), the straight-line deviation (root mean square orthogonal distance from the total-least-squares line of each stroke, in millimetres), the scale source, and the planned and observed channels. A value that the data cannot support is a refusal.
 - **Intake.** `intake(sources, store, *, private_key, keep_plaintext)` checks each export folder under the sources with `verify_export`: the manifest, the decryption, and rules I1 to I7. It copies the export first into `store/.partial/` and checks that copy, so the bytes that it checks are the bytes that it keeps. The store holds:
@@ -352,11 +355,29 @@ The harness is `scriptkin.evaluate`. It accepts synthetic cohorts and cleared da
 ### 7.4 AUC and the null check
 
 - The AUC uses only case-control pairs inside one test fold, averaged over repeats. A pair from two folds compares two models whose intercepts carry their training prevalence. That prevalence moves against the test prevalence, so a pooled AUC falls below 0.5 when nothing is learnt.
-- **Interval.** The start is a participant bootstrap, stratified by class, of fixed out-of-fold predictions. This bootstrap omits the variation from refitting. On null matrix cohorts (120 participants, 20 permutations) it covers 0.5 in 92% of datasets with 1 repeat and in 72% with 5 repeats. The harness widens the interval to at least `AUC ± t(0.975, P − 1) · SE_null`. `SE_null` is the standard deviation of the P null AUCs of the same plan. Under the null, the observed AUC and the null AUCs are exchangeable, so the widened interval covers 0.5 at about the nominal rate: 97% with 1 repeat and 96% with 5 repeats on the same cohorts. The interval is not a test of chance. Significance comes from the permutation p-value. The report gives `se_null` and `p_value` next to the AUC.
+- **Interval.** The start is a participant bootstrap, stratified by class, of fixed out-of-fold predictions. This bootstrap omits the variation from refitting. In the coverage study below, it covers 0.5 in only 89% of null cohorts with 1 repeat and 79% with 5 repeats. The harness widens the interval to at least `AUC ± t(0.975, P − 1) · SE_null`. `SE_null` is the standard deviation of the P null AUCs of the same plan. Under the null, the observed AUC and the null AUCs are exchangeable, so the widened interval covers 0.5 at the nominal rate or more. In the coverage study, it covers 0.5 in 99% of null cohorts for both designs. The interval is not a test of chance. Significance comes from the permutation p-value. The report gives `se_null` and `p_value` next to the AUC.
 - **Null check.** Each permutation run permutes the labels, draws its own split seed, and runs the full plan. A shared split seed would condition the null on one fold assignment. The check needs an exchangeable null, so it permutes between all participants, or inside each held-out site or device for a site or device holdout, where every scored pair shares one group. It passes when the mean null AUC is inside `0.5 ± t(0.995, P − 1) · sd / √P`. A mean outside the band returns `Refused`.
-- **Band spread.** `sd` is the larger of the standard deviation of the null AUCs and `sigma0`, for every P. `sigma0` is the null standard deviation that the fold sizes imply for one repeat of fixed untied scores. The null AUCs of a multi-repeat plan are skewed to the right (skewness about 0.9 at 5 repeats). A sample of them with a low mean then often has a small spread, and a band from that spread alone refuses sound plans. On null matrix cohorts with 5 repeats and 20 permutations, the empirical spread alone refused 6 of 160 datasets, and the larger of the two refused 0 of 160. The cost is a looser check: with 5 repeats the null spreads about 7% less than `sigma0`. A check that refuses sound studies teaches users to ignore it, so the harness accepts the looser band.
+- **Band spread.** `sd` is the larger of the standard deviation of the null AUCs and `sigma0`, for every P. `sigma0` is the null standard deviation that the fold sizes imply for one repeat of fixed untied scores. The null AUCs of a multi-repeat plan are skewed to the right (skewness 0.80 at 5 repeats in the coverage study). A sample of them with a low mean then often has a small spread, and a band from that spread alone refuses sound plans. In the coverage study, the spread alone refused 4 of 160 null cohorts with 1 repeat and 1 of 160 with 5 repeats. The harness band refused 3 of 160 and 0 of 160. The cost is a looser check with 5 repeats. There, the true null spread is 0.91 `sigma0`, so the band is about 10% wider than that spread needs. A check that refuses sound studies teaches users to ignore it, so the harness accepts the looser band.
 - **p-value.** A second set of runs permutes the labels between participants inside each site. Its distribution gives the p-value of the observed AUC, so a result that only reflects site prevalence is not significant. With one site, or with a site holdout, the two sets are the same. The report gives both null distributions.
 - **p-value resolution.** P permutations cannot give a p-value below `1 / (P + 1)`. `NullCheck.resolution` gives this value. When it exceeds 0.05 (P < 19), a caution states that the p-value cannot reach 0.05.
+
+The figures in this section come from `python/studies/coverage.py`. The script runs `screening` on 160 null matrix cohorts, seeds 0 to 159. Each cohort has 120 participants at one site, three independent standard normal features, and labels that are cases with probability 0.3, independent of the features. Cohort i draws its data from `numpy.random.default_rng(i)`, and `screening` gets seed i. The plan has 5 folds, 3 inner folds, a logistic model with the grid (10, 100), 20 permutations, and 300 bootstrap draws. The study runs the plan with 1 repeat and with 5 repeats on the same cohorts.
+
+| Measure | 1 repeat | 5 repeats |
+|---|---|---|
+| Refused by the harness band | 3 of 160 | 0 of 160 |
+| Refused by a band from the null spread alone | 4 of 160 | 1 of 160 |
+| Bootstrap interval covers 0.5 | 89% (140 of 157) | 79% (127 of 160) |
+| Widened interval covers 0.5 | 99% (156 of 157) | 99% (158 of 160) |
+| Permutation p-value 0.05 or less | 3% (5 of 157) | 2% (3 of 160) |
+| Skewness of the null AUCs | 0.42 | 0.80 |
+| True null spread (standard deviation of the observed AUC) over `sigma0` | 1.28 | 0.91 |
+
+Coverage, the p-value rate, the skewness, and the spread use the cohorts that the harness does not refuse. To reproduce the table, run this command from the repository root. A run takes 5 to 7 minutes on an 8-core Apple silicon Mac. The script also writes `studies/coverage.json` into the build folder of `./check`.
+
+```sh
+UV_PROJECT_ENVIRONMENT=<venv folder> uv run --project python --frozen python -I python/studies/coverage.py
+```
 
 ### 7.5 Report
 
@@ -389,7 +410,7 @@ The harness is `scriptkin.evaluate`. It accepts synthetic cohorts and cleared da
 
 ### 7.9 Command line
 
-`scriptkin evaluate --plan plan.json --features table.csv --labels labels.csv [--reliability retest.csv] [--seed N] [--out report.json]` and `scriptkin plan-size --prevalence P --sensitivity SE --specificity SP [--attrition A] [--enrolled N] [--half-width W]` write JSON reports.
+`scriptkin evaluate --plan plan.json --features table.csv --labels labels.csv [--reliability retest.csv] [--seed N] [--out report.json]` and `scriptkin plan-size --prevalence P --sensitivity SE --specificity SP [--attrition A] [--enrolled N] [--half-width W]` write JSON reports. `scriptkin plan-digest plan.json` prints the digest of a plan, to register it before the labels join. With `--expect-plan-digest HEX`, `scriptkin evaluate` refuses a plan whose digest differs, before it reads the features and the labels.
 
 ## 8. Synthetic cohorts
 
@@ -410,7 +431,7 @@ The harness is `scriptkin.evaluate`. It accepts synthetic cohorts and cleared da
 SCRIPT/
   check                       the single check command
   README.md  AGENTS.md
-  docs/DESIGN.md
+  docs/                       the design, the study documents, and the device test
   contract/
     journal.schema.json       JSON Schema 2020-12
     battery.json              generated, checked in
@@ -421,10 +442,10 @@ SCRIPT/
     Package.swift  Sources/ScriptCore/  Tests/ScriptCoreTests/
     ScriptApp.xcodeproj  ScriptApp/  ScriptAppUITests/
   python/
-    pyproject.toml  uv.lock  src/scriptkin/  tests/
+    pyproject.toml  uv.lock  src/scriptkin/  tests/  studies/
 ```
 
-`./check` stops at the first failure. It runs the contract verification, the Python lint, type check, and tests, the `ScriptCore` Swift tests on the Mac, and the app build and tests on the "iPad Pro 11-inch (M5)" simulator. Build output goes to `~/Library/Caches/SCRIPT/<checkout>-<hash>/`, outside the repository, so that the repository can sit on an exFAT drive.
+`./check` stops at the first failure. It runs the contract check, the `ScriptCore` tests on the Mac, the app tests on the "iPad Pro 11-inch (M5)" simulator, and then the Python checks. The Python checks are the lint, the type check, and the tests. The tests read the exports of the Swift and app tests. The `core` and `app` sections first delete the exports of an earlier run. When the `app` section ran, the Python tests fail if the app exports are absent. Build output goes to `~/Library/Caches/SCRIPT/<checkout>-<hash>/`, outside the repository, so that the repository can sit on an exFAT drive.
 
 The fixtures tie the two languages in three directions:
 
@@ -538,7 +559,7 @@ A qualification session has `purpose: qualification` and a fixed task set: a ref
 ## 17. Privacy and withdrawal
 
 - Journals and exports use iOS file protection `completeUntilFirstUserAuthentication`.
-- Research data never enter a device backup. The app sets `isExcludedFromBackup` on `Sessions/`, `Staging/`, `Exports/`, `Damaged/`, and the deletion log, so no journal, export, or log reaches iCloud or a computer backup. Exports leave the device only through Files, by an operator or participant action. The device secret for the deletion log is a `ThisDeviceOnly` Keychain item, so the log is checkable only on the device that wrote it.
+- Research data never enter a device backup. The app sets `isExcludedFromBackup` on `Sessions/`, `Staging/`, `Exports/`, `Damaged/`, the deletion log, and the export index. So no journal, export, or log reaches iCloud or a computer backup. Exports leave the device only by a person's action: through Files, or through file sharing in Finder on a connected Mac. The device secret for the deletion log is a `ThisDeviceOnly` Keychain item, so the log is checkable only on the device that wrote it.
 - When the configuration has an export key, the export is encrypted to the study's public key with HPKE (RFC 9180, base mode, DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, ChaCha20-Poly1305). This is CryptoKit's `HPKE.Ciphersuite.Curve25519_SHA256_ChachaPoly`. The export folder then holds `journal.jsonl.hpke` in place of `journal.jsonl`. The `info` parameter is the UTF-8 text `SCRIPT export 1.0`, and the associated data is the UTF-8 session identifier. The manifest gains this block:
 
   ```json
@@ -556,7 +577,7 @@ A qualification session has `purpose: qualification` and a fixed task set: a ref
   ```
 
   `line` is the 0-based index of the first line that does not decode or fold. The facts (`bytes`, `lines`, `sha256`) describe the bytes only: `lines` counts LF bytes, and the manifest claims no fold summary. The app verifies the staged package against the source bytes, adds its name to the export index when line 0 names a participant, and removes the source only after the rename, as `publish` does. The reader of exports refuses a damaged package, because its journal fails the integrity rules; `scriptkin.intake` files it under `store/damaged/` (section 6).
-- Withdrawal: the operator enters a participant code, confirms twice, and the app deletes every journal, staging folder, export, damaged journal, and damaged package for that code on the device. Before it deletes, it appends one line to `Library/Application Support/Deletions.jsonl`: `{at, participantHMAC, sessions}`. `participantHMAC` is HMAC-SHA256 of the code with a 32-byte secret that the app creates at first launch and keeps in the Keychain. A plain hash of a short code can be reversed by trying every code; the keyed hash cannot without the device. A site confirms a deletion on the device by entering the code, which the app checks against the log. Copies outside the device are the site's duty; `docs/DATA_GOVERNANCE.md` gives the procedure.
+- Withdrawal: the operator enters a participant code two times and confirms. The app then deletes every journal, staging folder, export, damaged journal, and damaged package for that code on the device. Before it deletes, it appends one line to `Library/Application Support/Deletions.jsonl`: `{at, participantHMAC, sessions}`. `participantHMAC` is HMAC-SHA256 of the code with a 32-byte secret that the app creates at first launch and keeps in the Keychain. A plain hash of a short code can be reversed by trying every code; the keyed hash cannot without the device. A site confirms a deletion on the device by entering the code, which the app checks against the log. Copies outside the device are the site's duty; `docs/DATA_GOVERNANCE.md` gives the procedure.
 - Pseudonymous data remain personal data under the GDPR. A participant code alone does not meet HIPAA de-identification.
 
 ## 18. Intended use

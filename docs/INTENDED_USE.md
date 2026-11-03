@@ -22,7 +22,7 @@ A study uses SCRIPT only with an ethics approval, a study configuration, and a s
 SCRIPT is not a clinical tool. It does not diagnose, screen, triage, or advise.
 
 - SCRIPT shows no score, result, or interpretation to anyone. This includes the participant, the operator, and a guardian.
-- The operator sees only a neutral safety alert when a safety item is endorsed or skipped.
+- The operator sees only a neutral safety alert when a safety item is endorsed, skipped, or not reached.
 - The app shows the exact questionnaire text and records item identifiers and response values. The app never calculates a score.
 - scriptkin calculates questionnaire scores for the analyst only. A score is a research label, not a result for the participant.
 - SCRIPT is not a crisis service and does not monitor responses in real time. The site's safety protocol and its trained responder handle every safety flag.
@@ -45,7 +45,7 @@ SCRIPT supports engineering claims about its software only. Each claim below nam
 | An encrypted export opens only with the study private key. | `test_wrong_private_key_is_refused_by_key_id_before_decryption` in `python/tests/test_export.py` |
 | A pen-only copy has no questionnaire or safety line and ends at the last task. | `test_pen_only_copy_passes_integrity_and_has_no_response` and `test_pen_only_copy_ends_at_the_last_trial` in `python/tests/test_export.py` |
 
-These claims apply to `ScriptCore` and scriptkin. The app must apply these rules through `ScriptCore`. Before a study uses a release, the release must pass `./check` and a test on a real iPad. The simulator cannot make Pencil force or tilt.
+These claims apply to `ScriptCore` and scriptkin. The app applies these rules through `ScriptCore`. Before a study uses a release, the release must pass the [release process](RELEASE.md), which includes `./check` and the [device test](DEVICE_TESTING.md). The simulator cannot make Pencil force or tilt.
 
 ## Claims that SCRIPT does not support
 

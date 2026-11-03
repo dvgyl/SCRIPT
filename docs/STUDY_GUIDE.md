@@ -2,7 +2,17 @@
 
 This guide tells site staff how to prepare and run a SCRIPT study. It is for the study lead, the operators, the safety responder, the reviewer, and the analyst who receives exports. Read the [intended use](INTENDED_USE.md) and the [data governance](DATA_GOVERNANCE.md) documents first.
 
-The guide follows [the design](DESIGN.md#2-usage). Before a study starts, check that the installed release does each step as this guide describes. The [dry run](#train-the-operators-and-do-a-dry-run) is the check.
+The guide follows [the design](DESIGN.md#2-usage). Use only a release that went through the [release process](RELEASE.md). Before a study starts, check that the installed release does each step as this guide describes. The [dry run](#train-the-operators-and-do-a-dry-run) is the check.
+
+## Run the scriptkin commands
+
+The study team runs `scriptkin` on a computer that has the SCRIPT repository, [uv](https://docs.astral.sh/uv/), and Python 3.12 or later. In this guide, `scriptkin` stands for this command:
+
+```sh
+uv run --project <repository>/python --frozen scriptkin
+```
+
+uv makes a Python environment in `python/.venv` of the repository the first time. To keep the environment outside the repository, set `UV_PROJECT_ENVIRONMENT` to another folder first.
 
 ## Before the study
 
@@ -40,6 +50,7 @@ The safety protocol is a site document. SCRIPT records each safety flag and each
 5. State the time limits for each step.
 6. State when the team contacts a guardian, and how.
 7. For self-administered blocks with a safety item, name the reviewer role and the review times.
+8. Name the person who decrypts each export for the reviewer. The key custodian keeps the study private key.
 
 Use published guidance to write the protocol:
 
@@ -49,17 +60,24 @@ Use published guidance to write the protocol:
 - The ASQ outpatient pathway screens youth apart from parents where possible. It sends an acute positive screen to emergency evaluation ([ASQ outpatient pathway](https://www.nimh.nih.gov/research/research-conducted-at-nimh/asq-toolkit-materials/youth-outpatient/suicide-risk-screening-pathway-outpatient-flowchart-description)).
 - Without a real-time alert, the consensus says to review data at least every weekday, and within 24 hours for imminent risk ([Nock et al. 2021](https://pmc.ncbi.nlm.nih.gov/articles/PMC8372411)).
 
-The default self-administered blocks are the PHQ-8 (Patient Health Questionnaire-8) and the GAD-7 (Generalized Anxiety Disorder-7). They have no safety item, because no one can respond in real time. The PHQ-8 leaves out the safety item of the PHQ-9 (Patient Health Questionnaire-9) for the same reason ([PHQ-8 notes](https://camcops.readthedocs.io/en/latest/_sources/tasks/phq8.rst.txt)). A self-administered block with a safety item needs a `remoteReview` block. The app refuses the configuration when one of these rules fails:
+SCRIPT counts a safety item as a flag in three cases:
+
+- The participant gives a response of 1 or more to the item.
+- The participant selects **Prefer not to answer** for the item.
+- The block ends before the participant reaches the item. This happens when the operator ends the session, or when a crash interrupts the block.
+
+The default self-administered blocks are the PHQ-8 (Patient Health Questionnaire-8) and the GAD-7 (Generalized Anxiety Disorder-7). They have no safety item, because no one can respond in real time. The PHQ-8 leaves out the safety item of the PHQ-9 (Patient Health Questionnaire-9) for the same reason ([PHQ-8 notes](https://camcops.readthedocs.io/en/latest/_sources/tasks/phq8.rst.txt)). A self-administered block with a safety item needs a `remoteReview` block. `scriptkin config check` and the app refuse the configuration when one of these rules fails:
 
 - `imminentReviewWithinHours` is more than 24.
 - `routineReviewWithinWeekdays` is more than 1.
 - `exportEveryHours` is more than `imminentReviewWithinHours`.
+- `selfAdministered.resumeWithinHours` is more than `imminentReviewWithinHours`.
 
-Exports leave the iPad only through Files, by a person. Plan who exports each session, and how the export reaches the reviewer in time.
+Exports leave the iPad only by a person's action. SCRIPT does not export on a schedule, and it does not check `exportEveryHours`. Plan who exports each session, and how the export reaches the reviewer in time.
 
 ### Verify the crisis lists
 
-Each crisis list in the configuration has a `jurisdiction`, a `locale`, a `version`, a `verifiedOn` date, and `entries`. The participant sees the list for the session's jurisdiction. Do not copy the demo lists into a study configuration without your own check.
+Each crisis list in the configuration has a `jurisdiction`, a `locale`, a `version`, a `verifiedOn` date, and `entries`. The participant sees the list for the session's jurisdiction. `scriptkin config new` leaves the crisis lists empty, so the check refuses the configuration until you add them. Do not copy the demo lists into a study configuration without your own check.
 
 1. For each jurisdiction in the configuration, open the official page of each service.
 2. Check the name, the contact number, the hours, and the age limits of each service.
@@ -85,66 +103,24 @@ In the European Union, the number 116 123 is reserved for callers in psychologic
 
 The study key pair encrypts each export. The key custodian makes it on a computer that the custodian controls.
 
-1. Save the script below as `make_export_key.py` in the custodian's key folder.
-2. Open a terminal in the key folder.
-3. Run `uv run --project <repository>/python --frozen python make_export_key.py study-export-key.bin`.
-4. Copy the printed `recipientPublicKey` and `keyID` into the `export` block of the configuration.
-5. Keep `study-export-key.bin` in the custodian's encrypted storage.
-6. Keep a protected copy of the private key in a second place.
-7. Never copy the private key to an iPad.
+1. Run `scriptkin config keygen --out <key folder>`. Use a new, empty key folder.
+2. Copy the printed `recipientPublicKey` and `keyID` into the `export` block of the configuration.
+3. Keep `study-export-key.bin` in the custodian's encrypted storage.
+4. Keep a protected copy of the private key in a second place.
+5. Never copy the private key to an iPad.
 
-```python
-import base64
-import os
-import sys
-
-from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
-from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat, PublicFormat
-
-from scriptkin import hpke
-
-path = sys.argv[1]
-private = X25519PrivateKey.generate()
-raw_private = private.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())
-raw_public = private.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
-descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-with os.fdopen(descriptor, "wb") as file:
-	file.write(raw_private)
-print("recipientPublicKey:", base64.b64encode(raw_public).decode())
-print("keyID:", hpke.key_id(raw_public))
-```
-
-The script refuses to overwrite an existing key file. Only the owner of the file can read it.
-
-The `uv run` commands in this guide make a Python environment in `python/.venv` of the repository. To keep it outside the repository, set `UV_PROJECT_ENVIRONMENT` to another folder first.
+The command writes two files. `study-export-key.bin` holds the private key, and only its owner can read it. `study-export-key.public.json` holds the `export` block. The command refuses to overwrite a key file.
 
 ### Set the operator PIN
 
-The configuration stores the operator PIN (personal identification number) only as a slow key derivation.
+The configuration stores the operator PIN (personal identification number) only as a slow key derivation. The operator enters the PIN on a number pad, so a PIN has 4 or more digits and no other characters.
 
-1. Save the script below as `make_pin_record.py`.
-2. Run `uv run --project <repository>/python --frozen python make_pin_record.py`.
-3. Enter the new PIN two times.
-4. Copy the printed record into `operatorPin`.
+1. Run `scriptkin config pin --out operator-pin.json`.
+2. Enter the new PIN two times.
+3. Copy the content of `operator-pin.json` into `operatorPin`.
+4. Delete `operator-pin.json`.
 5. Give the PIN only to trained operators.
 6. When an operator leaves the study, make a new PIN and a new configuration version.
-
-```python
-import base64
-import getpass
-import hashlib
-import json
-import secrets
-
-pin = getpass.getpass("New operator PIN: ")
-if pin != getpass.getpass("Repeat the PIN: "):
-	raise SystemExit("The two PINs differ.")
-salt = secrets.token_bytes(16)
-iterations = 600_000
-key = hashlib.pbkdf2_hmac("sha256", pin.encode("utf-8"), salt, iterations, dklen=32)
-record = {"salt": base64.b64encode(salt).decode(), "iterations": iterations, "pbkdf2Sha256": key.hex()}
-print(json.dumps(record))
-```
 
 A short PIN is easy to find by trial, even with a slow derivation. Use the longest PIN that operators can enter without errors.
 
@@ -152,42 +128,20 @@ A short PIN is easy to find by trial, even with a slow derivation. Use the longe
 
 The configuration controls the study without a code change. `contract/config.schema.json` defines its shape. [The design](DESIGN.md#14-study-configuration) gives its rules.
 
-1. Copy `contract/configs/demo.json` to a new file outside the repository.
-2. Set `demo` to `false`.
-3. Set `study`, `sites`, `jurisdictions`, and `administration`.
-4. Set the task order, the practice flags, the attempts, and the hands in `tasks`.
-5. Keep the `battery` block unchanged. It must match the battery that the app ships.
-6. Set the questionnaire blocks for each administration mode and age band.
-7. Set the instruction texts and the `instructionVersion` for each locale.
-8. Set the action codes, the crisis lists, and `remoteReview` in `safety`.
+1. Run `scriptkin config new --from demo --out study.json`. The command lists the items that you must complete.
+2. Set `study`, `sites`, `jurisdictions`, and `administration`.
+3. Set the task order, the practice flags, the attempts, and the hands in `tasks`.
+4. Keep the `battery` block unchanged. It must match the battery that the app ships.
+5. Set the questionnaire blocks for each administration mode and age band.
+6. Set the instruction texts and the `instructionVersion` for each locale.
+7. Set the action codes, the crisis lists, and `remoteReview` in `safety`.
+8. Set `selfAdministered.resumeWithinHours`. Without it, the value is 24.
 9. Set `consentModel` and `ethics` from your approved documents.
-10. Set `export` and `operatorPin` from the two scripts above.
-11. Run the check script below, and correct each problem that it prints.
-12. Record the SHA-256 (Secure Hash Algorithm, 256-bit) digest of the file with `shasum -a 256 study.json`.
+10. Set `export` and `operatorPin` from the two commands above.
+11. Run `scriptkin config check study.json`, and correct each problem that it lists.
+12. Record the SHA-256 (Secure Hash Algorithm, 256-bit) digest that the check prints when the file passes.
 
-Each session records this digest as `study.configSHA256`. An analyst uses it to prove which configuration made a session.
-
-Save this script as `check_config.py` in the folder that holds `study.json`. In that folder, run `uv run --project <repository>/python --frozen python check_config.py study.json <repository>/contract/config.schema.json`.
-
-```python
-import json
-import sys
-
-from jsonschema import Draft202012Validator
-
-from scriptkin import studyconfig
-
-config_path, schema_path = sys.argv[1], sys.argv[2]
-with open(config_path, encoding="utf-8") as file:
-	config = json.load(file)
-with open(schema_path, encoding="utf-8") as file:
-	schema = json.load(file)
-problems = [error.message for error in Draft202012Validator(schema).iter_errors(config)]
-if not problems:
-	problems = studyconfig.validate(config)
-print("\n".join(problems) or "The configuration passes every check.")
-raise SystemExit(1 if problems else 0)
-```
+Each session records this digest as `study.configSHA256`. An analyst uses it to prove which configuration made a session. Home shows the first 12 hexadecimal digits of the digest of the active configuration.
 
 The default supervised blocks are the PHQ-9 and the GAD-7, for both age bands. The DASS-21 (Depression Anxiety Stress Scales-21) is for enrolled participants aged 14 or older only. Its results go to the researcher only ([DASS frequently asked questions](https://www2.psy.unsw.edu.au/dass/DASSFAQ.htm)). Its scales must not be changed ([DASS download page](https://www2.psy.unsw.edu.au/dass/down.htm)). The configuration check refuses the DASS-21 for the age band 13 to 17. To add another instrument, ask the SCRIPT maintainers. Its text must match the published form word for word, and its licence must permit the use.
 
@@ -197,32 +151,36 @@ The default supervised blocks are the PHQ-9 and the GAD-7, for both age bands. T
 2. Set a device passcode.
 3. Install the iPadOS version that the device qualification will use. Do not update it during the study without a new qualification.
 4. Turn off device backups. Do not back up the iPad to a computer.
-5. Install the SCRIPT Capture release that the protocol names.
-6. Import the study configuration through Files.
-7. Check that the app shows the study, the version, and the digest that you recorded.
+5. Install the SCRIPT Capture release that the protocol names, as the [release process](RELEASE.md) states.
+6. Import the study configuration. On Home, tap **Import a configuration**, and select the file in Files.
+7. Check that Home shows the study, the version, and the digest that you recorded.
 8. Turn on Guided Access, so that a participant cannot leave the app. Use Apple's instructions for the installed iPadOS version.
 9. Set a Guided Access passcode that differs from the device passcode and the operator PIN.
 10. Set a Focus, for example Do Not Disturb, so that no notification appears during a session.
-11. Charge the iPad and the Apple Pencil. Record the screen protector and the state of the Pencil nib.
+11. Charge the iPad and the Apple Pencil. Record the screen protector and the state of the Pencil tip.
 12. Check the free storage before each session day.
 
-A 10-minute session makes a journal of about 20 to 30 MB (megabytes). During an export, the iPad holds two copies of the journal for a short time.
+A 10-minute session makes a journal of about 20 to 30 MB (megabytes). The app does not start a session with less than 500 MB of free storage. During an export, the iPad holds two copies of the journal for a short time.
 
 ### Qualify each device
 
-A qualification session tests one iPad and one Pencil ([design section 16](DESIGN.md#16-device-qualification)). It has three tasks:
+A qualification session tests one iPad and one Pencil ([design section 16](DESIGN.md#16-device-qualification)). It has three steps:
 
-- A reference-length check with a steel rule or an ID-1 card. An ID-1 card is 85.60 mm wide.
-- A 10-second still hold.
-- A straight line along a guide.
+- A reference-length check. The bar on the screen is 100 mm long. Measure it with a steel rule or an ID-1 card, which is 85.60 mm wide.
+- A 10-second still hold on a dot.
+- A line drawn along a guide at an even speed.
 
-The qualification report also shows which channels the device recorded.
+Run one qualification session for each combination of iPad, Pencil, iPadOS version, and app version. Run a new qualification after a change of iPadOS, Pencil, screen protector, or app version.
 
-1. Run one qualification session for each combination of iPad, Pencil, iPadOS version, and app version.
-2. Export the qualification session, and transfer it as for a study session.
-3. Make the qualification report with the script below.
-4. File the report with the device asset code.
-5. Run a new qualification after a change of iPadOS, Pencil, screen protector, or app version.
+1. On Home, tap **Device qualification**.
+2. Enter your operator code and the device asset code.
+3. Select the screen protector, the Pencil tip state, and the Pencil.
+4. If the **Scale** section shows **Measure the screen**, measure the screen as the app asks.
+5. Tap **Start the qualification**, and do the three steps. Tap **Begin** before and **Done** after each step.
+6. Record the measured length of the bar in the qualification record.
+7. Read the median sample interval, the sample rate, and the share of intervals longer than 30 ms.
+8. Tap **Export**, and then [take the export into the study store](#take-exports-into-the-study-store).
+9. Make the qualification report with the code below, and file it with the device asset code.
 
 ```python
 from pathlib import Path
@@ -230,84 +188,121 @@ from pathlib import Path
 import scriptkin as sk
 from scriptkin import qualification
 
-key = Path("/secure/study-export-key.bin").read_bytes()
-report = qualification.qualify(sk.read_journal("incoming/QUAL-01_1a2b3c4d", private_key=key))
+key = Path("<key folder>/study-export-key.bin").read_bytes()
+recording = sk.read_journal("<study store>/sessions/<session identifier>", private_key=key)
+report = qualification.qualify(recording)
 print(report.intervals, report.hold_jitter_mm, report.line_deviation_mm, report.scale, report.observed_channels)
 ```
 
-The report describes what the device recorded. It does not decide whether two devices are comparable. Only the analysis plan decides that. When the iPad model is not in the device table, Setup asks for a measurement. Measure the bar with a steel rule.
+Each later study session records the last qualification of its iPad and Pencil. The report describes what the device recorded. It does not decide whether two devices are comparable. Only the analysis plan decides that.
 
 ### Train the operators and do a dry run
 
 1. Train each operator on this guide, the safety protocol, and the data governance duties.
 2. Reserve a participant code for tests in the identity key.
 3. Run a full supervised session with the test code on each iPad.
-4. Skip the safety item in the test questionnaire, so that the operator alert appears.
-5. Record an action code, show the crisis list, and close the session.
-6. Export, transfer, and check the export at intake.
-7. Withdraw the test code on the iPad, and confirm the deletion.
-8. Delete the test export from the transfer location and the study store.
-9. Compare each step with this guide. Report each difference to the SCRIPT maintainers before the study starts.
+4. In the PHQ-9, select **Prefer not to answer** for item 9, so that the safety alert appears.
+5. Record an action code, show the support list, and close the session.
+6. Export the session, and record it in the session register.
+7. Take the export into the study store, and check its receipt.
+8. Withdraw the test code on the iPad, and confirm the deletion.
+9. Delete the test export from the transfer location and the study store.
+10. Compare each step with this guide. Report each difference to the SCRIPT maintainers before the study starts.
 
 ## Run a supervised session
 
 An operator is present for the whole session. Do the [checks before the session](#before-each-session) first.
 
 1. On Home, tap **New session**.
-2. In Setup, enter the participant code from the site's records.
-3. Select the Pencil model: Pro, 2nd generation, or USB-C.
-4. Select the battery.
-5. Give the consent attestation for the participant's age band.
-6. If Setup shows a bar of known length, measure it with a steel rule and enter the length.
-7. Check the participant code again.
-8. Start Guided Access.
-9. When the app shows the handoff screen, give the iPad to the participant.
-10. Stay near the participant. Do not look at the questionnaire answers.
-11. Do not comment on the drawings.
-12. Give only the accommodations that the protocol permits. Record each accommodation.
-13. When the app asks for the iPad back, take it.
-14. If the app shows a safety alert, [handle the safety alert](#handle-a-safety-alert) before you continue.
-15. Show the participant the crisis list that the app displays at the end of the session.
-16. On the thank-you screen, press and hold with three fingers for 2 seconds to open Review.
-17. In Review, check the duration, the sample rate, and the channels of each trial.
-18. Repeat a trial, or add a mark, if the protocol requires it.
-19. Close the session.
-20. [Export the session](#export-and-transfer-a-session).
+2. If Setup shows **Administration**, select **Supervised**.
+3. Enter the participant code from the site's records.
+4. Select the age band, the jurisdiction, the language, the site, and the writing hand.
+5. Enter the visit code and the visit number.
+6. Under **Consent**, tick each document that the participant or guardian signed.
+7. Enter your operator code.
+8. Enter the device asset code. Select the screen protector, the Pencil tip state, and the Pencil.
+9. If the **Scale** section shows **Measure the screen**, measure the screen as the app asks.
+10. Check the participant code again, and tap **Start the session**.
+11. Start Guided Access.
+12. When the app shows "Please give the iPad to the participant.", give the iPad to the participant.
+13. Stay near the participant. Do not look at the questionnaire answers, and do not comment on the drawings.
+14. When the app shows "Please give the iPad back to the researcher.", take the iPad.
+15. Press and hold **Operator** with one finger for 2 seconds. Enter the PIN.
+16. Review opens. If it shows a safety alert, [handle the safety alert](#handle-a-safety-alert) first.
+17. In Review, check the duration, the sample count, the sample rate, and the channels of each trial.
+18. Tap **Show the support list to the participant**, and give the iPad to the participant.
+19. The participant reads the crisis list and taps **Continue**. The app closes the session.
+20. When the app shows "Thank you.", take the iPad.
+21. Press and hold **Operator** with one finger for 2 seconds, and enter the PIN. Home opens.
+22. [Export the session](#export-a-session).
 
-The participant sees no score, no replay, and no quality value. The handoff screen after a questionnaire block is the same with and without a flag. The app refuses to close a session while a flag has no action code. It also refuses to close until the crisis list has appeared after the last questionnaire block.
+The participant starts each task with **Begin** and ends it with **Done**. A task also ends at its time limit, and no countdown shows. The participant answers each questionnaire item, or selects **Prefer not to answer**.
 
-A mark is one of `repeatRequested`, `disturbance`, `deviceProblem`, or `exclude`. An accommodation is one of `readAloud`, `largerText`, `extraTime`, `positionAssist`, or `other`.
+The participant sees no score, no replay, and no quality value. The hand-back screen after the questionnaires is the same with and without a flag. Review enables **Show the support list to the participant** only after each flag has an action code. In a session without a questionnaire block, Review shows **Close the session** instead.
+
+The app does not record accommodations or marks, and it has no button to repeat a trial. Record each accommodation and each problem with a trial in the site's session records.
+
+### Take over during a session
+
+The **Operator** control is on every participant screen. Press and hold it for 2 seconds, and enter the PIN when the configuration has one. The session then pauses, and the app shows three actions:
+
+- **Return to the participant** goes back to the same screen.
+- **End the session** ends the open trial or questionnaire block, and opens Review.
+- **Leave the session open and go to Home** keeps the session open. Home lists it as open, with **Return**.
+
+When you end the session, the open trial ends with the reason `operatorAbort`, and the open block ends as `declined`. A safety item that the block did not reach becomes a flag.
 
 ## Run a self-administered session
 
 No operator is present during a self-administered session. The enrolment record of the study gives the consent attestation, with the role `enrolment`.
 
 1. Prepare the iPad with the study configuration, Guided Access, and a Focus.
-2. Give the participant the instructions that the protocol names.
-3. If the participant takes part remotely, confirm that the participant is in a private place.
-4. Let the participant complete the tasks and the questionnaire blocks.
-5. Make sure the session is exported within `exportEveryHours`, if the configuration has a `remoteReview` block.
-6. Make sure the reviewer checks each export within the review times.
+2. On Home, tap **New session**. In Setup, select **Self-administered** under **Administration**.
+3. Complete Setup as for a supervised session. Enter the enrolment record code in place of the operator code.
+4. Tap **Start the session**.
+5. Give the participant the iPad and the instructions that the protocol names.
+6. If the participant takes part remotely, confirm that the participant is in a private place.
+7. If the configuration has a `remoteReview` block, export the session within `exportEveryHours`.
+8. Make sure that the reviewer checks each export within the review times.
 
-The app never shows an operator alert in a self-administered session. The participant sees the crisis list at the end of each session with a questionnaire block. If a block has a safety item, the app also shows the crisis list at once when the item is flagged. The app never tells the participant that a response was flagged.
+The participant taps **Start**, does the tasks, and answers the questionnaire blocks. If a block of the session has a safety item, the participant first reads the monitoring disclosure. The participant sees the crisis list at the end of each session with a questionnaire block, and then the thank-you screen. On the thank-you screen, the participant can tap **Save to Files** to export the session.
+
+The app never shows an operator alert in a self-administered session, and it never tells the participant that a response was flagged. If a block has a safety item, the app shows the crisis list at once after each flag. This includes a flag for an item that the block did not reach.
 
 For remote participation by minors, published studies used extra identity checks. One online cohort of ages 12 to 25 used a linked parent survey, date-of-birth checks, and attention checks ([online youth cohort](https://pmc.ncbi.nlm.nih.gov/articles/PMC9717385)). Decide the checks in the protocol.
 
+### Resume a self-administered session
+
+When the app stops during a self-administered session, the next launch opens the session again for its participant. The app asks "Type your participant code to continue." The session resumes only when the participant types the code of the session. A wrong code shows "This code is not the code of this session."
+
+A session can resume only inside its resume window, `selfAdministered.resumeWithinHours` after the session opened. After the window, the next launch closes the session without a crisis list, because no participant is present. Home then lists it as closed, with **Export**. Export it at once, because it can hold a flag.
+
+After a resume, the app shows the crisis list first when the interrupted block had a flag.
+
+### End a self-administered session early
+
+An operator can end a self-administered session with the **Operator** control. If the end flags a safety item that the block did not reach, the crisis list shows first. Give the iPad to the participant, who taps **Continue**. Review then shows each flag with "Reviewed by the study reviewer after export". It asks for no action code.
+
+1. Tap **Show the support list to the participant**, and give the iPad to the participant.
+2. When the participant taps **Continue**, the app closes the session.
+3. Export the session, so that the reviewer gets the flags.
+
 ## Handle a safety alert
 
-A safety alert is a neutral notice on the operator screen. It appears when a participant endorses or skips a safety item in a supervised session.
+A safety alert is a neutral notice in Review. It reads "A safety item needs follow-up under your protocol", with the instrument and the item number. It never shows the response. Review shows one alert for each flag. In a supervised session, each alert needs an action code.
 
 1. If the participant is in immediate danger, do the emergency step of the safety protocol first.
 2. Do not discuss the alert in front of other people.
 3. Call the responder that the safety protocol names.
 4. Let the responder speak with the participant in private.
-5. Record one action code for each flag. The app asks for the oldest open flag first.
-6. Record the name of the responder, the time, and the outcome in the site's safety record.
-7. Continue the session at the crisis list.
+5. For the first open alert, select an action in **Action**, and tap **Record action**.
+6. Repeat step 5 for each alert. The app records each action for the oldest open flag.
+7. Record the name of the responder, the time, and the outcome in the site's safety record.
+8. Tap **Show the support list to the participant**.
 
 The journal holds only the action code and the role of the person who recorded it. The site's safety record holds the details.
 
-In a self-administered session with remote review, the reviewer finds flags in each export:
+In a self-administered session with remote review, the reviewer finds the flags in each session of the study store:
 
 ```python
 from pathlib import Path
@@ -315,78 +310,74 @@ from pathlib import Path
 import scriptkin as sk
 from scriptkin import labels
 
-key = Path("/secure/study-export-key.bin").read_bytes()
-recording = sk.read_journal("incoming/P0042_3f2a9c1e", private_key=key)
+key = Path("<key folder>/study-export-key.bin").read_bytes()
+recording = sk.read_journal("<study store>/sessions/<session identifier>", private_key=key)
 print(labels.safety_flag_count(recording))
 ```
 
-When the count is more than zero, the reviewer follows the safety protocol within the review time. The site holds the participant's contact details. The flag count is for safety review and audit only. It is never a research label.
+The count includes endorsed, skipped, and unreached safety items. When the count is more than zero, the reviewer follows the safety protocol within the review time. The site holds the participant's contact details. The flag count is for safety review and audit only. It is never a research label.
+
+`read_journal` refuses a damaged journal. For a damaged package, search the decrypted `journal.jsonl` in its `damaged/` folder of the study store for `safetyFlagged` lines.
 
 ## Handle an interruption
 
-- **Crash.** On the next launch, Home shows the session as interrupted. The open trial is marked interrupted. Repeat the trial, continue, or close the session.
-- **App in the background.** The trial ends with the reason `backgrounded`. Guided Access prevents most of these events.
-- **Pencil problem.** Add the mark `deviceProblem` to the trial. Repeat the trial when the Pencil works.
-- **Participant stops.** Respect the decision. The end reason `declined` means that the participant chose to stop. The end reason `unable` means that the participant could not do the task.
-- **Damaged journal.** The app moves a journal with damage before its last line to the Damaged folder, unchanged. Transfer it to the study store with the same controls as an export. Tell the sponsor. Do not delete it unless the protocol or a withdrawal requires it.
-- **Write failure.** After a failed write, the journal accepts no more lines. Free storage, then relaunch the app. Home shows the session as interrupted.
+- **Crash in a supervised session.** On the next launch, Home lists the session as interrupted. Tap **Resume**. The app ends the open trial as interrupted and gives the task again, up to the number of attempts in the configuration. It gives an interrupted questionnaire block once more.
+- **Crash in a self-administered session.** See [Resume a self-administered session](#resume-a-self-administered-session).
+- **App in the background.** The open trial ends with the reason `backgrounded`, and every line reaches storage. The app gives the task again, up to the number of attempts. Guided Access prevents most of these events.
+- **Pencil problem.** Note the trial in the site's session records. The app has no mark for it.
+- **Participant stops.** Respect the decision. [Take over](#take-over-during-a-session), and tap **End the session**.
+- **Damaged journal.** Home lists a journal with damage before its last line as damaged. Tap **Export damaged journal**. Transfer the package and take it into the study store as an export. Tell the sponsor. Do not delete it unless the protocol or a withdrawal requires it.
+- **Write failure.** The app shows "The session stopped" and keeps every line saved before the failure. Tap **Go to Home**. Free storage, and relaunch the app. Home lists the session as interrupted.
+- **Configuration not on this iPad.** To resume or export a session, the iPad needs the configuration that the session used. Import that configuration, and try again.
 
-## Export and transfer a session
+## Export a session
 
-1. Close the session.
-2. Export the session. The app verifies the export folder and then deletes the source journal.
-3. In Files, open On My iPad > SCRIPT > Exports.
-4. Move the export folder through the approved transfer channel.
-5. At intake, check the export with the script below.
-6. Record a receipt: the session identifier, the folder name, the ciphertext digest, the date, and your name.
-7. Do not add a second copy of a session that the study store already holds.
-8. Delete the export from the iPad and from the transfer location after the receipt.
+1. On Home, find the session with the status **Closed**.
+2. Tap **Export**. The app verifies the export, and only then deletes the source journal.
+3. Read the export name and the encryption on the Export screen.
+4. Record the participant code, the export name, the device asset code, the date, and your name in the [session register](DATA_GOVERNANCE.md#keep-the-site-session-register).
+5. Tap **Done**.
+6. Move the export folder through the approved transfer channel. The folder is in Files under On My iPad > SCRIPT Capture > Exports.
+7. [Take the export into the study store](#take-exports-into-the-study-store).
+8. After the result `accepted`, `duplicate`, or `damaged`, delete the export from the iPad and the transfer location.
 
-```python
-from pathlib import Path
-
-import scriptkin as sk
-
-key = Path("/secure/study-export-key.bin").read_bytes()
-recording = sk.read_journal("incoming/P0042_3f2a9c1e", private_key=key)
-print(recording.session_id)
-```
-
-`read_journal` raises `JournalError` when the export fails a check. Do not delete the device copy of an export that fails. The export folder name holds the participant code. Treat the name as personal data.
+Home shows only the last 4 characters of each participant code. To see the full codes, tap **Show participant codes** and enter the PIN. A self-administered participant exports with **Save to Files** on the thank-you screen. Record that export in the register in the same way.
 
 ## Take exports into the study store
 
-The study store is the site's folder of verified sessions. The `scriptkin intake` command checks each export folder, copies each session into the store once, and records a receipt for each export. Use it at stage 4 of the [data flow](DATA_GOVERNANCE.md#data-flow).
+The study store is the site's folder of verified sessions. The `scriptkin intake` command checks each export folder, copies each session into the store once, and writes a receipt for each export. Use it at stage 4 of the [data flow](DATA_GOVERNANCE.md#data-flow).
 
 1. Put the transferred export folders in one incoming folder, for example `incoming/`.
-2. Run `uv run --project <repository>/python --frozen scriptkin intake incoming --store <study store> --key /secure/study-export-key.bin --out intake-report.json`.
+2. Run `scriptkin intake incoming --store <study store> --key <key folder>/study-export-key.bin --out intake-report.json`.
 3. Read the result of each export in `intake-report.json`.
-4. Delete the device copy and the transfer copy only when the result is `accepted` or `duplicate`.
-5. When the result is `quarantined`, read the reason in `reason.json` in the quarantine folder. Keep the device copy, and tell the sponsor.
-6. When the result is `conflict`, keep the device copy, and tell the sponsor.
-7. When an export is in the `refused` list, find the study key of this study. Run the command again with that key.
+4. Add the `sessionID` of each receipt to the row of its export name in the session register.
+5. When the result is `damaged`, give the package to the reviewer, and tell the sponsor.
+6. When the result is `quarantined`, read `reason.json` in the quarantine folder. Keep the device copy, and tell the sponsor.
+7. When the result is `conflict`, keep the device copy, and tell the sponsor.
+8. When an export is in the `refused` list, find the study key of this study. Run the command again with that key.
 
 | Result | Meaning | What the store holds |
 | --- | --- | --- |
 | `accepted` | The export passed every check. | `sessions/<session identifier>/` holds the export as received. |
 | `duplicate` | The store already holds the same journal for this session. | Nothing new. |
-| `conflict` | The store already holds a different journal for this session. | Both versions are in `quarantine/`. `sessions/` holds neither. |
+| `conflict` | The store already holds a different journal for this session. | Every version is in `quarantine/`. `sessions/` holds none. |
 | `quarantined` | The export failed a check. | `quarantine/<digest>/` holds the export and `reason.json`. |
+| `damaged` | The export is the package of a damaged journal. Intake checked its manifest and decrypted it. | `damaged/<digest>/` holds the package as received and the decrypted `journal.jsonl`. |
 | `refused` | The key is absent, or it does not fit the export. | Nothing. |
+
+`<digest>` is the first 16 hexadecimal digits of the `exportSHA256` of the receipt. The `known` list names the folders that intake already took from the same place with the same bytes. Intake skips them, so you can run the command again on the same folders.
 
 The command exits with 0 when each export is `accepted` or a `duplicate`. It exits with 1 when an export needs your attention, and with 2 when it cannot run.
 
-You can run the command again on the same folders. The store does not change for an export that it already recorded from the same folder.
-
 The store keeps each encrypted export encrypted. Add `--keep-plaintext` only when the protocol permits a decrypted copy in the store. The decrypted `journal.jsonl` is then beside the encrypted file.
 
-The receipt of a session is `receipts/<session identifier>.json`. It lists each intake of that session: the source folder, the SHA-256 digest of the journal, whether the export was encrypted, the key identifier, the result, and the time. `intake.jsonl` lists every intake in order. Add your name and the date to the site's own intake record. The source folder name can hold the participant code. Treat the whole store as personal data.
+The receipt of a session is `receipts/<session identifier>.json`. It lists each intake of that session. Each entry gives the source folder, the SHA-256 digests of the export and the journal, and the encryption. It also gives the key identifier, the result, and the time. `intake.jsonl` lists every intake in order. Add your name and the date to the site's own intake record. Treat the whole store as personal data.
 
 ## Check the quality of the store
 
 The `scriptkin qc-report` command counts what the store holds. It reads every session in `sessions/`.
 
-1. Run `uv run --project <repository>/python --frozen scriptkin qc-report <study store> --key /secure/study-export-key.bin --out qc-report.json --markdown qc-report.md`.
+1. Run `scriptkin qc-report <study store> --key <key folder>/study-export-key.bin --out qc-report.json --markdown qc-report.md`.
 2. Read the two tables in `qc-report.md`.
 3. Compare the sample rates of each iPad and Pencil with its qualification report.
 4. Look at each refused trial, unresolved estimate, interrupted trial, and recovered session with the site staff.
@@ -406,20 +397,22 @@ The report never holds a questionnaire score, a label, a feature value, or a par
 
 ## Withdraw a participant
 
-Follow the [withdrawal and deletion procedure](DATA_GOVERNANCE.md#withdrawal-and-deletion-procedure). The steps on each iPad are:
+Follow the [withdrawal and deletion procedure](DATA_GOVERNANCE.md#withdrawal-and-deletion-procedure). It uses the session register for the copies outside the iPad. The steps on each iPad are:
 
-1. Open the withdrawal screen and enter the participant code.
-2. Confirm two times.
-3. Record the session identifiers that the app reports as deleted.
-4. Enter the code again to confirm the deletion against the deletion log.
+1. Finish or end any open session.
+2. On Home, tap **Withdraw a participant**.
+3. Enter the participant code in both fields.
+4. Tap **Delete every recording of this code**, and then tap **Delete**.
+5. Record the session identifiers that the app lists under **Deleted**.
+6. Tap **Verify a withdrawal**, enter the code, and tap **Check the deletion log**.
 
 ## Session checklists
 
 ### Before each session
 
 - [ ] The iPad and the Pencil are charged.
-- [ ] The free storage is enough for the session and its export.
-- [ ] The app shows the study configuration digest that the site recorded.
+- [ ] The free storage is more than 500 MB, and enough for the session and its export.
+- [ ] Home shows the study configuration digest that the site recorded.
 - [ ] The crisis list for the session's jurisdiction was checked within the interval that the protocol sets.
 - [ ] Guided Access and the Focus are on.
 - [ ] The device qualification for this iPad, Pencil, iPadOS, and app version is on file.
@@ -429,8 +422,8 @@ Follow the [withdrawal and deletion procedure](DATA_GOVERNANCE.md#withdrawal-and
 
 ### During each session
 
-- [ ] The participant code and the Pencil model in Setup are correct.
-- [ ] Each accommodation is recorded.
+- [ ] The participant code and the Pencil in Setup are correct.
+- [ ] Each accommodation and each trial problem is in the site's session records.
 - [ ] Each safety alert has an action code and an entry in the site's safety record.
 - [ ] The participant saw the crisis list at the end.
 
@@ -438,6 +431,7 @@ Follow the [withdrawal and deletion procedure](DATA_GOVERNANCE.md#withdrawal-and
 
 - [ ] Each trial in Review has a plausible duration, sample rate, and channel set.
 - [ ] The session is closed and exported.
-- [ ] The export is transferred, checked at intake, and has a receipt.
-- [ ] The device copy is deleted after the receipt.
-- [ ] Each damaged journal is reported to the sponsor.
+- [ ] The export is in the session register.
+- [ ] The export is transferred and taken into the study store, and its receipt is checked.
+- [ ] The device copy is deleted after intake.
+- [ ] Each damaged journal is exported, taken into the store, and reported to the sponsor.

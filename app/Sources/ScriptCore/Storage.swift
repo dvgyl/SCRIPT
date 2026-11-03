@@ -479,8 +479,8 @@ public struct Storage: Sendable {
         let step: Step
     }
 
-    /// A storage failure. It names a session by its identifier, never by its export name, which holds the
-    /// participant code, so the app can log it.
+    /// A storage failure. It names a session by its identifier, never by a participant code or a path, so the
+    /// app can log it.
     public enum StorageError: Error, Hashable, Sendable {
         case noJournal(SessionID)
         case journal(SessionID?, JournalError)

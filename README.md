@@ -20,7 +20,7 @@ SCRIPT is not a screening or diagnostic tool. The app never shows a result to th
 ./check
 ```
 
-This runs the contract check, the Swift core tests, the app unit and UI tests on the simulator, and the Python lint, type check, and tests. The Python tests read the exports that the Swift and app tests write, so `app` runs before `python`. To run one part, name it:
+This runs the contract check, the Swift core tests, the app unit and UI tests on the simulator, and the Python checks. The Python checks are the lint, the type check, and the tests. The Python tests read the exports that the Swift and app tests write, so `app` runs before `python`. To run one part, name it:
 
 ```sh
 ./check python
@@ -43,7 +43,9 @@ The sections are `contract`, `core`, `app`, and `python`. Build output goes to `
 | --- | --- |
 | [docs/DESIGN.md](docs/DESIGN.md) | The design, the recording format, and the safety rules |
 | [docs/INTENDED_USE.md](docs/INTENDED_USE.md) | What SCRIPT is for, what it is not for, and which claims it supports |
-| [docs/STUDY_GUIDE.md](docs/STUDY_GUIDE.md) | How a site prepares and runs a study |
-| [docs/DATA_GOVERNANCE.md](docs/DATA_GOVERNANCE.md) | The data flow, the threats, the controls, withdrawal, and the law checklist |
+| [docs/STUDY_GUIDE.md](docs/STUDY_GUIDE.md) | How a site prepares and runs a study, and takes exports into a study store |
+| [docs/DATA_GOVERNANCE.md](docs/DATA_GOVERNANCE.md) | The data flow, the threats, the controls, the session register, withdrawal, and the law checklist |
 | [docs/HAZARDS.md](docs/HAZARDS.md) | The hazard log, with the controls and the tests for each hazard |
-| [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md) | The third-party software, with versions and licences |
+| [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md) | The third-party software, with versions and licences, and the public test data |
+| [docs/DEVICE_TESTING.md](docs/DEVICE_TESTING.md) | How to run the app on a real iPad and check what it records |
+| [docs/RELEASE.md](docs/RELEASE.md) | How to version, sign, distribute, and record a release of the app |
