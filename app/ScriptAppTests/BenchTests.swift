@@ -159,6 +159,7 @@ private func lines(_ store: SessionStore) async throws -> [[String: Any]] {
     let run = BenchRunPlan(program: "loops-l-v20", run: 1)
     #expect(second.runRefusal(run) == .otherProtocol)
     second.chooseRun(run)
+    #expect(second.currentRun == nil)
     second.startRun(view: ViewSize(width: 834, height: 1000)!)
     #expect(second.state?.session.trials.isEmpty == true)
     second.endBench()
