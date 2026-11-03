@@ -14,7 +14,17 @@ import numpy as np
 
 from scriptkin.contract import KINDS, OUTCOME_OF_REASON, encode_line
 from scriptkin.formats import FormatError
-from scriptkin.recording import Channel, Device, PenState, Recording, Stroke, TaskRef, Trial, TrialOutcome
+from scriptkin.recording import (
+    Channel,
+    Device,
+    PenState,
+    Recording,
+    Stroke,
+    TaskRef,
+    Trial,
+    TrialOutcome,
+    reader_profile,
+)
 
 
 class JournalError(FormatError):
@@ -248,7 +258,8 @@ def _run(lines: Lines, *, closed: bool = False) -> _Fold:
     active: _Trial | None = None
     contacts: dict[int, _Trial] = {}
     open_contacts: set[int] = set()
-    pending: dict[tuple[int, int], tuple[_Trial, Line]] = {}
+    # Samples can share a pending key. A correction with that key resolves all of them.
+    pending: dict[tuple[int, int], tuple[_Trial, list[Line]]] = {}
     state, unmatched, truncated = "ready", 0, 0
     boot = rows[0]["boot"]
     clocks = {boot: float(rows[0]["openedUptime"])}
@@ -294,7 +305,7 @@ def _run(lines: Lines, *, closed: bool = False) -> _Fold:
                 s["remaining"] = row.get("pending", {}).get("expect", 0)
                 contacts[c].samples[c].append(s)
                 if "pending" in row:
-                    pending[c, row["pending"]["update"]] = contacts[c], s
+                    pending.setdefault((c, row["pending"]["update"]), (contacts[c], []))[1].append(s)
         elif k == "correction":
             key = (row.get("contact", -1), row["update"])
             if key not in pending:
@@ -303,10 +314,11 @@ def _run(lines: Lines, *, closed: bool = False) -> _Fold:
                 if target is not None:
                     target.unmatched += 1
             else:
-                target, s = pending[key]
+                target, samples = pending[key]
                 target.corrections += 1
-                s.update({key: row[key] for key in ("x", "y", *_CHANNELS) if key in row})
-                s["remaining"] = row["expect"]
+                for s in samples:
+                    s.update({name: row[name] for name in ("x", "y", *_CHANNELS) if name in row})
+                    s["remaining"] = row["expect"]
         elif k == "hover" and active is not None:
             if not active.hover_open:
                 active.hover.append([])
@@ -415,7 +427,12 @@ def _recording(result: _Fold) -> Recording:
         device, observed_channels=frozenset(k for t in trials for k in t.device.observed_channels)
     )
     return Recording(
-        head["sessionID"], head["participant"], device, tuple(trials), unmatched_corrections=result.unmatched
+        head["sessionID"],
+        head["participant"],
+        device,
+        tuple(trials),
+        reader_profile("script.journal"),
+        unmatched_corrections=result.unmatched,
     )
 
 

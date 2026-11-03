@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import numpy as np
-import pytest
 
 from scriptkin import Device, Stroke, TaskRef, Trial
 from scriptkin.recording import FloatArray
@@ -26,8 +23,3 @@ def make_trial(
         started=float(t[0]),
         ended=float(t[-1]),
     )
-
-
-def pytest_configure(config: pytest.Config) -> None:
-    if config.option.basetemp is None:
-        config.option.basetemp = str(Path(__file__).resolve().parents[2] / "build" / "pytest")

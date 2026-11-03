@@ -5,16 +5,17 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
 
 import numpy as np
+from scipy.spatial import KDTree
 
 from scriptkin import __version__
 from scriptkin.quality import DEFAULT_QC, Accepted, QcPolicy, Refusal, RefusalCode, Rejected, Segment, assess
-from scriptkin.recording import Channel, FloatArray, PenState, Recording
+from scriptkin.recording import Channel, FloatArray, IntArray, PenState, Recording
 from scriptkin.signal import (
     DEFAULT_PREPROCESSING,
     GammaFit,
@@ -42,6 +43,7 @@ class Feature:
     millimetres: bool = False
     channel: Channel | None = None
     mode: str | None = None
+    state: PenState | None = PenState.CONTACT
     definition: str = ""
 
 
@@ -67,9 +69,15 @@ CATALOG = (
         millimetres=True,
         definition="Sum of contact segment chord lengths.",
     ),
-    Feature("timing.duration_s", "s", definition="Trial end minus trial start in one boot."),
+    Feature("timing.duration_s", "s", state=None, definition="Trial end minus trial start in one boot."),
     Feature("timing.contact_s", "s", "sum", definition="Sum of accepted contact segment durations."),
-    Feature("timing.in_air_s", "s", "sum", definition="Sum of accepted in-air segment durations."),
+    Feature(
+        "timing.in_air_s",
+        "s",
+        "sum",
+        state=PenState.IN_AIR,
+        definition="Sum of accepted in-air segment durations.",
+    ),
     Feature("timing.stroke_count", "count", definition="Count of contact strokes with accepted segments."),
     Feature("pressure.force_mean", "source", channel=Channel.FORCE, definition="Mean contact force."),
     Feature(
@@ -103,14 +111,21 @@ CATALOG = (
         "mm",
         millimetres=True,
         mode="copy",
-        definition="Polyline RMSE after a proper similarity Procrustes alignment by arc length.",
+        definition=(
+            "RMS of drawn-to-stimulus and stimulus-to-drawn polyline distances, each direction weighted"
+            " one half, after a proper similarity ICP alignment that starts from matched centroids and"
+            " spreads with no rotation; independent of stroke order and direction."
+        ),
     ),
     Feature(
         "spectral.speed_band_power",
         "(mm/s)^2",
         min_values=3,
         millimetres=True,
-        definition="Mean segment Welch speed power in the configured band; trapezoid integration.",
+        definition=(
+            "Welch speed power in the configured band from the segment spectra weighted by window count;"
+            " min_values counts Welch windows; trapezoid integration."
+        ),
     ),
     Feature(
         "entropy.speed_sample_entropy",
@@ -142,9 +157,18 @@ def catalog_digest() -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
-def _path_samples(paths: tuple[FloatArray, ...], n: int) -> FloatArray:
-    starts = np.concatenate([p[:-1] for p in paths])
-    deltas = np.concatenate([np.diff(p, axis=0) for p in paths])
+Edges = tuple[FloatArray, FloatArray]
+_ICP_MAX_ITERATIONS = 200
+_ICP_TOLERANCE = 1e-12
+
+
+def _edges(paths: Sequence[FloatArray]) -> Edges:
+    """Return the start point and the vector of every polyline edge."""
+    return np.concatenate([p[:-1] for p in paths]), np.concatenate([np.diff(p, axis=0) for p in paths])
+
+
+def _path_samples(paths: Sequence[FloatArray], n: int) -> FloatArray:
+    starts, deltas = _edges(paths)
     lengths = np.linalg.norm(deltas, axis=1)
     positive = lengths > 0
     starts, deltas, lengths = starts[positive], deltas[positive], lengths[positive]
@@ -157,38 +181,102 @@ def _path_samples(paths: tuple[FloatArray, ...], n: int) -> FloatArray:
     return starts[indices] + deltas[indices] * fractions[:, None]
 
 
-def _polyline_rmse(xy: FloatArray, paths: tuple[FloatArray, ...]) -> float:
-    starts = np.concatenate([p[:-1] for p in paths])
-    deltas = np.concatenate([np.diff(p, axis=0) for p in paths])
-    lengths2 = np.sum(deltas**2, axis=1)
-    lengths2[lengths2 == 0] = 1
-    squared: list[FloatArray] = []
-    for block in np.array_split(xy, max(1, (len(xy) + 255) // 256)):
-        offsets = block[:, None, :] - starts[None, :, :]
-        fractions = np.clip(np.sum(offsets * deltas, axis=2) / lengths2, 0, 1)
-        residual = offsets - fractions[:, :, None] * deltas
-        squared.append(np.min(np.sum(residual**2, axis=2), axis=1))
-    return float(np.sqrt(np.mean(np.concatenate(squared))))
+def _nearest(points: FloatArray, edges: Edges) -> tuple[IntArray, FloatArray]:
+    """Return the nearest edge to each point and the clipped fraction along that edge.
+
+    The edge with the nearest midpoint bounds the distance. Only an edge whose midpoint lies
+    within that bound plus half the longest edge can be nearer, so only those edges are compared.
+    """
+    starts, deltas = edges
+    lengths = np.linalg.norm(deltas, axis=1)
+    divisors = np.where(lengths > 0, lengths**2, 1.0)
+
+    def measure(rows: IntArray, candidates: IntArray) -> tuple[FloatArray, FloatArray]:
+        offsets = points[rows] - starts[candidates]
+        fractions = np.clip(np.sum(offsets * deltas[candidates], axis=1) / divisors[candidates], 0, 1)
+        return fractions, np.sum((offsets - fractions[:, None] * deltas[candidates]) ** 2, axis=1)
+
+    tree = KDTree(starts + deltas / 2)
+    _, bound_squared = measure(np.arange(len(points)), np.asarray(tree.query(points)[1], dtype=np.int64))
+    # The 1e-9 mm margin keeps a midpoint that lies exactly on the radius inside it despite rounding.
+    groups = tree.query_ball_point(points, np.sqrt(bound_squared) + lengths.max() / 2 + 1e-9)
+    index = np.empty(len(points), dtype=np.int64)
+    fraction = np.empty(len(points))
+    for block in np.array_split(np.arange(len(points)), max(1, (len(points) + 255) // 256)):
+        rows = np.repeat(block, [len(groups[i]) for i in block])
+        candidates = np.concatenate([groups[i] for i in block]).astype(np.int64)
+        fractions, squared = measure(rows, candidates)
+        first = np.lexsort((squared, rows))[np.searchsorted(rows, block)]
+        index[block], fraction[block] = candidates[first], fractions[first]
+    return index, fraction
+
+
+def _on_edges(edges: Edges, index: IntArray, fraction: FloatArray) -> FloatArray:
+    return edges[0][index] + edges[1][index] * fraction[:, None]
+
+
+def _similarity(
+    source: FloatArray, target: FloatArray, weights: FloatArray
+) -> tuple[FloatArray, float, FloatArray]:
+    """Fit weighted least-squares rotation, uniform scale, and shift for row vectors, without reflection."""
+    source_mean, target_mean = weights @ source, weights @ target
+    a, b = source - source_mean, target - target_mean
+    u, singular, vt = np.linalg.svd(a.T @ (b * weights[:, None]))
+    signs = np.array([1.0, np.sign(np.linalg.det(u @ vt))])
+    rotation = u @ np.diag(signs) @ vt
+    scale = float(np.sum(singular * signs) / (weights @ np.sum(a**2, axis=1)))
+    return rotation, scale, target_mean - scale * source_mean @ rotation
+
+
+def _copy_rmse(drawn: tuple[FloatArray, ...], paths: tuple[FloatArray, ...]) -> float:
+    """Align the drawing to the stimulus by similarity ICP that pairs points in both directions.
+
+    Drawn points pair with their nearest stimulus edge points. Stimulus arc-length samples pair with
+    their nearest drawn edge points, so an omitted part adds error and the scale cannot collapse.
+    The start matches centroids and spreads with no rotation.
+    """
+    points = np.concatenate(drawn)
+    targets = _path_samples(paths, 256)
+    source = _path_samples(drawn, 256)
+    drawn_edges, stimulus_edges = _edges(drawn), _edges(paths)
+    weights = np.concatenate(
+        (np.full(len(points), 0.5 / len(points)), np.full(len(targets), 0.5 / len(targets)))
+    )
+    scale = float(np.sqrt(np.sum(np.var(targets, axis=0)) / np.sum(np.var(source, axis=0))))
+    rotation, shift = np.eye(2), targets.mean(axis=0) - scale * source.mean(axis=0)
+    cost = np.inf
+    for _ in range(_ICP_MAX_ITERATIONS):
+        moved = (drawn_edges[0] @ rotation * scale + shift, drawn_edges[1] @ rotation * scale)
+        stimulus_pairs = _on_edges(
+            stimulus_edges, *_nearest(points @ rotation * scale + shift, stimulus_edges)
+        )
+        source_pairs = np.concatenate((points, _on_edges(drawn_edges, *_nearest(targets, moved))))
+        target_pairs = np.concatenate((stimulus_pairs, targets))
+        residual = source_pairs @ rotation * scale + shift - target_pairs
+        previous, cost = cost, float(weights @ np.sum(residual**2, axis=1))
+        if previous - cost <= _ICP_TOLERANCE * max(cost, 1.0):
+            break
+        rotation, scale, shift = _similarity(source_pairs, target_pairs, weights)
+    return float(np.sqrt(cost))
+
+
+def _trace_rmse(xy: FloatArray, paths: tuple[FloatArray, ...]) -> float:
+    edges = _edges(paths)
+    nearest = _on_edges(edges, *_nearest(xy, edges))
+    return float(np.sqrt(np.mean(np.sum((xy - nearest) ** 2, axis=1))))
 
 
 def _spatial(ok: Accepted, segments: tuple[Segment, ...], *, copy: bool) -> Cell:
     paths = ok.trial.task.paths
     if not segments:
         return Refusal(RefusalCode.TOO_FEW_VALUES, "This trial has no accepted contact segment.")
-    xy = np.concatenate([s.xy for s in segments])
-    if copy:
-        try:
-            source = _path_samples(tuple(s.xy for s in segments), 256)
-            target = _path_samples(paths, 256)
-            a, b = source - source.mean(axis=0), target - target.mean(axis=0)
-            u, singular, vt = np.linalg.svd(a.T @ b)
-            signs = np.array([1.0, np.linalg.det(u @ vt)])
-            rotation = u @ np.diag(signs) @ vt
-            scale = float(np.sum(singular * signs) / np.sum(a**2))
-            xy = (xy - source.mean(axis=0)) @ rotation * scale + target.mean(axis=0)
-        except (ValueError, np.linalg.LinAlgError) as e:
-            return Refusal(RefusalCode.UNDEFINED, f"Cannot align this path: {e}")
-    return _polyline_rmse(xy, paths)
+    drawn = tuple(s.xy for s in segments)
+    if not copy:
+        return _trace_rmse(np.concatenate(drawn), paths)
+    try:
+        return _copy_rmse(drawn, paths)
+    except ValueError as e:
+        return Refusal(RefusalCode.UNDEFINED, f"Cannot align this path: {e}")
 
 
 def extract(ok: Accepted, settings: Preprocessing = DEFAULT_PREPROCESSING) -> dict[str, Cell]:
@@ -208,6 +296,8 @@ def extract(ok: Accepted, settings: Preprocessing = DEFAULT_PREPROCESSING) -> di
             trial.task.mode != f.mode or trial.task.id in ("clock", "sentence") or not trial.task.paths
         ):
             refusal = Refusal(RefusalCode.NOT_APPLICABLE, "This spatial feature does not apply to the task.")
+        elif f.state is not None and f.state in ok.refused_states:
+            refusal = ok.refused_states[f.state]
         elif f.millimetres and trial.device.spatial_unit != "mm":
             refusal = Refusal(RefusalCode.UNKNOWN_SCALE, "A physical position scale is required.")
         elif f.channel and trial.device.input == "directTouchAsPen":
@@ -239,8 +329,7 @@ def extract(ok: Accepted, settings: Preprocessing = DEFAULT_PREPROCESSING) -> di
         elif name == "timing.stroke_count":
             cell = float(len({s.stroke_index for s in contact}))
         elif name in ("timing.contact_s", "timing.in_air_s"):
-            state = PenState.CONTACT if name == "timing.contact_s" else PenState.IN_AIR
-            durations = [float(s.t[-1] - s.t[0]) for s in ok.segments if s.state == state]
+            durations = [float(s.t[-1] - s.t[0]) for s in ok.segments if s.state == f.state]
             cell = (
                 pool(durations, rule="sum")
                 if durations
@@ -278,13 +367,13 @@ def extract(ok: Accepted, settings: Preprocessing = DEFAULT_PREPROCESSING) -> di
         elif name.startswith("spatial."):
             cell = _spatial(ok, contact, copy=f.mode == "copy")
         elif name.startswith("spectral."):
-            values = [
-                welch_band_power(
-                    k.speed, settings.grid_hz, settings.band_hz, window_s=settings.welch_window_s
-                )
-                for k in valid
-            ]
-            cell = pool(values, rule=f.pool, min_values=f.min_values)
+            cell = welch_band_power(
+                [k.speed for k in valid],
+                settings.grid_hz,
+                settings.band_hz,
+                window_s=settings.welch_window_s,
+                min_windows=f.min_values,
+            )
         elif name.startswith("entropy."):
             series = coarse_grain([k.speed for k in valid], settings.entropy_scale)
             tolerance = (settings.entropy_r * float(np.std(np.concatenate(series)))) if series else 0.0
@@ -329,6 +418,7 @@ class Provenance:
     preprocessing: Preprocessing
     catalog_digest: str
     source_hashes: tuple[str, ...]
+    reader_profiles: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -385,8 +475,10 @@ def feature_table(
 ) -> FeatureTable:
     rows: list[FeatureRow] = []
     hashes: set[str] = set()
+    profiles: set[str] = set()
     for recording in recordings:
         hashes.update(recording.source_hashes)
+        profiles.add(recording.reader_profile)
         for trial in recording.trials:
             qc = assess(trial, policy)
             if isinstance(qc, Rejected):
@@ -405,5 +497,8 @@ def feature_table(
                 )
             )
     return FeatureTable(
-        tuple(rows), Provenance(__version__, policy, settings, catalog_digest(), tuple(sorted(hashes)))
+        tuple(rows),
+        Provenance(
+            __version__, policy, settings, catalog_digest(), tuple(sorted(hashes)), tuple(sorted(profiles))
+        ),
     )

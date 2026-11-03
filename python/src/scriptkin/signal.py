@@ -134,19 +134,37 @@ def band_power(freqs: FloatArray, psd: FloatArray, lo: float, hi: float) -> floa
 
 
 def welch_band_power(
-    values: FloatArray, grid_hz: float, band: tuple[float, float], *, window_s: float = 2.0
+    segments: Sequence[FloatArray],
+    grid_hz: float,
+    band: tuple[float, float],
+    *,
+    window_s: float = 2.0,
+    min_windows: int = 1,
 ) -> float | Refusal:
+    """Average the Welch spectra of all segments, weighted by window count, and integrate the band.
+
+    The result equals the mean periodogram of every half-overlapping window. A segment shorter
+    than one window adds no window. The window length never shrinks.
+    """
     if not np.isfinite(grid_hz) or grid_hz <= 0 or not np.isfinite(window_s) or window_s <= 0:
         raise ValueError("Welch rate and window duration must be positive and finite.")
     if not 0 <= band[0] < band[1] <= grid_hz / 2:
         raise ValueError("The band must be inside the sampled frequency range.")
+    if min_windows < 1:
+        raise ValueError("min_windows must be positive.")
     nperseg = max(2, round(grid_hz * window_s))
-    if len(values) < nperseg:
-        return Refusal(RefusalCode.TOO_FEW_VALUES, "The segment is shorter than one Welch window.")
-    if not np.isfinite(values).all():
+    step = nperseg - nperseg // 2
+    eligible = [x for x in segments if len(x) >= nperseg]
+    if not all(np.isfinite(x).all() for x in eligible):
         return Refusal(RefusalCode.NONFINITE, "The spectrum needs finite values.")
-    freqs, psd = welch(values, fs=grid_hz, nperseg=nperseg, noverlap=nperseg // 2, detrend="constant")
-    return band_power(np.asarray(freqs), np.asarray(psd), *band)
+    windows = [1 + (len(x) - nperseg) // step for x in eligible]
+    if sum(windows) < min_windows:
+        return Refusal(RefusalCode.TOO_FEW_VALUES, f"Need {min_windows} Welch windows; found {sum(windows)}.")
+    spectra = [
+        welch(x, fs=grid_hz, nperseg=nperseg, noverlap=nperseg // 2, detrend="constant") for x in eligible
+    ]
+    psd = np.average([np.asarray(p) for _, p in spectra], axis=0, weights=windows)
+    return band_power(np.asarray(spectra[0][0]), psd, *band)
 
 
 def sample_entropy_counts(segments: Sequence[FloatArray], m: int, r: float) -> tuple[int, int]:

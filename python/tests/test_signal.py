@@ -71,8 +71,8 @@ def test_kinematics_uses_segment_derivatives() -> None:
     np.testing.assert_allclose(k.acceleration, 0, atol=1e-8)
 
 
-def test_spectral_pool_requires_three_finite_values() -> None:
-    # Detects spectral pooling that accepts two finite values when min_values is three.
+def test_pool_counts_only_finite_values() -> None:
+    # Detects a pool that counts non-finite values toward min_values.
     result = pool([1.0, 2.0, np.nan, np.inf], min_values=3)
     assert isinstance(result, Refusal)
     assert result.code == "too_few_values"
@@ -111,8 +111,18 @@ def test_coarse_grain_discards_each_segment_tail() -> None:
 def test_sinusoid_band_power_is_half_squared_amplitude(amplitude: float) -> None:
     # Detects Welch scaling or band integration that gives incorrect sinusoid power.
     t = np.arange(2000, dtype=float) / 200
-    result = welch_band_power(amplitude * np.sin(2 * np.pi * 8 * t), 200, (4, 12))
+    result = welch_band_power([amplitude * np.sin(2 * np.pi * 8 * t)], 200, (4, 12))
     assert result == pytest.approx(amplitude**2 / 2, rel=0.01)
+
+
+def test_welch_weights_segment_spectra_by_window_count() -> None:
+    # Detects segment spectra averaged with equal weight, or a short segment counted as a window.
+    t = np.arange(2001, dtype=float) / 200
+    long, short = np.sin(2 * np.pi * 8 * t), 2 * np.sin(2 * np.pi * 8 * t[:601])
+    a, b = welch_band_power([long], 200, (4, 12)), welch_band_power([short], 200, (4, 12))
+    assert isinstance(a, float) and isinstance(b, float)
+    pooled = welch_band_power([long, short, np.zeros(399)], 200, (4, 12))
+    assert pooled == pytest.approx((9 * a + 2 * b) / 11, rel=1e-12)
 
 
 def test_band_power_interpolates_edges() -> None:
@@ -122,7 +132,7 @@ def test_band_power_interpolates_edges() -> None:
 
 def test_welch_refuses_a_short_segment() -> None:
     # Detects automatic Welch window shortening that changes frequency resolution.
-    result = welch_band_power(np.zeros(50), 200, (4, 12))
+    result = welch_band_power([np.zeros(50)], 200, (4, 12))
     assert isinstance(result, Refusal)
     assert result.code == "too_few_values"
 

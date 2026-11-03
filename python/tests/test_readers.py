@@ -1,11 +1,23 @@
 from __future__ import annotations
 
+import hashlib
+import json
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from scriptkin import Channel, FormatError, PenState, SvcReader, Tablet, load_parkinsonhw, read_parkinsonhw
+from scriptkin import (
+    Channel,
+    FormatError,
+    PenState,
+    SvcReader,
+    Tablet,
+    feature_table,
+    load_parkinsonhw,
+    read_parkinsonhw,
+)
 
 FIXTURES = Path(__file__).resolve().parents[2] / "contract" / "fixtures"
 SYNTHETIC_TABLET = Tablet(
@@ -65,6 +77,31 @@ def test_parkinsonhw_loader_does_not_return_class_labels(tmp_path: Path) -> None
     assert records[0].participant == records[1].participant
     assert records[0].session_id == records[1].session_id
     assert records[0].source_hashes == records[1].source_hashes
+
+
+def test_parkinsonhw_loader_orders_by_file_digest(tmp_path: Path) -> None:
+    # Detects a recording order that follows the class folders in the file paths.
+    base = (FIXTURES / "parkinsonhw" / "synthetic.txt").read_bytes()
+    first, second = sorted(
+        (base, base.replace(b"100;200", b"101;200")), key=lambda d: hashlib.sha256(d).digest()
+    )
+    for label, data in (("control", second), ("parkinson", first)):
+        (tmp_path / label).mkdir()
+        (tmp_path / label / "C_0001.txt").write_bytes(data)
+    records = load_parkinsonhw(tmp_path)
+    assert [r.source_hashes[0] for r in records] == [hashlib.sha256(d).hexdigest() for d in (first, second)]
+
+
+def test_provenance_records_the_svc_reader_profile() -> None:
+    # Detects provenance that stays the same when one file is read with a different unit conversion.
+    path = FIXTURES / "svc" / "synthetic.svc"
+    tables = [
+        feature_table([SvcReader(replace(SYNTHETIC_TABLET, lines_per_mm=n)).read(path)]) for n in (100, 40)
+    ]
+    assert tables[0].provenance.source_hashes == tables[1].provenance.source_hashes
+    assert tables[0].provenance != tables[1].provenance
+    profiles = [json.loads(p) for table in tables for p in table.provenance.reader_profiles]
+    assert [(p["reader"], p["lines_per_mm"]) for p in profiles] == [("svc", 100), ("svc", 40)]
 
 
 def test_parkinsonhw_rejects_wrong_column_count(tmp_path: Path) -> None:

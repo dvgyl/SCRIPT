@@ -90,13 +90,23 @@ class Accepted:
     trial: Trial
     segments: tuple[Segment, ...]
     report: QcReport
+    refused_states: dict[PenState, Refusal]
 
-    def __init__(self, trial: Trial, segments: tuple[Segment, ...], report: QcReport, *, _token: object):
+    def __init__(
+        self,
+        trial: Trial,
+        segments: tuple[Segment, ...],
+        report: QcReport,
+        refused_states: dict[PenState, Refusal],
+        *,
+        _token: object,
+    ):
         if _token is not _QC_TOKEN:
             raise TypeError("Use assess() to build Accepted.")
         object.__setattr__(self, "trial", trial)
         object.__setattr__(self, "segments", segments)
         object.__setattr__(self, "report", report)
+        object.__setattr__(self, "refused_states", refused_states)
 
 
 @dataclass(frozen=True)
@@ -108,18 +118,21 @@ class Rejected:
 def assess(trial: Trial, policy: QcPolicy = DEFAULT_QC) -> Accepted | Rejected:
     """Split at gaps and invalid positions. Never join strokes or boot clocks.
 
-    Bad time order, low rate, and unresolved estimates reject the trial.
+    Bad time order or low rate in a contact stroke rejects the trial. In an in-air stroke,
+    the same defects refuse only the in-air features. Unresolved estimates reject the trial.
     Other findings remain in the report. Missing channels refuse their features.
     """
     findings: list[Refusal] = []
     fatal: list[Refusal] = []
     segments: list[Segment] = []
+    refused_states: dict[PenState, Refusal] = {}
 
-    def note(code: RefusalCode, detail: str, *, reject: bool = False) -> None:
+    def note(code: RefusalCode, detail: str, *, reject: bool = False) -> Refusal:
         r = Refusal(code, detail)
         findings.append(r)
         if reject:
             fatal.append(r)
+        return r
 
     if trial.outcome not in (TrialOutcome.COMPLETED, TrialOutcome.TIME_LIMIT):
         note(RefusalCode.INCOMPLETE_TRIAL, trial.outcome, reject=True)
@@ -135,15 +148,18 @@ def assess(trial: Trial, policy: QcPolicy = DEFAULT_QC) -> Accepted | Rejected:
         if not len(s.t):
             continue
         dt = np.diff(s.t)
-        if np.any(dt == 0):
-            note(RefusalCode.DUPLICATE_TIMES, f"Stroke {si} has duplicate times.", reject=True)
-        if np.any(dt < 0):
-            note(RefusalCode.NONMONOTONIC_TIMES, f"Stroke {si} has decreasing times.", reject=True)
         positive = dt[np.isfinite(dt) & (dt > 0) & (dt <= policy.max_gap_s)]
         # If every interval is a gap, use the positive intervals to detect a low rate.
         rate_dt = positive if len(positive) else dt[np.isfinite(dt) & (dt > 0)]
-        if len(rate_dt) and 1 / float(np.median(rate_dt)) < policy.min_rate_hz:
-            note(RefusalCode.LOW_RATE, f"Stroke {si} is below min_rate_hz.", reject=True)
+        low_rate = len(rate_dt) > 0 and 1 / float(np.median(rate_dt)) < policy.min_rate_hz
+        for code, failed, detail in (
+            (RefusalCode.DUPLICATE_TIMES, bool(np.any(dt == 0)), "has duplicate times"),
+            (RefusalCode.NONMONOTONIC_TIMES, bool(np.any(dt < 0)), "has decreasing times"),
+            (RefusalCode.LOW_RATE, low_rate, "is below min_rate_hz"),
+        ):
+            if failed:
+                r = note(code, f"Stroke {si} {detail}.", reject=s.state == PenState.CONTACT)
+                refused_states.setdefault(s.state, r)
         if np.any(s.unresolved):
             note(
                 RefusalCode.UNRESOLVED_ESTIMATES,
@@ -175,4 +191,4 @@ def assess(trial: Trial, policy: QcPolicy = DEFAULT_QC) -> Accepted | Rejected:
     report = QcReport(policy, tuple(findings), len(segments))
     if fatal:
         return Rejected(tuple(fatal), report)
-    return Accepted(trial, tuple(segments), report, _token=_QC_TOKEN)
+    return Accepted(trial, tuple(segments), report, refused_states, _token=_QC_TOKEN)

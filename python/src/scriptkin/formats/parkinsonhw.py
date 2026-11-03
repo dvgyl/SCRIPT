@@ -19,7 +19,7 @@ import numpy as np
 
 from scriptkin.formats import FormatError
 from scriptkin.formats.svc import tablet_strokes
-from scriptkin.recording import Channel, Device, PenState, Recording, TaskRef, Trial
+from scriptkin.recording import Channel, Device, PenState, Recording, TaskRef, Trial, reader_profile
 
 
 def read_parkinsonhw(path: str | Path) -> Recording:
@@ -51,10 +51,12 @@ def read_parkinsonhw(path: str | Path) -> Recording:
             )
         )
     digest = hashlib.sha256(data).hexdigest()
-    return Recording(digest[:32], digest[:16], device, tuple(trials), (digest,))
+    return Recording(
+        digest[:32], digest[:16], device, tuple(trials), reader_profile("parkinsonhw"), (digest,)
+    )
 
 
 def load_parkinsonhw(root: str | Path) -> tuple[Recording, ...]:
-    """Read drawing files. Do not read labels or infer them from paths."""
-    paths = sorted(p for p in Path(root).rglob("*.txt") if p.stem.startswith(("P_", "C_", "H_", "synthetic")))
-    return tuple(read_parkinsonhw(p) for p in paths)
+    """Read drawing files in the order of their SHA-256 digests. Paths contain class folders."""
+    paths = (p for p in Path(root).rglob("*.txt") if p.stem.startswith(("P_", "C_", "H_", "synthetic")))
+    return tuple(sorted(map(read_parkinsonhw, paths), key=lambda r: r.source_hashes[0]))

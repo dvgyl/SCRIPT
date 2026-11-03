@@ -83,7 +83,7 @@ class JournalBuilder:
     _open_contacts: set[int] = field(default_factory=set)
     _next_contact: int = 1
     _contact_trial: dict[int, int] = field(default_factory=dict)
-    _pending: dict[tuple[int, int], tuple[int, int]] = field(default_factory=dict)
+    _pending: dict[tuple[int, int], tuple[int, list[int]]] = field(default_factory=dict)
     _unmatched: int = 0
     _truncated: int = 0
     _state: str = "none"
@@ -180,7 +180,7 @@ class JournalBuilder:
         if pending is not None:
             expect, update = pending
             line["pending"] = {"expect": expect, "update": update}
-            self._pending[(contact, update)] = (trial, expect)
+            self._pending.setdefault((contact, update), (trial, []))[1].append(expect)
         self._trials[trial].samples += 1
 
     def correction(
@@ -191,8 +191,8 @@ class JournalBuilder:
         if key is None or key not in self._pending:
             self._unmatched += 1
             return
-        trial, _ = self._pending[key]
-        self._pending[key] = (trial, expect)
+        trial, remaining = self._pending[key]
+        remaining[:] = [expect] * len(remaining)
         self._trials[trial].corrections += 1
 
     def lift(self, t: float, contact: int, cancelled: bool = False) -> None:
@@ -260,8 +260,7 @@ class JournalBuilder:
             counts[line["kind"]] += 1
         unresolved = [0] * len(self._trials)
         for trial, remaining in self._pending.values():
-            if remaining:
-                unresolved[trial] += 1
+            unresolved[trial] += sum(1 for bits in remaining if bits)
         return {
             "sessionID": self.session_id,
             "state": self._state,

@@ -12,7 +12,7 @@ https://github.com/BDALab/handwriting-sample#svc-file.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from itertools import pairwise
 from pathlib import Path
 from typing import Literal
@@ -20,7 +20,17 @@ from typing import Literal
 import numpy as np
 
 from scriptkin.formats import FormatError
-from scriptkin.recording import Channel, Device, FloatArray, PenState, Recording, Stroke, TaskRef, Trial
+from scriptkin.recording import (
+    Channel,
+    Device,
+    FloatArray,
+    PenState,
+    Recording,
+    Stroke,
+    TaskRef,
+    Trial,
+    reader_profile,
+)
 
 
 @dataclass(frozen=True)
@@ -97,4 +107,5 @@ class SvcReader:
             ended=float(t[-1]),
         )
         digest = hashlib.sha256(data).hexdigest()
-        return Recording(digest[:32], digest[:16], device, (trial,), (digest,))
+        profile = reader_profile("svc", **asdict(p))
+        return Recording(digest[:32], digest[:16], device, (trial,), profile, (digest,))

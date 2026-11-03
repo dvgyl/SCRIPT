@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
 from numpy.typing import NDArray
@@ -87,11 +88,17 @@ class Trial:
     marks: tuple[str, ...] = ()
 
 
+def reader_profile(reader: str, **conversions: Any) -> str:
+    """Describe a reader and its unit conversions as canonical JSON for provenance."""
+    return json.dumps({"reader": reader, **conversions}, sort_keys=True, separators=(",", ":"))
+
+
 @dataclass(frozen=True)
 class Recording:
     session_id: str
     participant: str
     device: Device
     trials: tuple[Trial, ...]
+    reader_profile: str
     source_hashes: tuple[str, ...] = ()
     unmatched_corrections: int = 0

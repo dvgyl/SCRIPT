@@ -10,8 +10,8 @@ import numpy as np
 import pytest
 from jsonschema import Draft202012Validator
 
-from scriptkin import Channel
-from scriptkin.contract import encode_line, manifest_bytes
+from scriptkin import Channel, PenState
+from scriptkin.contract import FORCE, JournalBuilder, encode_line, manifest_bytes
 from scriptkin.formats.journal import JournalError, fold, read_journal, summarize
 
 CONTRACT = Path(__file__).resolve().parents[2] / "contract"
@@ -29,20 +29,34 @@ def write_export(folder: Path, rows: list[dict[str, Any]]) -> None:
     (folder / "manifest.json").write_bytes(manifest_bytes(rows[0].get("sessionID", "invalid"), data))
 
 
-@pytest.mark.parametrize("path", sorted((FIXTURES / "journal").glob("*.jsonl")), ids=lambda p: p.stem)
+@pytest.mark.parametrize(
+    "path",
+    sorted(p for p in (FIXTURES / "journal").glob("*.jsonl") if not p.name.startswith("._")),
+    ids=lambda p: p.stem,
+)
 def test_fold_matches_independent_builder(path: Path) -> None:
-    # Detects a Python fold that differs from the shared builder summary.
-    assert summarize(path.read_bytes().splitlines(keepends=True)) == json.loads(
-        path.with_suffix(".fold.json").read_bytes()
-    )
-    recording = fold(path.read_bytes().splitlines(keepends=True))
-    assert [t.outcome.value for t in recording.trials] == [
-        t["outcome"] for t in summarize(lines(path.stem))["trials"]
+    # Detects a Python summary or Recording that differs from the builder's .fold.json summary.
+    raw = path.read_bytes().splitlines(keepends=True)
+    expected = json.loads(path.with_suffix(".fold.json").read_bytes())
+    assert summarize(raw) == expected
+    folded = []
+    for trial in fold(raw).trials:
+        contacts = [s for s in trial.strokes if s.state == PenState.CONTACT]
+        folded.append(
+            {
+                "outcome": trial.outcome.value,
+                "contacts": len(contacts),
+                "samples": sum(len(s.t) for s in contacts),
+                "unresolved": sum(int(np.count_nonzero(s.unresolved)) for s in contacts),
+            }
+        )
+    assert folded == [
+        {k: t[k] for k in ("outcome", "contacts", "samples", "unresolved")} for t in expected["trials"]
     ]
 
 
 def test_export_reader_checks_and_converts() -> None:
-    # Detects a reader that omits origin translation, y inversion, or late force correction.
+    # Detects a reader that omits origin translation, y inversion, path scale, or late force correction.
     recording = read_journal(FIXTURES / "export" / "P0001_3f2a9c1e")
     trial = recording.trials[0]
     first = trial.strokes[0]
@@ -50,8 +64,29 @@ def test_export_reader_checks_and_converts() -> None:
     np.testing.assert_allclose(first.xy[0], [(300 - 147.5) * scale, -(400 - 200) * scale])
     assert first.channels[Channel.FORCE][0] == 0.42
     assert not first.unresolved.any()
-    assert trial.task.paths[0][0, 1] < 0
+    # The spiral starts 8 mm right of the centre of its 104 mm frame. The frame origin is its top-left.
+    assert trial.task.paths[0][0].tolist() == [60.0, -52.0]
     assert len(recording.source_hashes[0]) == 64
+
+
+@pytest.mark.parametrize("corrected", [True, False])
+def test_correction_resolves_every_sample_with_its_pending_key(corrected: bool) -> None:
+    # Detects a correction that resolves only the last sample with a repeated pending key.
+    b = JournalBuilder("3F2A9C1E-0000-4000-8000-0000000000AA", "P0002").opened()
+    b.trial("spiral-trace", 1, 1010.0)
+    c = b.contact(1011.0)
+    for i in range(2):
+        b.sample(c, 1011.0 + i / 240, 300.0 + i, 400.0, est=FORCE, pending=(FORCE, 5))
+    b.sample(c, 1011.0 + 2 / 240, 302.0, 400.0)
+    if corrected:
+        b.correction(c, 5, 1011.05, 0, force=0.5)
+    b.lift(1011.1, c)
+    b.end(1012.0, "participantDone")
+    b.close(1013.0)
+    assert summarize(b.lines) == b.summary()
+    stroke = fold(b.lines).trials[0].strokes[0]
+    assert stroke.unresolved.tolist() == ([0, 0, 0] if corrected else [FORCE, FORCE, 0])
+    assert stroke.channels[Channel.FORCE].tolist() == ([0.5, 0.5, 0.31] if corrected else [0.31] * 3)
 
 
 @pytest.mark.parametrize("payload", [b'{"kind":', b"[]\n", b'{"seq":0,"kind":"alien"}\n', b"{}", b"{}\r\n"])
