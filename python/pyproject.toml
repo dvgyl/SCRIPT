@@ -29,6 +29,7 @@ packages = ["src/scriptkin"]
 
 [tool.ruff]
 line-length = 110
+extend-exclude = ["**/._*"]
 target-version = "py312"
 
 [tool.ruff.lint]
@@ -36,6 +37,7 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
 
 [tool.pyright]
 include = ["src", "tests"]
+exclude = ["**/._*"]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
 reportMissingTypeStubs = false

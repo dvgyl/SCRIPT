@@ -4,7 +4,8 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")" && pwd)
-BUILD="$ROOT/build"
+BUILD=${SCRIPT_BUILD:-"$HOME/Library/Caches/SCRIPT/$(basename "$ROOT")-$(printf %s "$ROOT" | shasum | cut -c1-8)"}
+mkdir -p "$BUILD"
 DESTINATION=${SCRIPT_DESTINATION:-'platform=iOS Simulator,name=iPad Pro 11-inch (M5),OS=latest'}
 export UV_PROJECT_ENVIRONMENT="$BUILD/venv"
 UV=(uv run --project "$ROOT/python" --frozen --quiet)

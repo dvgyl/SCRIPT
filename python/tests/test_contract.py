@@ -23,7 +23,11 @@ def test_checked_in_contract_matches_the_generator() -> None:
     assert contract.verify(CONTRACT) == []
 
 
-@pytest.mark.parametrize("path", sorted((CONTRACT / "fixtures").rglob("*.jsonl")), ids=lambda p: p.stem)
+@pytest.mark.parametrize(
+    "path",
+    sorted(p for p in (CONTRACT / "fixtures").rglob("*.jsonl") if not p.name.startswith("._")),
+    ids=lambda p: p.stem,
+)
 def test_every_complete_fixture_line_matches_the_schema(path: Path) -> None:
     # Detects a fixture line kind or field that the schema does not allow.
     data = path.read_bytes()

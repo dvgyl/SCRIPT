@@ -561,6 +561,6 @@ def verify(contract_dir: Path) -> list[str]:
     fixtures = contract_dir / "fixtures"
     for path in sorted(fixtures.rglob("*")) if fixtures.exists() else []:
         rel = path.relative_to(contract_dir).as_posix()
-        if path.is_file() and rel not in expected:
+        if path.is_file() and not path.name.startswith("._") and rel not in expected:
             stale.append(rel)
     return stale
