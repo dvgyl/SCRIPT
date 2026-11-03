@@ -392,7 +392,7 @@ The app imports a configuration through Files. It checks the schema and the rule
 | `phq9` | 9 | public domain (PHQ manual) | 13-17 (Richardson 2010), 18+ | item 9 |
 | `phq8` | 8 | public domain (PHQ manual) | 18+; adolescent validation not found | none |
 | `gad7` | 7 | public domain (PHQ manual) | 12-17 (exploratory), 15-24, 18+ | none |
-| `dass21` | 21 | public domain; not in an app open to the public | 14+ | none |
+| `dass21` | 21 | public domain; enrolled participants only, results to the researcher only, no modification | 14+ | none |
 
 The modified-for-teens PHQ-A form needs written permission from its owners and is not included. A study can add an instrument only with a licence reference in its configuration.
 

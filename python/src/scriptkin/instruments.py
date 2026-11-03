@@ -90,8 +90,8 @@ DASS_ITEMS = [
 DASS_OPTIONS = [
     {"value": 0, "label": "Did not apply to me at all"},
     {"value": 1, "label": "Applied to me to some degree, or some of the time"},
-    {"value": 2, "label": "Applied to me to a considerable degree or a good part of time"},
-    {"value": 3, "label": "Applied to me very much or most of the time"},
+    {"value": 2, "label": "Applied to me to a considerable degree, or a good part of time"},
+    {"value": 3, "label": "Applied to me very much, or most of the time"},
 ]
 
 
@@ -180,18 +180,22 @@ def instruments() -> list[dict[str, Any]]:
             "licence": {
                 "status": "publicDomain",
                 "source": DASS_SOURCE,
-                "condition": "Not in an app open to members of the public; enrolled participants only.",
+                "condition": "Only for a defined group such as enrolled research participants, with results "
+                "going to the researcher and never to the respondent. Not on a website or app open to the "
+                "public. The scales must not be modified.",
             },
-            "textStatus": "unverified",
+            "textStatus": "verified",
             "ages": {"min": 14, "max": None, "note": "Developers: suitable down to 14 years."},
             "locale": "en",
-            "stem": "Please read each statement and choose a number 0, 1, 2 or 3 which indicates how much "
-            "the statement applied to you over the past week.",
+            "stem": "Please read each statement and circle a number 0, 1, 2 or 3 which indicates how much "
+            "the statement applied to you over the past week. There are no right or wrong answers. Do not "
+            "spend too much time on any statement.",
             "items": dass_items,
             "scoring": {
                 "kind": "subscales",
                 "multiplier": 2,
                 "maxMissingPerScale": 1,
+                "missing": "proRate",
                 "scales": {s: [i["id"] for i in dass_items if i["scale"] == s] for s in ("d", "a", "s")},
             },
         },

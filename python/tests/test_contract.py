@@ -137,8 +137,13 @@ def test_self_administered_safety_item_needs_remote_review() -> None:
     assert any("exportEveryHours" in p for p in studyconfig.validate(config))
 
 
-def test_unverified_or_out_of_range_instruments_are_refused() -> None:
+def test_unverified_or_out_of_range_instruments_are_refused(monkeypatch: pytest.MonkeyPatch) -> None:
     # Detects a configuration that administers unverified text or an instrument outside its validated ages.
+    table = instruments.instruments()
+    for spec in table:
+        if spec["id"] == "dass21":
+            spec["textStatus"] = "unverified"
+    monkeypatch.setattr(instruments, "instruments", lambda: table)
     config = _demo()
     config["questionnaires"].append(
         {
