@@ -164,7 +164,7 @@ def qc_report(store: str | Path, *, private_key: bytes | None = None) -> dict[st
         "sessions": len(sessions),
         "sessionsBy": {
             "site": _count(h["study"]["site"] for h in participant_heads),
-            "deviceAsset": _count(h["device"]["asset"] for h in heads),
+            "deviceAsset": _count(s.device[0] for s in sessions),
             "configSHA256": _count(h["study"]["configSHA256"] for h in participant_heads),
             "appVersion": _count(h["app"]["version"] for h in heads),
             "administration": _count(h["administration"] for h in participant_heads),
