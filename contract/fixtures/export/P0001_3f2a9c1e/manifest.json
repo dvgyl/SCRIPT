@@ -2,6 +2,7 @@
  "format": "script.journal",
  "version": "1.0",
  "sessionID": "3F2A9C1E-0000-4000-8000-000000000001",
+ "demo": true,
  "journal": {
   "bytes": 17587,
   "lines": 20,

@@ -407,7 +407,8 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "pattern": "^[0-9a-f]{64}$"
         }
       }
     },
@@ -421,14 +422,19 @@
           "additionalProperties": false,
           "required": [
             "salt",
-            "sha256"
+            "iterations",
+            "pbkdf2Sha256"
           ],
           "properties": {
             "salt": {
               "type": "string",
-              "minLength": 16
+              "pattern": "^[A-Za-z0-9+/]{22,}={0,2}$"
             },
-            "sha256": {
+            "iterations": {
+              "type": "integer",
+              "minimum": 600000
+            },
+            "pbkdf2Sha256": {
               "type": "string",
               "pattern": "^[0-9a-f]{64}$"
             }

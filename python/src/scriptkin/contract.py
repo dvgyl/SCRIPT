@@ -796,6 +796,7 @@ def manifest_bytes(session_id: str, journal: bytes) -> bytes:
         "format": "script.journal",
         "version": FORMAT_VERSION,
         "sessionID": session_id,
+        "demo": True,
         "journal": {
             "bytes": len(journal),
             "lines": journal.count(b"\n"),
