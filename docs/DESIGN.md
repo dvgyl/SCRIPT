@@ -292,15 +292,14 @@ SCRIPT/
     ScriptApp.xcodeproj  ScriptApp/  ScriptAppUITests/
   python/
     pyproject.toml  uv.lock  src/scriptkin/  tests/
-  build/                      ignored by Git
 ```
 
-`./check` stops at the first failure. It runs the contract verification, the Python lint, type check, and tests, the `ScriptCore` Swift tests on the Mac, and the app build and tests on the "iPad Pro 11-inch (M5)" simulator. All build output goes to `build/`.
+`./check` stops at the first failure. It runs the contract verification, the Python lint, type check, and tests, the `ScriptCore` Swift tests on the Mac, and the app build and tests on the "iPad Pro 11-inch (M5)" simulator. Build output goes to `~/Library/Caches/SCRIPT/<checkout>-<hash>/`, outside the repository, so that the repository can sit on an exFAT drive.
 
 The fixtures tie the two languages in three directions:
 
 1. **Python to both.** `scriptkin contract regenerate` writes the journal fixtures and their `.fold.json` summaries. The generator writes each summary from what it built, not from a reader. Swift and Python both fold each fixture and compare with `.fold.json`.
-2. **Swift to Python.** A Swift test drives `decide` and `InkRecorder`, writes through `JournalWriter`, and publishes through `Storage` into `build/contract-out/`. pytest reads that export with `read_journal` and compares its summary with the Swift summary.
+2. **Swift to Python.** A Swift test drives `decide` and `InkRecorder`, writes through `JournalWriter`, and publishes through `Storage` into `$SCRIPT_CONTRACT_OUT`. pytest reads that export with `read_journal` and compares its summary with the Swift summary.
 3. **Schema to both.** pytest validates each fixture line and each Swift output line against `journal.schema.json`.
 
 Each test names the defect that it detects.

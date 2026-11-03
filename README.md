@@ -26,7 +26,7 @@ This runs the contract check, the Python lint, type check, and tests, the Swift 
 ./check python
 ```
 
-The sections are `contract`, `python`, `core`, and `app`. All build output goes to `build/`.
+The sections are `contract`, `python`, `core`, and `app`. Build output goes to `~/Library/Caches/SCRIPT/`, outside the repository, because the repository can sit on an exFAT drive.
 
 ## Find your way
 

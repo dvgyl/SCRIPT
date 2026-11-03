@@ -5,7 +5,8 @@ Read `docs/DESIGN.md` before you change code. The design is the contract.
 ## Check your work
 
 - Run `./check` before you report a change as done. Run one section with `./check python`, `./check core`, `./check contract`, or `./check app`.
-- The Python environment is `build/venv` at the repository root. From the root, use `UV_PROJECT_ENVIRONMENT="$PWD/build/venv" uv run --project python ...`, or call `build/venv/bin/pytest` directly.
+- Build output, the Python environment, and test exports live outside the repository, in `~/Library/Caches/SCRIPT/<checkout>-<hash>/`. `./check` prints nothing about it and creates it on demand. Set `SCRIPT_BUILD` to use another folder.
+- The repository may sit on an exFAT drive. macOS then writes a `._` file beside each file. Every tool must skip names that start with `._`.
 - Write each test to detect one named defect. State the defect in the first comment line of the test. Do not test source spelling.
 
 ## Change the contract
