@@ -642,6 +642,7 @@ def _context(head: Line) -> SessionContext:
         device_asset=head["device"]["asset"],
         surface=Surface(head["surface"]["protector"], head["surface"]["nib"]),
         scale=_scale(head["scale"]),
+        opened_at=head["openedAt"],
         qualification=QualificationRef(qualification["sessionID"], qualification["at"])
         if qualification
         else None,

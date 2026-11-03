@@ -7,7 +7,10 @@ scoring rule, such as `difficulty`, never enter a score. Safety flags are counte
 
 from __future__ import annotations
 
+import csv
+from collections.abc import Iterable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from scriptkin import instruments
@@ -120,3 +123,84 @@ def labels(recording: Recording) -> tuple[Label, ...]:
 def safety_flag_count(recording: Recording) -> int:
     """The number of safety flags in the session, for audit. It is never a label."""
     return sum(len(block.flagged_items) for block in recording.questionnaires)
+
+
+_CSV_COLUMNS = (
+    "participant",
+    "session",
+    "instrument",
+    "version",
+    "locale",
+    "administration",
+    "block",
+    "block_time",
+    "boot",
+    "outcome",
+    "scale",
+    "score",
+    "refusal",
+    "detail",
+)
+
+
+def write_labels_csv(labels: Iterable[Label], path: str | Path) -> None:
+    """Write one row per label. A refused score has an empty `score` and a refusal code."""
+    with Path(path).open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(_CSV_COLUMNS)
+        for label in labels:
+            score = label.score
+            writer.writerow(
+                (
+                    label.participant,
+                    label.session,
+                    label.instrument,
+                    label.version,
+                    label.locale,
+                    label.administration,
+                    label.block,
+                    label.block_time,
+                    label.boot,
+                    label.outcome,
+                    label.scale,
+                    "" if isinstance(score, Refusal) else score,
+                    score.code if isinstance(score, Refusal) else "",
+                    score.detail if isinstance(score, Refusal) else "",
+                )
+            )
+
+
+def read_labels_csv(path: str | Path) -> tuple[Label, ...]:
+    """Read labels that `write_labels_csv` wrote. Invalid input raises ValueError."""
+    source = Path(path)
+    result: list[Label] = []
+    with source.open(encoding="utf-8", newline="") as stream:
+        reader = csv.DictReader(stream)
+        if tuple(reader.fieldnames or ()) != _CSV_COLUMNS:
+            raise ValueError(f"{source.name} does not have the label columns.")
+        for line, row in enumerate(reader, start=2):
+            try:
+                score: float | Refusal = (
+                    Refusal(RefusalCode(row["refusal"]), row["detail"])
+                    if row["refusal"]
+                    else float(row["score"])
+                )
+                result.append(
+                    Label(
+                        row["participant"],
+                        row["session"],
+                        row["instrument"],
+                        row["version"],
+                        row["locale"],
+                        row["administration"],
+                        int(row["block"]),
+                        float(row["block_time"]),
+                        row["boot"],
+                        BlockOutcome(row["outcome"]),
+                        row["scale"],
+                        score,
+                    )
+                )
+            except ValueError as e:
+                raise ValueError(f"{source.name}, line {line}: {e}") from e
+    return tuple(result)

@@ -8,7 +8,7 @@ import json
 from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
 from scipy.spatial import KDTree
@@ -420,19 +420,50 @@ def extract(ok: Accepted, settings: Preprocessing = DEFAULT_PREPROCESSING) -> di
     return result
 
 
+_CSV_COLUMNS = (
+    "participant",
+    "session",
+    "site",
+    "administration",
+    "age_band",
+    "visit",
+    "opened_at",
+    "device",
+    "task",
+    "trial",
+    "attempt",
+    "hand",
+    "accommodations",
+    "qc",
+    "feature",
+    "value",
+    "refusal",
+    "detail",
+)
+
+
 @dataclass(frozen=True)
 class FeatureRow:
-    """One trial. `administration`, `hand`, and `accommodations` let an analysis stratify."""
+    """One trial with the session context that an analysis stratifies, holds out, or orders by.
+
+    `qc` holds the codes that rejected the trial and is empty for an accepted trial. A source without
+    session context gives "unknown" text and None for `visit` and `opened_at`.
+    """
 
     participant: str
     session: str
+    site: str
     administration: str
+    age_band: str
+    visit: int | None
+    opened_at: str | None
     device: str
     task: str
     trial: int
     attempt: int
     hand: str
     accommodations: tuple[str, ...]
+    qc: tuple[RefusalCode, ...]
     cells: dict[str, Cell]
 
 
@@ -446,6 +477,10 @@ class Provenance:
     reader_profiles: tuple[str, ...]
 
 
+def _provenance_path(path: Path) -> Path:
+    return path.with_suffix(path.suffix + ".provenance.json")
+
+
 @dataclass(frozen=True)
 class FeatureTable:
     rows: tuple[FeatureRow, ...]
@@ -456,23 +491,7 @@ class FeatureTable:
         target = Path(path)
         with target.open("w", encoding="utf-8", newline="") as stream:
             writer = csv.writer(stream)
-            writer.writerow(
-                (
-                    "participant",
-                    "session",
-                    "administration",
-                    "device",
-                    "task",
-                    "trial",
-                    "attempt",
-                    "hand",
-                    "accommodations",
-                    "feature",
-                    "value",
-                    "refusal",
-                    "detail",
-                )
-            )
+            writer.writerow(_CSV_COLUMNS)
             for row in self.rows:
                 for name, cell in row.cells.items():
                     refused = isinstance(cell, Refusal)
@@ -480,22 +499,85 @@ class FeatureTable:
                         (
                             row.participant,
                             row.session,
+                            row.site,
                             row.administration,
+                            row.age_band,
+                            "" if row.visit is None else row.visit,
+                            row.opened_at or "",
                             row.device,
                             row.task,
                             row.trial,
                             row.attempt,
                             row.hand,
                             ";".join(row.accommodations),
+                            ";".join(row.qc),
                             name,
                             "" if refused else cell,
                             cell.code if refused else "",
                             cell.detail if refused else "",
                         )
                     )
-        target.with_suffix(target.suffix + ".provenance.json").write_text(
+        _provenance_path(target).write_text(
             json.dumps(asdict(self.provenance), indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
+
+
+def _split(text: str) -> tuple[str, ...]:
+    return tuple(text.split(";")) if text else ()
+
+
+def read_feature_table(path: str | Path) -> FeatureTable:
+    """Read a table and provenance file that `FeatureTable.to_csv` wrote. Invalid input raises ValueError."""
+    source = Path(path)
+    try:
+        meta = json.loads(_provenance_path(source).read_text(encoding="utf-8"))
+        settings: dict[str, Any] = dict(meta["preprocessing"])
+        settings["band_hz"] = tuple(settings["band_hz"])
+        provenance = Provenance(
+            meta["library_version"],
+            QcPolicy(**meta["qc_policy"]),
+            Preprocessing(**settings),
+            meta["catalog_digest"],
+            tuple(meta["source_hashes"]),
+            tuple(meta["reader_profiles"]),
+        )
+    except (OSError, KeyError, TypeError, ValueError) as e:
+        raise ValueError(f"Invalid or absent provenance for {source.name}: {e}") from e
+    rows: dict[tuple[str, int, int, str], FeatureRow] = {}
+    with source.open(encoding="utf-8", newline="") as stream:
+        reader = csv.DictReader(stream)
+        if tuple(reader.fieldnames or ()) != _CSV_COLUMNS:
+            raise ValueError(f"{source.name} does not have the feature table columns.")
+        for line, record in enumerate(reader, start=2):
+            try:
+                key = (record["session"], int(record["trial"]), int(record["attempt"]), record["task"])
+                cell: Cell = (
+                    Refusal(RefusalCode(record["refusal"]), record["detail"])
+                    if record["refusal"]
+                    else float(record["value"])
+                )
+                if key not in rows:
+                    rows[key] = FeatureRow(
+                        record["participant"],
+                        record["session"],
+                        record["site"],
+                        record["administration"],
+                        record["age_band"],
+                        int(record["visit"]) if record["visit"] else None,
+                        record["opened_at"] or None,
+                        record["device"],
+                        record["task"],
+                        key[1],
+                        key[2],
+                        record["hand"],
+                        _split(record["accommodations"]),
+                        tuple(RefusalCode(code) for code in _split(record["qc"])),
+                        {},
+                    )
+                rows[key].cells[record["feature"]] = cell
+            except ValueError as e:
+                raise ValueError(f"{source.name}, line {line}: {e}") from e
+    return FeatureTable(tuple(rows.values()), provenance)
 
 
 def feature_table(
@@ -506,7 +588,7 @@ def feature_table(
 ) -> FeatureTable:
     """One row per measured trial. Practice trials and qualification sessions never enter the table.
 
-    `administration` is "unknown" and `hand` is "unknown" when the source format does not record them.
+    Session context is "unknown" or None when the source format does not record it.
     """
     rows: list[FeatureRow] = []
     hashes: set[str] = set()
@@ -529,13 +611,18 @@ def feature_table(
                 FeatureRow(
                     recording.participant,
                     recording.session_id,
+                    session.study.site if session else "unknown",
                     session.administration if session else "unknown",
+                    session.age_band if session else "unknown",
+                    session.visit.number if session else None,
+                    session.opened_at if session else None,
                     trial.device.model,
                     trial.task.id,
                     trial.index,
                     trial.attempt,
                     trial.context.hand if trial.context else "unknown",
                     trial.context.accommodations if trial.context else (),
+                    tuple(r.code for r in qc.refusals) if isinstance(qc, Rejected) else (),
                     cells,
                 )
             )
