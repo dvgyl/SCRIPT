@@ -15,6 +15,8 @@ import re
 from collections.abc import Callable, Sequence
 from typing import Any
 
+from scriptkin import bench
+
 BATTERY_ID = "script-v1"
 BATTERY_VERSION = "1.1.0"
 
@@ -162,14 +164,9 @@ def qualification_line() -> dict[str, Any]:
 
 
 QUALIFICATION_TASKS = ("qual-reference", "qual-hold", "qual-line")
-# Each bench task: its base task, the name of the figure in the operator instruction, and the scale.
-_BENCH_TASKS: dict[str, tuple[str, str, float]] = {
-    "bench-loops-l": ("loops", "loops", 1.0),
-    "bench-loops-s": ("loops", "loops", 0.5),
-    "bench-spiral-l": ("spiral-trace", "spiral", 1.0),
-    "bench-spiral-s": ("spiral-trace", "spiral", 0.5),
-}
-BENCH_TASKS = tuple(_BENCH_TASKS)
+# The figures that a bench task can name (`scriptkin.bench.TASKS`). A new figure is one entry here.
+FIGURES: dict[str, Callable[[], dict[str, Any]]] = {"loops": loops, "spiral": spiral}
+BENCH_TASKS = tuple(t.id for t in bench.TASKS)
 
 
 def _scaled(stimulus: dict[str, Any], scale: float) -> dict[str, Any]:
@@ -185,15 +182,13 @@ def _scaled(stimulus: dict[str, Any], scale: float) -> dict[str, Any]:
     )
 
 
-def _bench_task(task_id: str, tasks: Sequence[dict[str, Any]]) -> dict[str, Any]:
-    base_id, name, scale = _BENCH_TASKS[task_id]
-    base = next(t for t in tasks if t["id"] == base_id)
+def _bench_task(spec: bench.BenchTask) -> dict[str, Any]:
     return _task(
-        task_id,
-        base["mode"],
-        f"Bench: the {name} at scale {scale}.",
-        _scaled(base["stimulus"], scale),
-        base["completion"]["maxSeconds"],
+        spec.id,
+        spec.mode,
+        f"Bench: the {spec.name} at scale {spec.scale}.",
+        _scaled(FIGURES[spec.figure](), spec.scale),
+        spec.max_seconds,
     )
 
 
@@ -275,7 +270,7 @@ def battery() -> dict[str, Any]:
             "qual-line", "trace", "Operator: draw along the line at an even speed.", qualification_line(), 60
         ),
     ]
-    tasks += [_bench_task(task_id, tasks) for task_id in BENCH_TASKS]
+    tasks += [_bench_task(spec) for spec in bench.TASKS]
     return {"id": BATTERY_ID, "version": BATTERY_VERSION, "tasks": tasks}
 
 

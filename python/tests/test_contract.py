@@ -204,7 +204,7 @@ def test_bench_programs_match_the_generator_and_the_battery() -> None:
     assert programs == json.loads(bench.programs_json())
     assert programs["protocol"] == {"version": bench.PROTOCOL_VERSION, "sha256": bench.PROTOCOL_SHA256}
     table = {p["id"]: p for p in programs["programs"]}
-    assert list(table) == [p.id for p in bench.BENCH_PROGRAMS] and len(table) == 11
+    assert list(table) == [p.id for p in bench.PROGRAMS] and len(table) == 11
     assert {p["task"] for p in table.values()} == set(battery.BENCH_TASKS)
     digests = {p["trajectorySHA256"] for p in table.values()}
     assert len(digests) == 11 and all(re.fullmatch(r"[0-9a-f]{64}", d) for d in digests)
