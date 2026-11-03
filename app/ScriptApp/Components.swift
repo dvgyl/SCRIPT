@@ -56,6 +56,17 @@ extension View {
             self
         }
     }
+
+    /// Ends the open trial with `timeLimit` at its deadline, unless the trial ended before.
+    func timeLimit(of trial: TrialIndex?, at deadline: Double?, store: SessionStore) -> some View {
+        task(id: trial) {
+            guard let deadline, let trial else { return }
+            let remaining = deadline - Clock.uptime
+            if remaining > 0 { try? await Task.sleep(for: .seconds(remaining)) }
+            guard !Task.isCancelled, store.openTrial == trial else { return }
+            store.timeLimitReached()
+        }
+    }
 }
 
 /// The visible operator control on participant screens. It opens after a press-and-hold of 2 seconds and then the
@@ -218,6 +229,7 @@ extension Purpose {
         switch self {
         case .study: "Study"
         case .qualification: "Qualification"
+        case .bench: "Bench"
         }
     }
 }

@@ -16,6 +16,7 @@
 		BE6000000000000000000003 /* demo.json in Resources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000002 /* demo.json */; };
 		BE6000000000000000000004 /* instruments.json in Resources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000003 /* instruments.json */; };
 		BE6000000000000000000005 /* bench_programs.json in Resources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000004 /* bench_programs.json */; };
+		C20000000000000000000004 /* bench_programs.json in Resources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000004 /* bench_programs.json */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -315,6 +316,7 @@
 				C20000000000000000000001 /* battery.json in Resources */,
 				C20000000000000000000002 /* demo.json in Resources */,
 				C20000000000000000000003 /* instruments.json in Resources */,
+				C20000000000000000000004 /* bench_programs.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

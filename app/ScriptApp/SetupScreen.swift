@@ -14,6 +14,9 @@ struct SetupDraft {
     var visitNumber = 1
     var attestor = UserDefaults.standard.string(forKey: "lastAttestor") ?? ""
     var documents: Set<DocumentRef> = []
+    var mounting: MountingCode = "M1"
+    var motionID = UserDefaults.standard.string(forKey: "lastMotionID") ?? "nextdraw-8511"
+    var motionVersion = UserDefaults.standard.string(forKey: "lastMotionVersion") ?? ""
     var asset = UserDefaults.standard.string(forKey: "lastAsset") ?? ""
     var protector: Protector = .none
     var nib: Nib = .new
@@ -21,7 +24,7 @@ struct SetupDraft {
     var measured: MillimetreScale?
 
     enum Problem: Hashable {
-        case participant, attestor, asset, visit, documents, scale
+        case participant, attestor, motion, asset, visit, documents, scale
     }
 
     init(configuration: StudyConfiguration, input: InputKind) {
@@ -36,6 +39,12 @@ struct SetupDraft {
         configuration.consentModel[ageBand.rawValue]
     }
 
+    /// The motion system of a bench session, or nil while its identifier or its version is empty.
+    var motion: DocumentRef? {
+        DocumentRef(id: motionID.trimmingCharacters(in: .whitespaces),
+                    version: motionVersion.trimmingCharacters(in: .whitespaces))
+    }
+
     func problems(purpose: Purpose, configuration: StudyConfiguration, scale: MillimetreScale?) -> Set<Problem> {
         var problems = Set<Problem>()
         if purpose == .study {
@@ -45,19 +54,47 @@ struct SetupDraft {
                 problems.insert(.documents)
             }
         }
-        if Code(attestor) == nil { problems.insert(.attestor) }
+        if purpose == .bench {
+            if motion == nil { problems.insert(.motion) }
+        } else if Code(attestor) == nil {
+            problems.insert(.attestor)
+        }
         if Code(asset) == nil { problems.insert(.asset) }
         if scale == nil { problems.insert(.scale) }
         return problems
     }
 
-    /// Line 0 of a new session, or nil while a field is missing. A qualification session has no participant: it
-    /// records the code `QUAL`, an adult attestation by the operator, and no consent document.
-    func session(purpose: Purpose, configuration: StudyConfiguration, device: DeviceFacts, battery: Battery,
-                 scale: MillimetreScale?, qualification: QualificationRef?) -> SessionOpened? {
+    /// Line 0 of a new session, or nil while a field is missing. The header names the last qualification of this
+    /// iPad and Pencil in `qualifications`.
+    func session(purpose: Purpose, configuration: StudyConfiguration, device: DeviceFacts, contract: BundledContract,
+                 scale: MillimetreScale?, qualifications: QualificationRegistry) -> SessionOpened? {
+        let now = Clock.now
         guard problems(purpose: purpose, configuration: configuration, scale: scale).isEmpty, let scale,
-              let attestor = Code(attestor), let asset = Code(asset),
-              let site = Code(site) ?? configuration.sites.first,
+              let asset = Code(asset),
+              let subject = subject(purpose: purpose, configuration: configuration, programs: contract.benchPrograms,
+                                    at: now)
+        else { return nil }
+        return SessionOpened(
+            purpose: purpose, sessionID: SessionID(), openedAt: now, openedUptime: Clock.uptime, boot: Clock.boot,
+            app: device.app,
+            device: DeviceInfo(model: device.model, os: device.os, nativeScale: device.nativeScale, asset: asset),
+            surface: Surface(protector: protector, nib: nib),
+            qualification: qualifications.last(asset: asset, pencil: pencil), scale: scale,
+            pencil: pencil, channels: ChannelPlan.plan(pencil: pencil, hoverSupported: pencil != .none),
+            input: device.input, subject: subject, battery: contract.battery.reference
+        )
+    }
+
+    /// Who the session records. A bench session records the mounting of device P under the bundled protocol. A
+    /// qualification session has no participant: it records the code `QUAL`, an adult attestation by the operator,
+    /// and no consent document.
+    private func subject(purpose: Purpose, configuration: StudyConfiguration, programs: BenchPrograms,
+                         at now: WallTime) -> SessionSubject? {
+        if purpose == .bench {
+            guard let motion else { return nil }
+            return .bench(BenchFacts(role: .pencil, mounting: mounting, motion: motion, protocol: programs.protocol))
+        }
+        guard let attestor = Code(attestor), let site = Code(site) ?? configuration.sites.first,
               let jurisdiction = Jurisdiction(jurisdiction) ?? configuration.jurisdictions.first,
               let locale = LocaleTag(locale)
         else { return nil }
@@ -68,22 +105,15 @@ struct SetupDraft {
               let visit = study ? Code(visitCode).flatMap({ Visit(id: $0, number: visitNumber) }) : Visit(id: "QUAL", number: 1),
               let entry = configuration.consentModel[ageBand.rawValue]
         else { return nil }
-        let now = Clock.now
-        return SessionOpened(
-            purpose: purpose, sessionID: SessionID(), participant: participant, openedAt: now,
-            openedUptime: Clock.uptime, boot: Clock.boot, app: device.app,
-            device: DeviceInfo(model: device.model, os: device.os, nativeScale: device.nativeScale, asset: asset),
-            surface: Surface(protector: protector, nib: nib), qualification: qualification, scale: scale,
-            pencil: pencil, channels: ChannelPlan.plan(pencil: pencil, hoverSupported: pencil != .none),
-            input: device.input, administration: administration,
-            study: configuration.studyRef(site: site), visit: visit, ageBand: ageBand, jurisdiction: jurisdiction,
-            locale: locale,
+        return .participant(ParticipantFacts(
+            participant: participant, administration: administration, study: configuration.studyRef(site: site),
+            visit: visit, ageBand: ageBand, jurisdiction: jurisdiction, locale: locale,
             consent: Consent(model: study ? entry.model : .adult,
                              attestedBy: Attestor(code: attestor, role: administration == .supervised ? .operator : .enrolment),
                              attestedAt: now, documents: study ? entry.documents : [],
                              waiverReference: study ? entry.waiverReference : nil),
-            ethics: configuration.ethics, battery: battery.reference
-        )
+            ethics: configuration.ethics
+        ))
     }
 }
 
@@ -107,16 +137,50 @@ struct SetupScreen: View {
     var body: some View {
         Form {
             if purpose == .study { participantSection; consentSection }
+            if purpose == .bench { benchSection }
             deviceSection
             scaleSection
             Section {
-                Button(purpose == .study ? "Start the session" : "Start the qualification", action: start)
+                Button(startTitle, action: start)
                     .disabled(!problems.isEmpty)
                     .accessibilityIdentifier("startSession")
             }
         }
-        .navigationTitle(purpose == .study ? "New session" : "Device qualification")
+        .navigationTitle(title)
         .scrollDismissesKeyboard(.interactively)
+    }
+
+    private var title: LocalizedStringKey {
+        switch purpose {
+        case .study: "New session"
+        case .qualification: "Device qualification"
+        case .bench: "Bench session"
+        }
+    }
+
+    private var startTitle: LocalizedStringKey {
+        switch purpose {
+        case .study: "Start the session"
+        case .qualification: "Start the qualification"
+        case .bench: "Start the bench session"
+        }
+    }
+
+    /// The facts of the mounting. The protocol version and digest come from the bundled programs file.
+    private var benchSection: some View {
+        let ref = store.contract.benchPrograms.protocol
+        return Section("Bench") {
+            Picker("Mounting", selection: $draft.mounting) {
+                ForEach(MountingCode.all, id: \.self) { Text(verbatim: $0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .accessibilityIdentifier("mounting")
+            textField("Motion system", text: $draft.motionID, id: "motionID")
+            textField("Motion system version", text: $draft.motionVersion, id: "motionVersion")
+            LabeledContent("Protocol") {
+                Text(verbatim: "\(ref.version), \(ref.sha256.hex.prefix(12))").monospaced()
+            }
+        }
     }
 
     private var participantSection: some View {
@@ -254,6 +318,18 @@ struct SetupScreen: View {
         }
     }
 
+    private func textField(_ title: LocalizedStringKey, text: Binding<String>, id: String) -> some View {
+        LabeledContent {
+            TextField(title, text: text)
+                .multilineTextAlignment(.trailing)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .accessibilityIdentifier(id)
+        } label: {
+            Text(title)
+        }
+    }
+
     private func codeField(_ title: LocalizedStringKey, text: Binding<String>, id: String, invalid: Bool) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             LabeledContent {
@@ -274,13 +350,18 @@ struct SetupScreen: View {
     }
 
     private func start() {
-        let qualification = Code(draft.asset).flatMap { store.qualifications.last(asset: $0, pencil: draft.pencil) }
         guard let opened = draft.session(purpose: purpose, configuration: configuration, device: store.device,
-                                         battery: store.contract.battery, scale: scale, qualification: qualification)
+                                         contract: store.contract, scale: scale, qualifications: store.qualifications)
         else { return }
         UserDefaults.standard.set(draft.asset, forKey: "lastAsset")
-        UserDefaults.standard.set(draft.attestor, forKey: "lastAttestor")
-        store.open(opened, configuration: configuration, dominant: draft.hand)
+        if purpose == .bench {
+            UserDefaults.standard.set(draft.motionID, forKey: "lastMotionID")
+            UserDefaults.standard.set(draft.motionVersion, forKey: "lastMotionVersion")
+            store.openBench(opened)
+        } else {
+            UserDefaults.standard.set(draft.attestor, forKey: "lastAttestor")
+            store.open(opened, configuration: configuration, dominant: draft.hand)
+        }
     }
 }
 
@@ -378,4 +459,9 @@ struct MeasurementScreen: View {
         .buttonStyle(.bordered)
         .accessibilityLabel(delta > 0 ? Text("Longer by \(Int(delta)) points") : Text("Shorter by \(Int(-delta)) points"))
     }
+}
+
+extension MountingCode {
+    /// The mountings of the bench protocol, M1 to M8 (section 6.1).
+    static let all: [MountingCode] = (1...8).compactMap { MountingCode("M\($0)") }
 }

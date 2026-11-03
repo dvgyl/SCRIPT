@@ -1,0 +1,186 @@
+import Foundation
+import ScriptCore
+import Testing
+@testable import ScriptApp
+
+/// A bench session as Setup opens it: role P, mounting M3, the motion system `nextdraw-8511` version `2.4`.
+@MainActor
+private func openBench(_ store: SessionStore) throws {
+    var draft = SetupDraft(configuration: store.contract.demo, input: store.device.input)
+    draft.asset = "IPAD-01"
+    draft.mounting = "M3"
+    draft.motionID = "nextdraw-8511"
+    draft.motionVersion = "2.4"
+    let opened = try #require(draft.session(purpose: .bench, configuration: store.contract.demo, device: store.device,
+                                            contract: store.contract, scale: store.device.tableScale,
+                                            qualifications: store.qualifications))
+    store.openBench(opened)
+}
+
+/// Records one run of `program`: the run screen picks it, the task view starts it, and the operator taps Begin, draws
+/// one stroke, and taps Done.
+@MainActor
+private func record(_ program: ProgramID, run: Int = 1, in store: SessionStore) {
+    store.chooseRun(BenchRunPlan(program: program, run: run))
+    store.startRun(view: ViewSize(width: 834, height: 1000)!)
+    store.begin()
+    let t = ProcessInfo.processInfo.systemUptime
+    store.pen([PenReading(key: TouchKey(1), t: t, x: 400, y: 500, phase: .began),
+               PenReading(key: TouchKey(1), t: t + 0.01, x: 410, y: 505, phase: .ended)])
+    store.done()
+}
+
+/// The journal lines of the session as JSON objects, once the writer has every line on storage.
+@MainActor
+private func lines(_ store: SessionStore) async throws -> [[String: Any]] {
+    let live = try #require(store.live)
+    if let closing = live.closing { await closing.value } else { try await live.sink.sync() }
+    return try Data(contentsOf: live.url).split(separator: 0x0A).map {
+        try #require(try JSONSerialization.jsonObject(with: Data($0)) as? [String: Any])
+    }
+}
+
+@Test @MainActor func aBenchStoreWritesABenchHeaderWithTheQualificationReferenceAndNoParticipantKeys() async throws {
+    // Detects a bench header that holds a participant key, such as the QUAL placeholder of a qualification session,
+    // loses the facts of the mounting or the protocol, or drops the last qualification of the iPad and Pencil.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try makeStore(root: root)
+    let qualification = opened(configuration: store.contract.demo, battery: store.contract.battery)
+    store.qualifications.record(qualification)
+    try openBench(store)
+
+    let header = try await lines(store)[0]
+    for key in ["participant", "administration", "study", "visit", "ageBand", "jurisdiction", "locale", "consent",
+                "ethics"] {
+        #expect(header[key] == nil, "\(key)")
+    }
+    #expect(header["purpose"] as? String == "bench")
+    let bench = try #require(header["bench"] as? [String: Any])
+    let programs = store.contract.benchPrograms
+    #expect(bench["role"] as? String == "P" && bench["mounting"] as? String == "M3")
+    #expect(bench["motion"] as? [String: String] == ["id": "nextdraw-8511", "version": "2.4"])
+    #expect(bench["protocol"] as? [String: String] == ["version": programs.protocol.version,
+                                                       "sha256": programs.protocol.sha256.hex])
+    #expect(header["qualification"] as? [String: String] == ["sessionID": qualification.sessionID.description,
+                                                             "at": qualification.openedAt.text])
+    #expect(store.live?.stage == .bench)
+}
+
+@Test @MainActor func eachBenchTrialRecordsItsRunIDAsTheClip() async throws {
+    // Detects a clip that differs from the run id that the run screen shows, a run without the digest of its
+    // program, or a stimulus origin other than the origin of the task view.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try makeStore(root: root)
+    try openBench(store)
+    let shown = [store.runID(BenchRunPlan(program: "loops-l-v20", run: 1)),
+                 store.runID(BenchRunPlan(program: "spiral-s-v40", run: 6))]
+    record("loops-l-v20", in: store)
+    record("spiral-s-v40", run: 6, in: store)
+
+    let started = try await lines(store).filter { $0["kind"] as? String == "trialStarted" }
+    let runs = started.compactMap { $0["bench"] as? [String: Any] }
+    #expect(runs.compactMap { $0["clip"] as? String } == ["P-M3-loops-l-v20-r1", "P-M3-spiral-s-v40-r6"])
+    #expect(shown.map { $0?.rawValue } == ["P-M3-loops-l-v20-r1", "P-M3-spiral-s-v40-r6"])
+    let programs = store.contract.benchPrograms
+    #expect(runs.compactMap { $0["trajectorySHA256"] as? String }
+        == ["loops-l-v20", "spiral-s-v40"].map { programs.program(ProgramID($0)!)!.trajectorySHA256.hex })
+    #expect(started.map { $0["stimulusOrigin"] as? [String: Double] } == [["x": 0, "y": 0], ["x": 0, "y": 0]])
+    #expect(started.map { $0["position"] as? Int } == [1, 2])
+}
+
+@Test @MainActor func aFaultRunOffersNoExcludeAndTheStoreRefusesIt() throws {
+    // Detects an exclude mark on a fault run, which the quality gate of the bench protocol needs as an ordinary trial.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try makeStore(root: root)
+    try openBench(store)
+    store.chooseRun(BenchRunPlan(program: "loops-l-v20", run: 1))
+    store.startRun(view: ViewSize(width: 834, height: 1000)!)
+    #expect(store.currentRun?.markCodes.contains(.exclude) == true)
+    store.done()
+    store.chooseRun(BenchRunPlan(program: "fault-lift", run: 1))
+    store.startRun(view: ViewSize(width: 834, height: 1000)!)
+
+    #expect(store.currentRun?.markCodes == [.disturbance, .deviceProblem])
+    #expect(!store.mark(.exclude))
+    #expect(store.state?.session.counts[.mark] == 0)
+    #expect(store.mark(.disturbance))
+    #expect(store.currentRun?.marks == [.disturbance])
+}
+
+@Test @MainActor func aBenchSessionRefusesEveryQuestionnaireSafetyAndHandoffStep() async throws {
+    // Detects a bench session that reaches a handoff, a questionnaire, a safety screen, or the crisis list, which
+    // name a person who is not there.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try makeStore(root: root)
+    try openBench(store)
+    let t = ProcessInfo.processInfo.systemUptime
+    for command: Command in [.handoff(to: .participant, t: t), .startQuestionnaire("phq9", t: t),
+                             .show(.crisisList, t: t), .show(.operatorAlert, t: t),
+                             .recordAction("clinicianAssessment", t: t)] {
+        #expect(!store.perform(command), "\(command)")
+    }
+    store.start()
+    store.chooseHand(.left)
+    store.acknowledgeDisclosure()
+    store.advance()
+    await store.answer(0)
+    store.operatorTookOver()
+    store.returnToParticipant()
+    await store.endEarly()
+    store.showSupportList()
+    store.recordAction("clinicianAssessment")
+    store.continueAfterCrisisList()
+    #expect(store.live?.stage == .bench)
+    #expect(store.currentTask == nil && store.currentItem == nil)
+
+    record("loops-l-v20", in: store)
+    store.endBench()
+    #expect(store.live?.stage == .sampleTiming)
+    let kinds = Set(try await lines(store).compactMap { $0["kind"] as? String })
+    #expect(kinds.isDisjoint(with: ["handoff", "questionnaireStarted", "response", "questionnaireEnded",
+                                    "safetyFlagged", "safetyShown", "safetyAction"]))
+    #expect(kinds.contains("sessionClosed"))
+}
+
+@Test @MainActor func doneEndsABenchRunWithOperatorDone() async throws {
+    // Detects a bench run that ends as participantDone, which names a person, or that ends without its stroke.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try makeStore(root: root)
+    try openBench(store)
+    record("line-osc8", in: store)
+
+    let ended = try await lines(store).filter { $0["kind"] as? String == "trialEnded" }
+    #expect(ended.map { $0["reason"] as? String } == ["operatorDone"])
+    #expect(store.state?.summary.trials.map(\.contacts) == [1])
+    #expect(store.currentRun == nil && store.live?.stage == .bench)
+}
+
+@Test @MainActor func anInterruptedBenchSessionResumesAtTheRunScreen() async throws {
+    // Detects a bench session that a crash leaves without a way back, that resumes into a participant stage, or that
+    // records its next run without the run of the interruption.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let first = try makeStore(root: root)
+    try openBench(first)
+    record("loops-l-v20", in: first)
+    first.chooseRun(BenchRunPlan(program: "spiral-l-v20", run: 1))
+    first.startRun(view: ViewSize(width: 834, height: 1000)!)
+    try await first.live!.sink.close()
+
+    let second = try makeStore(root: root)
+    second.launch()
+    let row = try #require(second.listing.first { $0.purpose == .bench })
+    #expect(row.status == .interrupted && second.title(of: row) == "P-M3")
+    second.resume(try #require(row.sessionID))
+    #expect(second.live?.stage == .bench && second.live?.participant == nil)
+    #expect(second.currentRun == nil)
+    record("spiral-l-v20", run: 6, in: second)
+    #expect(second.state?.summary.trials.map(\.outcome) == [.completed, .interrupted, .completed])
+    second.endBench()
+    #expect(second.live?.stage == .sampleTiming)
+}

@@ -1,8 +1,9 @@
 import Foundation
 import ScriptCore
 
-/// The ordered steps of one session, from its frozen configuration. The fold says which steps are done, so the
-/// same plan drives a live session and a resumed one.
+/// The ordered steps of one study or qualification session, from its frozen configuration. The fold says which steps
+/// are done, so the same plan drives a live session and a resumed one. A bench session has no plan: its operator picks
+/// each run on the run screen until End session (`Stage.bench`).
 struct SessionPlan: Hashable, Sendable {
     struct TaskStep: Hashable, Sendable {
         let task: TaskID
@@ -39,8 +40,9 @@ struct SessionPlan: Hashable, Sendable {
             }
             return
         }
+        let person = opened.person
         let blocks = configuration.questionnaires.filter {
-            $0.administration == opened.administration && $0.ageBand == opened.ageBand
+            $0.administration == person?.administration && $0.ageBand == person?.ageBand
         }
         func blockSteps(_ position: StudyConfiguration.BlockPosition) -> [Step] {
             blocks.filter { $0.position == position }.flatMap(\.instruments).map(Step.block)
@@ -133,6 +135,26 @@ extension TrialOutcome {
     }
 }
 
+// MARK: - Bench
+
+extension BenchPrograms {
+    /// The programs in the order of the run screen: the main programs, then the fault programs, each by identifier.
+    var listed: [BenchProgram] {
+        programs.values.sorted { a, b in
+            if (a.fault == nil) != (b.fault == nil) { return a.fault == nil }
+            return a.id.rawValue.localizedStandardCompare(b.id.rawValue) == .orderedAscending
+        }
+    }
+}
+
+extension BenchProgram {
+    /// The marks that the operator can add to a run. A fault run is never excluded, because the quality gate needs
+    /// every fault run as an ordinary trial (bench protocol section 5.3).
+    var markCodes: [MarkCode] {
+        fault == nil ? [.disturbance, .deviceProblem, .exclude] : [.disturbance, .deviceProblem]
+    }
+}
+
 // MARK: - Stimulus
 
 enum StimulusLayout {
@@ -170,7 +192,7 @@ struct JournalDigest: Sendable {
         let task: TaskID
         let attempt: Int
         let practice: Bool
-        let hand: Hand
+        let subject: TrialSubject
         let started: Double
         var began: Double?
         var ended: Double?
@@ -182,6 +204,20 @@ struct JournalDigest: Sendable {
         var tilt = false
         var roll = false
         var hover = 0
+        var marks: [MarkCode] = []
+
+        /// The hand of a participant trial. A bench run has none.
+        var hand: Hand? {
+            if case .participant(let facts) = subject { facts.hand } else { nil }
+        }
+
+        /// The run facts of a bench trial.
+        var run: BenchRun? {
+            if case .bench(let run) = subject { run } else { nil }
+        }
+
+        /// The run id of a bench trial, else the task.
+        var label: String { run.map { $0.clip?.rawValue ?? $0.program.rawValue } ?? task.rawValue }
     }
 
     struct Flag: Hashable, Sendable {
@@ -209,7 +245,7 @@ struct JournalDigest: Sendable {
     mutating func add(_ entry: Entry) {
         switch entry.event {
         case .trialStarted(let e):
-            trials.append(Trial(task: e.trial.task, attempt: e.trial.attempt, practice: e.practice, hand: e.hand,
+            trials.append(Trial(task: e.trial.task, attempt: e.trial.attempt, practice: e.practice, subject: e.subject,
                                 started: e.t))
         case .trialBegan(let e):
             trials[e.trial.rawValue].began = e.t
@@ -229,6 +265,8 @@ struct JournalDigest: Sendable {
         case .trialEnded(let e):
             trials[e.trial.rawValue].ended = e.t
             trials[e.trial.rawValue].reason = e.reason
+        case .mark(let e):
+            trials[e.trial.rawValue].marks.append(e.code)
         case .questionnaireStarted(let e):
             blockInstruments[e.block] = e.instrument.id
         case .safetyFlagged(let e):
