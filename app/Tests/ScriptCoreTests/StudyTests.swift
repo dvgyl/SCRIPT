@@ -7,20 +7,6 @@ private func problems(_ config: StudyConfiguration, instruments: InstrumentSet? 
     validate(config: config, battery: try Contract.battery(), instruments: try instruments ?? Contract.instruments())
 }
 
-/// The shipped instruments plus one test instrument, so a test never depends on the status of a shipped instrument.
-private func instrumentsWithProbe(textStatus: String, minimumAge: Int) throws -> InstrumentSet {
-    var root = try JSONSerialization.jsonObject(with: try Contract.data("instruments.json")) as! [String: Any]
-    var list = root["instruments"] as! [[String: Any]]
-    list.append([
-        "id": "probe", "version": "1.0", "title": "Probe", "textStatus": textStatus,
-        "ages": ["min": minimumAge, "max": NSNull()], "locale": "en", "stem": "Probe stem",
-        "items": [["id": "probe-1", "text": "Probe item", "options": [["value": 0, "label": "No"]],
-                   "scored": true, "safety": false]],
-    ])
-    root["instruments"] = list
-    return try InstrumentSet(data: try JSONSerialization.data(withJSONObject: root))
-}
-
 private func withProbeBlock(_ config: StudyConfiguration) -> StudyConfiguration {
     var config = config
     config.questionnaires.append(.init(administration: .supervised, ageBand: .adolescent, position: .afterTasks,
@@ -48,14 +34,14 @@ private func withProbeBlock(_ config: StudyConfiguration) -> StudyConfiguration 
 @Test func anUnverifiedInstrumentIsRefused() throws {
     // Detects a configuration that administers instrument text that nobody checked against the published form.
     let config = withProbeBlock(try Contract.demoConfiguration())
-    #expect(try problems(config, instruments: try instrumentsWithProbe(textStatus: "unverified", minimumAge: 13))
+    #expect(try problems(config, instruments: try Contract.instrumentsWithProbe(textStatus: "unverified", minimumAge: 13))
         == [.unverifiedInstrument("probe")])
 }
 
 @Test func anInstrumentOutsideItsValidatedAgesIsRefused() throws {
     // Detects a configuration that gives an instrument to an age band below its validated range.
     let config = withProbeBlock(try Contract.demoConfiguration())
-    #expect(try problems(config, instruments: try instrumentsWithProbe(textStatus: "verified", minimumAge: 14))
+    #expect(try problems(config, instruments: try Contract.instrumentsWithProbe(textStatus: "verified", minimumAge: 14))
         == [.notValidatedForAgeBand("probe", .adolescent)])
 }
 
@@ -79,6 +65,9 @@ private func withProbeBlock(_ config: StudyConfiguration) -> StudyConfiguration 
     (#""recipientPublicKey": null"#, #""recipientPublicKey": "c2hvcnQ=""#, .invalid("export.recipientPublicKey")),
     (#""sites": ["#, #""sites": ["DEMO", "#, .invalid("sites")),
     (#""remoteReview": null"#, #""remoteReview": {"reviewerRole": "x"}"#, .missing("safety.remoteReview.imminentReviewWithinHours")),
+    (#""keyID": null"#, #""keyID": "study-key-1""#, .invalid("export.keyID")),
+    (#""operatorPin": null"#, pinJSON(salt: "AAECAwQFBgcICQoLDA0ODw==", iterations: 599_999), .invalid("operatorPin.iterations")),
+    (#""operatorPin": null"#, pinJSON(salt: "AAECAwQFBgcICQoLDA0O", iterations: 600_000), .invalid("operatorPin.salt")),
 ])
 func configurationImportAppliesTheSchemaRules(original: String, replacement: String, expected: DecodeError) throws {
     // Detects an import that accepts a configuration which contract/config.schema.json refuses.
@@ -88,15 +77,39 @@ func configurationImportAppliesTheSchemaRules(original: String, replacement: Str
     #expect(throws: expected) { try StudyConfiguration(data: Data(changed.utf8)) }
 }
 
-@Test func theOperatorPinMatchesOnlyItsPin() throws {
-    // Detects a PIN check that accepts a wrong PIN or hashes the salt and the PIN in another order.
-    let salt = "c0ffee00c0ffee00"
-    let stored = try #require(OperatorPin(pin: "4821", salt: salt))
-    #expect(stored.sha256.hex == SHA256.hash(data: Data("c0ffee00c0ffee004821".utf8)).hex)
+/// An `operatorPin` member whose key is PBKDF2-HMAC-SHA256 of "4821" with salt bytes 0 to 15 and 600,000
+/// iterations, computed with Python `hashlib.pbkdf2_hmac`.
+private func pinJSON(salt: String, iterations: Int) -> String {
+    #""operatorPin": {"salt": "\#(salt)", "iterations": \#(iterations), "#
+        + #""pbkdf2Sha256": "41e970f647a127ad1149029f290f489446ee62e4dde83ddf9e3d7e632ff56362"}"#
+}
+
+@Test func theOperatorPinIsASlowKeyThatMatchesOnlyItsPin() throws {
+    // Detects a PIN stored with a fast hash that a search of every PIN reverses, or a check that accepts a wrong PIN.
+    let text = String(decoding: try Contract.data("configs/demo.json"), as: UTF8.self)
+        .replacingOccurrences(of: #""operatorPin": null"#,
+                              with: pinJSON(salt: "AAECAwQFBgcICQoLDA0ODw==", iterations: 600_000))
+    let stored = try #require(try StudyConfiguration(data: Data(text.utf8)).operatorPin)
     #expect(stored.matches("4821"))
     #expect(!stored.matches("4822"))
     #expect(!stored.matches(""))
-    #expect(OperatorPin(pin: "4821", salt: "short") == nil)
+    let salt = Data((0..<16).map { UInt8($0) })
+    #expect(OperatorPin(pin: "4821", salt: salt) == stored)
+    #expect(OperatorPin(pin: "4821", salt: salt.dropLast()) == nil)
+    #expect(OperatorPin(pin: "4821", salt: salt, iterations: 599_999) == nil)
+}
+
+@Test func aStatedKeyIDMustBeTheSHA256OfTheExportKey() throws {
+    // Detects a configuration whose keyID names another key, so an analyst would pick the wrong private key.
+    var config = try Contract.demoConfiguration()
+    config.export.recipientPublicKey = Data(base64Encoded: "B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9/AsrhtHHw=")
+    // The SHA-256 of that raw key, computed with Python `hashlib`.
+    config.export.keyID = SHA256Digest(hex: "aaa8fff703b50b2297f4f6e13508f72420d96fd01ebb84cb074449caaef64041")
+    #expect(try problems(config) == [])
+    config.export.keyID = SHA256Digest(of: Data("another key".utf8))
+    #expect(try problems(config) == [.keyIDMismatch])
+    config.export.recipientPublicKey = nil
+    #expect(try problems(config) == [.keyIDMismatch])
 }
 
 @Test func theModelTableScaleMatchesTheContractFormula() throws {

@@ -34,7 +34,7 @@ private func replace(_ destination: URL, with source: URL) throws {
     try s.createDirectories()
     let url = s.journalURL(id)
 
-    var first = try Driver(opened: opened, rules: sessionRules, writer: try JournalWriter(appendingTo: url))
+    var first = try Driver(opened: opened, rules: sessionRules, writer: try JournalWriter(appendingTo: url, onFailure: { _ in }))
     try first.run(.handoff(to: .participant, t: 101))
     try first.run(.startTrial(Driver.plan("spiral-trace"), t: 102))
     try first.run(.beginTrial(t: 102.5))
@@ -66,7 +66,7 @@ private func replace(_ destination: URL, with source: URL) throws {
         Issue.record("the relaunch did not adopt the open journal")
         return
     }
-    var second = Driver(resuming: recovered, rules: sessionRules, writer: try JournalWriter(appendingTo: url))
+    var second = Driver(resuming: recovered, rules: sessionRules, writer: try JournalWriter(appendingTo: url, onFailure: { _ in }))
     try second.run(.startTrial(Driver.plan("spiral-trace"), t: 10))
     try second.run(.beginTrial(t: 10.5))
     try second.stroke(key: 1, t0: 11)
@@ -98,7 +98,7 @@ private func replace(_ destination: URL, with source: URL) throws {
     let exported = try Storage.readExport(plaintext)
     #expect(exported.state.summary == summary)
     let key = Curve25519.KeyAgreement.PrivateKey()
-    let encrypted = try encryptedStorage.publish(id, policy: .encrypted(recipient: key.publicKey, keyID: "swift-contract-test"))
+    let encrypted = try encryptedStorage.publish(id, policy: .encrypted(recipient: key.publicKey))
     #expect(try Storage.readExport(encrypted, privateKey: key).journal == exported.journal)
 
     let out = contractOut

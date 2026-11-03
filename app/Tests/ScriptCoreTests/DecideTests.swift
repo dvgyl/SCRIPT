@@ -85,3 +85,49 @@ private func driver(administration: Administration = .supervised, configuration:
         == .safetyItemNeedsRemoteReview("phq9"))
     #expect(d.state.decide(.show(.operatorAlert, t: 200), rules: d.rules).rejection == .noOperator)
 }
+
+private func plan(position: Int = 1, accommodations: [Accommodation] = [],
+                  origin: Point = Point(x: 147.5, y: 200)) -> TrialPlan {
+    var plan = Driver.plan("spiral-trace", position: position)
+    plan.accommodations = accommodations
+    plan.stimulusOrigin = origin
+    return plan
+}
+
+@Test(arguments: [
+    (Command.startTrial(plan(position: 0), t: 101), Rejection.invalidPosition(0)),
+    (.startTrial(plan(accommodations: [.readAloud, .extraTime, .readAloud]), t: 101), .repeatedAccommodation(.readAloud)),
+    (.startTrial(plan(origin: Point(x: .nan, y: 200)), t: 101), .invalidStimulusOrigin),
+    (.startTrial(plan(), t: -1), .invalidTime),
+    (.handoff(to: .participant, t: .infinity), .invalidTime),
+])
+func decideRefusesAValueThatTheDecoderRefuses(command: Command, rejection: Rejection) throws {
+    // Detects a decider that writes a line the decoder refuses, so the next launch moves the session to Damaged/.
+    let d = try driver()
+    #expect(d.state.decide(command, rules: d.rules).rejection == rejection)
+}
+
+@Test func sessionValuesThatTheDecoderRefusesCannotBeBuilt() {
+    // Detects a visit number below 1, an empty document identifier or version, or an empty view in a line, which
+    // the decoder refuses, so a relaunch would call the journal damaged.
+    #expect(Visit(id: "V1", number: 0) == nil)
+    #expect(Visit(id: "V1", number: 1)?.number == 1)
+    #expect(DocumentRef(id: "", version: "1") == nil)
+    #expect(DocumentRef(id: "consent", version: "") == nil)
+    #expect(ViewSize(width: 0, height: 1210) == nil)
+    #expect(ViewSize(width: 834, height: -1) == nil)
+    #expect(ViewSize(width: .infinity, height: 1210) == nil)
+}
+
+@Test func aBlockBelowTheInstrumentsValidatedAgeIsRejected() throws {
+    // Detects a decider that starts an instrument for an age band below its validated ages, which only import checked.
+    let config = try Contract.demoConfiguration()
+    let instruments = try Contract.instrumentsWithProbe(textStatus: "verified", minimumAge: 14)
+    for (band, expected) in [(AgeBand.adolescent, Rejection.instrumentNotForAgeBand("probe")), (.youngAdult, nil)] {
+        let opened = makeOpened(ageBand: band, configuration: config, battery: try Contract.battery())
+        let rules = SessionRules(battery: try Contract.battery(), instruments: instruments, configuration: config,
+                                 jurisdiction: opened.jurisdiction, locale: opened.locale)
+        let d = try Driver(opened: opened, rules: rules)
+        #expect(d.state.decide(.startQuestionnaire("probe", t: 200), rules: rules).rejection == expected, "\(band)")
+    }
+}

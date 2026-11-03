@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Synchronization
 import Testing
 @testable import ScriptCore
 
@@ -28,6 +29,20 @@ enum Contract {
     static func battery() throws -> Battery { try Battery(data: try data("battery.json")) }
     static func instruments() throws -> InstrumentSet { try InstrumentSet(data: try data("instruments.json")) }
     static func demoConfiguration() throws -> StudyConfiguration { try StudyConfiguration(data: try data("configs/demo.json")) }
+
+    /// The shipped instruments plus one test instrument, so a test never depends on the status of a shipped instrument.
+    static func instrumentsWithProbe(textStatus: String, minimumAge: Int) throws -> InstrumentSet {
+        var root = try JSONSerialization.jsonObject(with: try data("instruments.json")) as! [String: Any]
+        var list = root["instruments"] as! [[String: Any]]
+        list.append([
+            "id": "probe", "version": "1.0", "title": "Probe", "textStatus": textStatus,
+            "ages": ["min": minimumAge, "max": NSNull()], "locale": "en", "stem": "Probe stem",
+            "items": [["id": "probe-1", "text": "Probe item", "options": [["value": 0, "label": "No"]],
+                       "scored": true, "safety": false]],
+        ])
+        root["instruments"] = list
+        return try InstrumentSet(data: try JSONSerialization.data(withJSONObject: root))
+    }
 
     /// The demo configuration plus a self-administered PHQ-9 block with a remote review that `validate` accepts.
     static func remoteReviewConfiguration() throws -> StudyConfiguration {
@@ -69,7 +84,7 @@ func makeOpened(
         surface: Surface(protector: .none, nib: .new), qualification: nil,
         scale: MillimetreScale.lookup(model: "iPad16,3", nativeScale: 2)!, pencil: pencil,
         channels: ChannelPlan.plan(pencil: pencil, hoverSupported: true), input: .pencil,
-        administration: administration, study: configuration.studyRef(site: "DEMO"), visit: Visit(id: "V1", number: 1),
+        administration: administration, study: configuration.studyRef(site: "DEMO"), visit: Visit(id: "V1", number: 1)!,
         ageBand: ageBand, jurisdiction: jurisdiction, locale: "en",
         consent: Consent(model: consent.model,
                          attestedBy: Attestor(code: "OP1", role: administration == .supervised ? .operator : .enrolment),
@@ -121,7 +136,7 @@ struct Driver {
     static func plan(_ task: TaskID, position: Int = 1) -> TrialPlan {
         TrialPlan(task: task, practice: task == "practice", position: position, hand: .right,
                   instruction: InstructionRef(id: task.rawValue, version: "1.0", locale: "en"),
-                  view: ViewSize(width: 834, height: 1210), stimulusOrigin: Point(x: 147.5, y: 200))
+                  view: ViewSize(width: 834, height: 1210)!, stimulusOrigin: Point(x: 147.5, y: 200))
     }
 
     /// One Pencil contact of `n` samples. The first sample can leave estimates pending under `update`.
@@ -178,9 +193,24 @@ func snapshot(_ root: URL) throws -> [String: Data] {
     return files
 }
 
-func storage(in root: URL, stops: @escaping @Sendable (Storage.Step) -> Bool = { _ in false }) -> Storage {
+func storage(in root: URL, secret: any DeviceSecret = MemoryDeviceSecret(),
+             stops: @escaping @Sendable (Storage.Step) -> Bool = { _ in false }) -> Storage {
     Storage(applicationSupport: root.appendingPathComponent("Support"), documents: root.appendingPathComponent("Documents"),
-            stops: stops)
+            deviceSecret: secret, stops: stops)
+}
+
+/// A device secret in memory. Like the Keychain item, it is created at the first call, or it starts as `key`.
+final class MemoryDeviceSecret: DeviceSecret {
+    private let stored: Mutex<SymmetricKey?>
+
+    init(_ key: SymmetricKey? = nil) { stored = Mutex(key) }
+
+    func key() -> SymmetricKey {
+        stored.withLock { key in
+            if key == nil { key = SymmetricKey(size: .bits256) }
+            return key!
+        }
+    }
 }
 
 extension Result {

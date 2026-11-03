@@ -266,9 +266,11 @@ public struct Point: Hashable, Sendable {
 }
 
 public struct ViewSize: Hashable, Sendable {
-    public var width: Double
-    public var height: Double
-    public init(width: Double, height: Double) {
+    public let width: Double
+    public let height: Double
+    /// Nil unless both sides are finite and positive, as the schema requires.
+    public init?(width: Double, height: Double) {
+        guard width.isFinite, height.isFinite, width > 0, height > 0 else { return nil }
         self.width = width
         self.height = height
     }
@@ -374,19 +376,22 @@ public struct StudyRef: Hashable, Sendable {
 }
 
 public struct Visit: Hashable, Sendable {
-    public var id: Code
-    /// Starts at 1.
-    public var number: Int
-    public init(id: Code, number: Int) {
+    public let id: Code
+    public let number: Int
+    /// Nil when `number` is below 1. Visits are numbered from 1.
+    public init?(id: Code, number: Int) {
+        guard number >= 1 else { return nil }
         self.id = id
         self.number = number
     }
 }
 
 public struct DocumentRef: Hashable, Sendable {
-    public var id: String
-    public var version: String
-    public init(id: String, version: String) {
+    public let id: String
+    public let version: String
+    /// Nil when the identifier or the version is empty, which the schema refuses.
+    public init?(id: String, version: String) {
+        guard !id.isEmpty, !version.isEmpty else { return nil }
         self.id = id
         self.version = version
     }
@@ -1013,6 +1018,9 @@ extension Event {
         case .trialStarted:
             let trial = try f.object("trial")
             let view = try f.object("view")
+            guard let size = ViewSize(width: try view.positive("width"), height: try view.positive("height")) else {
+                throw .invalid("view")
+            }
             let origin = try f.object("stimulusOrigin")
             let instruction = try f.object("instruction")
             let attempt = try trial.int("attempt")
@@ -1037,7 +1045,7 @@ extension Event {
                 instruction: InstructionRef(id: try instruction.string("id"), version: try instruction.string("version"),
                                             locale: try instruction.text("locale", LocaleTag.init(_:))),
                 accommodations: accommodations,
-                view: ViewSize(width: try view.positive("width"), height: try view.positive("height")),
+                view: size,
                 stimulusOrigin: Point(x: try origin.double("x"), y: try origin.double("y"))
             ))
         case .trialBegan:
@@ -1155,8 +1163,9 @@ extension SessionOpened {
         for (n, item) in try consent.array("documents").enumerated() {
             documents.append(try DocumentRef(try Fields(item, path: consent.keyPath("documents[\(n)]"))))
         }
-        let visitNumber = try visit.int("number")
-        guard visitNumber >= 1 else { throw .invalid("visit.number") }
+        guard let visitRef = Visit(id: try visit.text("id", Code.init(_:)), number: try visit.int("number")) else {
+            throw .invalid("visit.number")
+        }
         self.init(
             purpose: try f.enumeration("purpose"),
             sessionID: SessionID(try f.text("sessionID", UUID.init(uuidString:))),
@@ -1180,7 +1189,7 @@ extension SessionOpened {
                             configVersion: try study.string("configVersion"),
                             configSHA256: try study.text("configSHA256", SHA256Digest.init(hex:)),
                             protocolVersion: try study.string("protocolVersion")),
-            visit: Visit(id: try visit.text("id", Code.init(_:)), number: visitNumber),
+            visit: visitRef,
             ageBand: try f.enumeration("ageBand"),
             jurisdiction: try f.text("jurisdiction", Jurisdiction.init(_:)),
             locale: try f.text("locale", LocaleTag.init(_:)),
@@ -1201,10 +1210,11 @@ extension SessionOpened {
 extension DocumentRef {
     init(_ f: Fields) throws(DecodeError) {
         let id = try f.string("id")
-        let version = try f.string("version")
         guard !id.isEmpty else { throw .invalid(f.keyPath("id")) }
-        guard !version.isEmpty else { throw .invalid(f.keyPath("version")) }
-        self.init(id: id, version: version)
+        guard let ref = DocumentRef(id: id, version: try f.string("version")) else {
+            throw .invalid(f.keyPath("version"))
+        }
+        self = ref
     }
 
     var json: JSON { .object([("id", .string(id)), ("version", .string(version))]) }

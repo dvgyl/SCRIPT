@@ -1,3 +1,4 @@
+import CommonCrypto
 import CryptoKit
 import Foundation
 
@@ -130,7 +131,8 @@ public struct StudyConfiguration: Hashable, Sendable {
     public struct Export: Hashable, Sendable {
         /// The raw 32-byte X25519 public key of the study, or nil for the demo configuration.
         public var recipientPublicKey: Data?
-        public var keyID: String?
+        /// The SHA-256 of `recipientPublicKey`, when the configuration states it. `validate` checks that it matches.
+        public var keyID: SHA256Digest?
     }
 
     public var demo: Bool
@@ -257,16 +259,20 @@ public struct StudyConfiguration: Hashable, Sendable {
             }
         }
         self.export = Export(recipientPublicKey: key,
-                             keyID: export.isNull("keyID") ? nil : try export.string("keyID"))
+                             keyID: export.isNull("keyID") ? nil : try export.text("keyID", SHA256Digest.init(hex:)))
 
         if f.isNull("operatorPin") {
             operatorPin = nil
         } else {
             let pin = try f.object("operatorPin")
-            try pin.only(["salt", "sha256"])
-            let salt = try pin.string("salt")
-            guard salt.count >= 16 else { throw .invalid(pin.keyPath("salt")) }
-            operatorPin = OperatorPin(salt: salt, sha256: try pin.text("sha256", SHA256Digest.init(hex:)))
+            try pin.only(["salt", "iterations", "pbkdf2Sha256"])
+            let salt = try pin.text("salt") { Data(base64Encoded: $0).flatMap { $0.count >= 16 ? $0 : nil } }
+            let iterations = try pin.int("iterations")
+            guard (OperatorPin.minimumIterations...Int(UInt32.max)).contains(iterations) else {
+                throw .invalid(pin.keyPath("iterations"))
+            }
+            let key = try pin.text("pbkdf2Sha256", SHA256Digest.init(hex:))
+            operatorPin = OperatorPin(salt: salt, iterations: iterations, key: key.bytes)
         }
         sha256 = SHA256Digest(of: data)
     }
@@ -306,30 +312,50 @@ public struct CrisisList: Hashable, Sendable {
     }
 }
 
-/// The operator PIN as `sha256 = SHA-256(UTF-8(salt) followed by UTF-8(PIN))`, in lowercase hex.
+/// The operator PIN as PBKDF2-HMAC-SHA256 of the UTF-8 PIN with the decoded salt and a 32-byte key
+/// (docs/DESIGN.md section 14). A search of every PIN finds a short PIN behind a fast hash, so the derivation is slow.
 public struct OperatorPin: Hashable, Sendable {
-    public let salt: String
-    public let sha256: SHA256Digest
+    public static let minimumIterations = 600_000
 
-    init(salt: String, sha256: SHA256Digest) {
+    /// At least 16 bytes.
+    public let salt: Data
+    public let iterations: Int
+    let key: [UInt8]
+
+    init(salt: Data, iterations: Int, key: [UInt8]) {
         self.salt = salt
-        self.sha256 = sha256
+        self.iterations = iterations
+        self.key = key
     }
 
-    /// The stored form of a new PIN. The salt must have at least 16 characters.
-    public init?(pin: String, salt: String) {
-        guard salt.count >= 16 else { return nil }
-        self.init(salt: salt, sha256: SHA256Digest(of: Data((salt + pin).utf8)))
+    /// The stored form of a new PIN, or nil for a salt shorter than 16 bytes or fewer than 600,000 iterations.
+    public init?(pin: String, salt: Data, iterations: Int = minimumIterations) {
+        guard salt.count >= 16, (Self.minimumIterations...Int(UInt32.max)).contains(iterations),
+              let key = Self.derive(pin, salt: salt, iterations: iterations)
+        else { return nil }
+        self.init(salt: salt, iterations: iterations, key: key)
     }
 
-    /// Compares every byte of the two digests, so the time does not depend on where they differ.
+    /// Compares every byte of the two keys, so the time does not depend on where they differ.
     public func matches(_ pin: String) -> Bool {
-        let candidate = Array(SHA256.hash(data: Data((salt + pin).utf8)))
-        let expected = sha256.bytes
-        guard candidate.count == expected.count else { return false }
+        guard let candidate = Self.derive(pin, salt: salt, iterations: iterations), candidate.count == key.count else {
+            return false
+        }
         var difference: UInt8 = 0
-        for i in candidate.indices { difference |= candidate[i] ^ expected[i] }
+        for i in candidate.indices { difference |= candidate[i] ^ key[i] }
         return difference == 0
+    }
+
+    private static func derive(_ pin: String, salt: Data, iterations: Int) -> [UInt8]? {
+        var key = [UInt8](repeating: 0, count: 32)
+        let status = pin.withCString { password in
+            salt.withUnsafeBytes { saltBytes in
+                CCKeyDerivationPBKDF(CCPBKDFAlgorithm(kCCPBKDF2), password, pin.utf8.count,
+                                     saltBytes.bindMemory(to: UInt8.self).baseAddress, saltBytes.count,
+                                     CCPseudoRandomAlgorithm(kCCPRFHmacAlgSHA256), UInt32(iterations), &key, key.count)
+            }
+        }
+        return status == kCCSuccess ? key : nil
     }
 }
 
@@ -351,6 +377,7 @@ public enum ConfigProblem: Error, Hashable, Sendable, CustomStringConvertible {
     case noConsentModel(AgeBand)
     case noExportKey
     case noOperatorPin
+    case keyIDMismatch
 
     public var description: String {
         switch self {
@@ -369,11 +396,13 @@ public enum ConfigProblem: Error, Hashable, Sendable, CustomStringConvertible {
         case .noConsentModel(let band): "consentModel has no entry for age band \(band.rawValue)"
         case .noExportKey: "a study configuration needs export.recipientPublicKey"
         case .noOperatorPin: "a study configuration needs operatorPin"
+        case .keyIDMismatch: "export.keyID is not the SHA-256 of export.recipientPublicKey"
         }
     }
 }
 
-/// The rules of `scriptkin.studyconfig.validate`, in the same order. An empty list means the configuration passes.
+/// The rules of `scriptkin.studyconfig.validate`, in the same order, and then the `keyID` rule of docs/DESIGN.md
+/// section 17. An empty list means the configuration passes.
 public func validate(config: StudyConfiguration, battery: Battery, instruments: InstrumentSet) -> [ConfigProblem] {
     var problems: [ConfigProblem] = []
     if config.battery.sha256 != battery.sha256 { problems.append(.batteryMismatch) }
@@ -415,6 +444,9 @@ public func validate(config: StudyConfiguration, battery: Battery, instruments: 
     if !config.demo {
         if config.export.recipientPublicKey == nil { problems.append(.noExportKey) }
         if config.operatorPin == nil { problems.append(.noOperatorPin) }
+    }
+    if let stated = config.export.keyID, stated != config.export.recipientPublicKey.map({ SHA256Digest(of: $0) }) {
+        problems.append(.keyIDMismatch)
     }
     return problems
 }
