@@ -77,10 +77,12 @@ struct BenchRunScreen: View {
                         }
                         Button("Begin") { store.begin(choice) }
                             .keyboardShortcut(.defaultAction)
-                            .disabled(store.plan(choice) == nil || live.stopped || refusal != nil)
+                            .disabled(store.plan(choice) == nil || live.stopped || refusal != nil || !store.fullScreen)
                     }
                     if let line = refusal?.runLine {
                         Text(line).foregroundStyle(.red)
+                    } else if !store.fullScreen {
+                        Text("Begin needs full screen.").foregroundStyle(.red)
                     }
                 }
             }

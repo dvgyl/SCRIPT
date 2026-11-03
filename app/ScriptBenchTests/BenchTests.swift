@@ -319,6 +319,29 @@ private func export(_ bench: TestBench, _ opened: SessionOpened) throws -> (fold
     #expect(second.store.live == nil)
 }
 
+@Test @MainActor func beginNeedsFullScreenAndAnOpenSessionKeepsTheMacAwake() async throws {
+    // Detects a run that begins while the window is not in full screen, where a pen position outside the window
+    // reaches another app, or a session that lets the Mac or its display sleep (bench protocol section 2.2).
+    let bench = try TestBench()
+    defer { bench.remove() }
+    let store = bench.store
+    bench.enter()
+    let opened = try bench.opened(.bench)
+    #expect(powerAssertions(of: opened).isEmpty)
+    #expect(store.open(opened))
+    #expect(powerAssertions(of: opened) == ["PreventUserIdleSystemSleep", "PreventUserIdleDisplaySleep"])
+    store.fullScreen = false
+    store.begin(loops)
+    #expect(store.state?.phase == .ready && store.state?.session.trials.isEmpty == true)
+    store.fullScreen = true
+    store.begin(loops)
+    #expect(store.state?.session.trials.count == 1)
+    store.done()
+    await store.close()
+    #expect(store.live == nil)
+    #expect(powerAssertions(of: opened).isEmpty)
+}
+
 @Test @MainActor func focusLossEndsAnOpenTrialAsBackgrounded() async throws {
     // Detects a trial that stays open after the window loses the keyboard focus, so a run could go on without the
     // capture (bench protocol section 2.4).

@@ -14,6 +14,9 @@ struct RootView: View {
             }
         }
         .tint(Palette.accent)
+        .onChange(of: store.keepsScreenAwake, initial: true) { _, awake in
+            UIApplication.shared.isIdleTimerDisabled = awake
+        }
         .alert(item: $store.notice) { notice in
             Alert(title: Text(notice.title), message: Text(notice.message))
         }

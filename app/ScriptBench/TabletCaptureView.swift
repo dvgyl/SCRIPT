@@ -60,16 +60,17 @@ final class InkTrace {
 }
 
 /// The only AppKit view. It draws the tablet's active area, the stimulus at the origin, the ink, and the pen. The app's
-/// event monitor reads the tablet events, so this view never needs the pointer above it. The view reports when its
-/// window loses the keyboard focus.
+/// event monitor reads the tablet events, so this view never needs the pointer above it. The view puts its window in
+/// full screen while it shows, and it reports when the window loses the keyboard focus or leaves full screen.
 final class TabletCaptureView: NSView {
     var area = ViewSize(width: 1, height: 1)!
     var linesPerMM = 1.0
     var stimulus: Stimulus?
     var origin = Point(x: 0, y: 0)
     var onFocusLost: (() -> Void)?
+    var onFullScreen: ((Bool) -> Void)?
     private let ink: InkTrace
-    private var resignObserver: (any NSObjectProtocol)?
+    private var observers: [any NSObjectProtocol] = []
 
     init(ink: InkTrace) {
         self.ink = ink
@@ -85,16 +86,31 @@ final class TabletCaptureView: NSView {
 
     override var isFlipped: Bool { true }
 
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        super.viewWillMove(toWindow: newWindow)
+        if newWindow == nil, let window, window.styleMask.contains(.fullScreen) { window.toggleFullScreen(nil) }
+    }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if let resignObserver { NotificationCenter.default.removeObserver(resignObserver) }
-        resignObserver = nil
+        for observer in observers { NotificationCenter.default.removeObserver(observer) }
+        observers = []
         guard let window else { return }
         window.acceptsMouseMovedEvents = true
-        resignObserver = NotificationCenter.default.addObserver(
-            forName: NSWindow.didResignKeyNotification, object: window, queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.onFocusLost?() }
+        func observe(_ name: Notification.Name, _ action: @escaping @MainActor @Sendable (TabletCaptureView) -> Void) {
+            observers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) {
+                [weak self] _ in
+                MainActor.assumeIsolated { if let self { action(self) } }
+            })
+        }
+        observe(NSWindow.didResignKeyNotification) { $0.onFocusLost?() }
+        observe(NSWindow.didEnterFullScreenNotification) { $0.onFullScreen?(true) }
+        observe(NSWindow.didExitFullScreenNotification) { $0.onFullScreen?(false) }
+        let full = window.styleMask.contains(.fullScreen)
+        onFullScreen?(full)
+        if !full {
+            window.collectionBehavior.insert(.fullScreenPrimary)
+            Task { @MainActor in window.toggleFullScreen(nil) }
         }
     }
 
@@ -166,6 +182,7 @@ struct TabletSurface: NSViewRepresentable {
     func makeNSView(context: Context) -> TabletCaptureView {
         let view = TabletCaptureView(ink: store.ink)
         view.onFocusLost = { [weak store] in store?.focusLost() }
+        view.onFullScreen = { [weak store] in store?.fullScreen = $0 }
         return view
     }
 

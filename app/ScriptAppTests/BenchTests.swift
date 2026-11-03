@@ -201,6 +201,20 @@ private func lines(_ store: SessionStore) async throws -> [[String: Any]] {
     #expect(kinds.contains("sessionClosed"))
 }
 
+@Test @MainActor func aBenchSessionKeepsTheScreenOnUntilItEnds() throws {
+    // Detects a bench session that lets the iPad lock between runs, which ends the next run as backgrounded.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try makeStore(root: root)
+    #expect(!store.keepsScreenAwake)
+    try openBench(store)
+    #expect(store.keepsScreenAwake)
+    record("loops-l-v20", in: store)
+    #expect(store.keepsScreenAwake)
+    store.endBench()
+    #expect(!store.keepsScreenAwake)
+}
+
 @Test @MainActor func doneEndsABenchRunWithOperatorDone() async throws {
     // Detects a bench run that ends as participantDone, which names a person, or that ends without its stroke.
     let root = try temporaryFolder()

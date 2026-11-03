@@ -701,6 +701,10 @@ final class SessionStore {
 
     // MARK: Bench
 
+    /// True while a bench session is open. Between runs the operator works at the camera and the robot, not at the
+    /// screen, so an auto-lock would end the next run as backgrounded.
+    var keepsScreenAwake: Bool { live?.stage == .bench }
+
     /// The run id that `decide` writes as the clip of `run` in this bench session.
     func runID(_ run: BenchRunPlan) -> ClipName? {
         guard case .bench(let facts) = live?.opened.subject else { return nil }
