@@ -50,33 +50,69 @@ public struct PixelDensity: Hashable, Sendable {
     public let model: String
     public let name: String
     public let ppi: Double
-    /// False when no source checked for this table confirmed the ppi value. The identifiers come from the
-    /// EveryMac identifier list (checked 2026-11-03). Setup asks for a reference measurement when this is false.
+    /// False when no source confirmed the ppi value; Setup then asks for a reference measurement. On 2026-11-03
+    /// every ppi came from Apple's tech-specs page for the model, and every identifier from both the EveryMac
+    /// identifier list and AppleDB. A model whose identifier only one source gives is left out of the table.
     public let ppiConfirmed: Bool
+
+    public init(model: String, name: String, ppi: Double, ppiConfirmed: Bool) {
+        self.model = model
+        self.name = name
+        self.ppi = ppi
+        self.ppiConfirmed = ppiConfirmed
+    }
 }
 
 public enum DeviceTable {
     public static let entries: [PixelDensity] = [
-        PixelDensity(model: "iPad16,3", name: "iPad Pro 11-inch (M4) Wi-Fi", ppi: 264, ppiConfirmed: false),
-        PixelDensity(model: "iPad16,4", name: "iPad Pro 11-inch (M4) cellular", ppi: 264, ppiConfirmed: false),
-        PixelDensity(model: "iPad16,5", name: "iPad Pro 13-inch (M4) Wi-Fi", ppi: 264, ppiConfirmed: false),
-        PixelDensity(model: "iPad16,6", name: "iPad Pro 13-inch (M4) cellular", ppi: 264, ppiConfirmed: false),
+        PixelDensity(model: "iPad16,3", name: "iPad Pro 11-inch (M4) Wi-Fi", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad16,4", name: "iPad Pro 11-inch (M4) cellular", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad16,5", name: "iPad Pro 13-inch (M4) Wi-Fi", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad16,6", name: "iPad Pro 13-inch (M4) cellular", ppi: 264, ppiConfirmed: true),
         PixelDensity(model: "iPad17,1", name: "iPad Pro 11-inch (M5) Wi-Fi", ppi: 264, ppiConfirmed: true),
         PixelDensity(model: "iPad17,2", name: "iPad Pro 11-inch (M5) cellular", ppi: 264, ppiConfirmed: true),
         PixelDensity(model: "iPad17,3", name: "iPad Pro 13-inch (M5) Wi-Fi", ppi: 264, ppiConfirmed: true),
         PixelDensity(model: "iPad17,4", name: "iPad Pro 13-inch (M5) cellular", ppi: 264, ppiConfirmed: true),
-        PixelDensity(model: "iPad15,3", name: "iPad Air 11-inch (M3) Wi-Fi", ppi: 264, ppiConfirmed: false),
-        PixelDensity(model: "iPad15,4", name: "iPad Air 11-inch (M3) cellular", ppi: 264, ppiConfirmed: false),
-        PixelDensity(model: "iPad15,5", name: "iPad Air 13-inch (M3) Wi-Fi", ppi: 264, ppiConfirmed: false),
-        PixelDensity(model: "iPad15,6", name: "iPad Air 13-inch (M3) cellular", ppi: 264, ppiConfirmed: false),
-        PixelDensity(model: "iPad16,8", name: "iPad Air 11-inch (M4) Wi-Fi", ppi: 264, ppiConfirmed: false),
-        PixelDensity(model: "iPad16,9", name: "iPad Air 11-inch (M4) cellular", ppi: 264, ppiConfirmed: false),
-        PixelDensity(model: "iPad16,10", name: "iPad Air 13-inch (M4) Wi-Fi", ppi: 264, ppiConfirmed: false),
-        PixelDensity(model: "iPad16,11", name: "iPad Air 13-inch (M4) cellular", ppi: 264, ppiConfirmed: false),
+        PixelDensity(model: "iPad15,3", name: "iPad Air 11-inch (M3) Wi-Fi", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad15,4", name: "iPad Air 11-inch (M3) cellular", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad15,5", name: "iPad Air 13-inch (M3) Wi-Fi", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad15,6", name: "iPad Air 13-inch (M3) cellular", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad16,8", name: "iPad Air 11-inch (M4) Wi-Fi", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad16,9", name: "iPad Air 11-inch (M4) cellular", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad16,10", name: "iPad Air 13-inch (M4) Wi-Fi", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad16,11", name: "iPad Air 13-inch (M4) cellular", ppi: 264, ppiConfirmed: true),
         PixelDensity(model: "iPad16,1", name: "iPad mini (A17 Pro) Wi-Fi", ppi: 326, ppiConfirmed: true),
         PixelDensity(model: "iPad16,2", name: "iPad mini (A17 Pro) cellular", ppi: 326, ppiConfirmed: true),
         PixelDensity(model: "iPad15,7", name: "iPad (A16) Wi-Fi", ppi: 264, ppiConfirmed: true),
         PixelDensity(model: "iPad15,8", name: "iPad (A16) cellular", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad14,8", name: "iPad Air 11-inch (M2) Wi-Fi", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad14,9", name: "iPad Air 11-inch (M2) cellular", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad14,10", name: "iPad Air 13-inch (M2) Wi-Fi", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad14,11", name: "iPad Air 13-inch (M2) cellular", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad14,3", name: "iPad Pro 11-inch (4th generation) Wi-Fi", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad14,4", name: "iPad Pro 11-inch (4th generation) cellular", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad14,5", name: "iPad Pro 12.9-inch (6th generation) Wi-Fi", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad14,6", name: "iPad Pro 12.9-inch (6th generation) cellular", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad13,4", name: "iPad Pro 11-inch (3rd generation) Wi-Fi", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad13,5", name: "iPad Pro 11-inch (3rd generation) Wi-Fi", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad13,6", name: "iPad Pro 11-inch (3rd generation) cellular", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad13,7", name: "iPad Pro 11-inch (3rd generation) cellular", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad13,8", name: "iPad Pro 12.9-inch (5th generation) Wi-Fi", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad13,9", name: "iPad Pro 12.9-inch (5th generation) Wi-Fi", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad13,10", name: "iPad Pro 12.9-inch (5th generation) cellular", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad13,11", name: "iPad Pro 12.9-inch (5th generation) cellular", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad8,9", name: "iPad Pro 11-inch (2nd generation) Wi-Fi", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad8,10", name: "iPad Pro 11-inch (2nd generation) cellular", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad8,11", name: "iPad Pro 12.9-inch (4th generation) Wi-Fi", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad8,12", name: "iPad Pro 12.9-inch (4th generation) cellular", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad13,16", name: "iPad Air (5th generation) Wi-Fi", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad13,17", name: "iPad Air (5th generation) cellular", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad13,1", name: "iPad Air (4th generation) Wi-Fi", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad13,2", name: "iPad Air (4th generation) cellular", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad13,18", name: "iPad (10th generation) Wi-Fi", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad13,19", name: "iPad (10th generation) cellular", ppi: 264, ppiConfirmed: true),
+        PixelDensity(model: "iPad14,1", name: "iPad mini (6th generation) Wi-Fi", ppi: 326, ppiConfirmed: true),
+        PixelDensity(model: "iPad14,2", name: "iPad mini (6th generation) cellular", ppi: 326, ppiConfirmed: true),
     ]
 
     private static let byModel = Dictionary(uniqueKeysWithValues: entries.map { ($0.model, $0) })

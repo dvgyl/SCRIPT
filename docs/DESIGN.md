@@ -27,9 +27,9 @@ After the reader, each stage accepts only a type that the previous stage built a
 1. **Home** lists sessions as open, interrupted, closed, exported, or damaged. The operator taps New session.
 2. **Setup** asks for the participant code (pattern `^[A-Z0-9-]{3,16}$`), the age band, jurisdiction, locale, dominant hand, visit number, consent attestation, device asset code, screen protector, nib state, and Pencil model (Pro, 2nd generation, USB-C). If the iPad model is not in the device table, or its table density is not confirmed, Setup asks for a reference measurement with a steel rule or an ID-1 card. Setup refuses to start a session when the device has less than 500 MB of free storage.
 3. **Handoff** says "Please give the iPad to the participant."
-4. **Task.** The participant reads one instruction, taps Begin, and draws. The task ends when the participant taps Done or the time limit occurs. The participant never sees a score, a replay, or a quality value.
+4. **Task.** One screen shows the instruction, the stimulus at true millimetre scale, and Begin. Begin enables ink. The task ends when the participant taps Done or the time limit occurs; no countdown is shown. The participant never sees a score, a replay, or a quality value.
 5. **Handoff** says "Please give the iPad back to the researcher." A visible Operator control (press and hold for 2 seconds, then the PIN when the configuration has one) opens the operator screens. The flow is the same whatever the answers were.
-6. **Review** shows each trial with its duration, sample rate, and channels present. The operator can repeat a trial, add a mark from a fixed list, or close the session.
+6. **Review** shows each safety flag with its instrument and item (never a score) and requires an action code for it, then shows each trial with its duration, sample count, rate, and channels. The participant then sees the crisis list. Marks and repeat buttons in Review are planned, not built.
 7. **Export** puts a verified folder in Files under On My iPad > SCRIPT > Exports.
 
 After a crash, Home shows the session as interrupted. The open trial is marked interrupted. The operator repeats it, continues, or closes the session.
@@ -64,14 +64,15 @@ agreement["kinematic.speed_mean"].icc               # Estimate(point, low, high)
 Screening harness with known truth:
 
 ```python
-from scriptkin.evaluate import screening, Screening, Refused, Prevalence, Missing, LOGISTIC_L2
+from scriptkin.evaluate import AnalysisPlan, Refused, Screening, Target, screening
 
-truth = syn.Outcome(prevalence=0.08, effect={"tremor_mm": 0.6, "pause_rate_hz": 0.4})
-cohort = syn.cohort(n=800, devices=(syn.IPAD_PRO_PENCIL_PRO,), outcome=truth, seed=11)
-match screening(sk.feature_table(cohort.recordings), cohort.labels, model=LOGISTIC_L2,
-                prevalence=Prevalence(0.08), missing=Missing.IMPUTE_IN_FOLD, seed=11):
+cohort = syn.cohort(n=300, seed=11, scenario="signal")       # PHQ-9 answers come from a latent score
+plan = AnalysisPlan(target=Target(instrument="phq9", cut=10.0),
+                    features=("spiral-trace/kinematic.speed_mean", "spiral-trace/spectral.tremor_power"),
+                    prevalence=0.08)                          # the plan digest is fixed before labels join
+match screening(sk.feature_table(cohort.recordings), cohort.labels, plan=plan, seed=11):
     case Screening(auc=auc):
-        assert auc.low <= cohort.oracle_auc
+        print(auc.point, auc.low, auc.high, auc.p_value)     # significance comes from the permutation p-value
     case Refused(reason=why):
         raise SystemExit(why)
 ```
@@ -248,6 +249,9 @@ Library/Application Support/Sessions/<uuid>.jsonl    journals not yet exported
 Library/Application Support/Staging/<name>/          publication in progress
 Documents/Exports/<name>/                            verified exports, visible in Files
 Library/Application Support/Damaged/<uuid>.jsonl    journals with damage before the last line; exported only through publish
+Library/Application Support/ExportIndex.jsonl       {name, participantHMAC} per export, so that withdrawal finds encrypted exports
+Library/Application Support/Deletions.jsonl         the deletion log
+Library/Application Support/Configurations/         imported configurations, by SHA-256
 ```
 
 ## 6. Python shape
@@ -272,8 +276,8 @@ python/src/scriptkin/
   features.py        the feature catalog and extract, feature_table
   labels.py          questionnaire scores or refusals, and the safety flag count for audit
   qualification.py   the device qualification report
-  synthetic.py       traits, device models, journals, cohorts
-  evaluate/          screening, metrics, reliability, report
+  synthetic.py       participants with latent traits and scores, device models, sites, scenarios, cohorts
+  evaluate/          plan (digests), screening, participants, metrics, report, reliability, norms, planning
   contract.py        regenerate and verify the shared contract
   cli.py             inspect, features, contract
 ```
@@ -503,7 +507,7 @@ The operator gives the attestation in supervised sessions. In self-administered 
 
 ## 16. Device qualification
 
-A qualification session has `purpose: qualification` and a fixed task set: a reference-length check with a steel rule or an ID-1 card, a 10-second still hold, and a straight-line stroke along a guide. Channel presence comes from the samples of these three tasks. It writes an ordinary journal. `scriptkin` computes the sample-interval distribution, gaps, jitter, scale error, and channel presence from it. A study session records the identifier of the last qualification session on its device. "Can record" differs from "qualified for comparison"; only the analysis plan decides the second.
+A qualification session has `purpose: qualification` and a fixed task set: a reference-length check with a steel rule or an ID-1 card, a 10-second still hold, and a straight-line stroke along a guide. Channel presence comes from the samples of these three tasks. It writes an ordinary journal. `scriptkin` computes the sample-interval distribution, gaps, jitter, scale error, and channel presence from it. The app records a qualification session with the participant code `QUAL` and an operator attestation without documents. A study session records the identifier of the last qualification session on its device and Pencil. "Can record" differs from "qualified for comparison"; only the analysis plan decides the second.
 
 ## 17. Privacy and withdrawal
 

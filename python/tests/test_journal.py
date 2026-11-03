@@ -77,7 +77,7 @@ def test_fold_matches_independent_builder(path: Path) -> None:
 
 def test_export_reader_checks_and_converts() -> None:
     # Detects a reader that omits origin translation, y inversion, path scale, or late force correction.
-    recording = read_journal(FIXTURES / "export" / "P0001_3f2a9c1e")
+    recording = read_journal(FIXTURES / "export" / "SCRIPT_DEMO_DEMO_3f2a9c1e")
     trial = recording.trials[0]
     first = trial.strokes[0]
     scale = lines()[0]["scale"]["mmPerPoint"]
@@ -396,9 +396,9 @@ def test_swift_export_checks_fail_for_empty_configured_folder(
 
 def test_export_check_runs_schema_reader_and_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Detects a configured export check that does not compare the independent summary.
-    write_export(tmp_path / "P0001_3f2a9c1e", lines())
+    write_export(tmp_path / "SCRIPT_DEMO_DEMO_3f2a9c1e", lines())
     oracle = json.loads((FIXTURES / "journal" / "basic.fold.json").read_bytes())
-    summary = tmp_path / "P0001_3f2a9c1e.summary.json"
+    summary = tmp_path / "SCRIPT_DEMO_DEMO_3f2a9c1e.summary.json"
     summary.write_text(json.dumps(oracle))
     monkeypatch.setenv("SCRIPT_CONTRACT_OUT", str(tmp_path))
     test_swift_exports_match_schema_and_summary()
@@ -413,16 +413,18 @@ def test_encrypted_export_check_decrypts_and_compares(
 ) -> None:
     # Detects a configured encrypted-export check that does not compare the plaintext with its export.
     rows = lines()
-    data = write_export(tmp_path / "P0001_3f2a9c1e", rows)
+    data = write_export(tmp_path / "SCRIPT_DEMO_DEMO_3f2a9c1e", rows)
     oracle = json.loads((FIXTURES / "journal" / "basic.fold.json").read_bytes())
-    (tmp_path / "P0001_3f2a9c1e.summary.json").write_text(json.dumps(oracle))
+    (tmp_path / "SCRIPT_DEMO_DEMO_3f2a9c1e.summary.json").write_text(json.dumps(oracle))
     key = bytes(range(32))
-    write_encrypted_export(tmp_path / "encrypted" / "P0001_3f2a9c1e", data, rows[0]["sessionID"], key)
+    write_encrypted_export(
+        tmp_path / "encrypted" / "SCRIPT_DEMO_DEMO_3f2a9c1e", data, rows[0]["sessionID"], key
+    )
     (tmp_path / "encrypted" / "private_key.txt").write_text(base64.b64encode(key).decode() + "\n")
     monkeypatch.setenv("SCRIPT_CONTRACT_OUT", str(tmp_path))
     test_swift_encrypted_exports_open_to_the_plaintext_export()
     rows[3]["t"] += 0.001
-    write_export(tmp_path / "P0001_3f2a9c1e", rows)
+    write_export(tmp_path / "SCRIPT_DEMO_DEMO_3f2a9c1e", rows)
     with pytest.raises(AssertionError):
         test_swift_encrypted_exports_open_to_the_plaintext_export()
 

@@ -117,7 +117,7 @@ private func pinJSON(salt: String, iterations: Int) -> String {
     let line = Contract.lines(try Contract.data("fixtures/journal/basic.jsonl"))[0]
     guard case .sessionOpened(let opened) = try LineCodec.decode(line).event else { throw DecodeError.notAnObject }
     #expect(MillimetreScale.lookup(model: "iPad16,3", nativeScale: 2) == opened.scale)
-    #expect(DeviceTable.density(model: "iPad16,3")?.ppiConfirmed == false)
+    #expect(DeviceTable.density(model: "iPad16,3")?.ppiConfirmed == true)
     #expect(MillimetreScale.lookup(model: "iPad99,9", nativeScale: 2) == nil)
 }
 

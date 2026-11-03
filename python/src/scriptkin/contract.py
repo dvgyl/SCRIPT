@@ -879,7 +879,7 @@ def generated_files() -> dict[str, bytes]:
         files[f"fixtures/recovery/{name}.jsonl"] = data
         files[f"fixtures/recovery/{name}.expected.json"] = _json_bytes(expected)
     basic = _basic()
-    folder = f"fixtures/export/{basic.participant}_{basic.session_id[:8].lower()}"
+    folder = f"fixtures/export/SCRIPT_DEMO_DEMO_{basic.session_id[:8].lower()}"
     journal = basic.journal_bytes()
     files[f"{folder}/journal.jsonl"] = journal
     files[f"{folder}/manifest.json"] = manifest_bytes(basic.session_id, journal)

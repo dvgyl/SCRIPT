@@ -226,8 +226,9 @@ private func journal(_ store: SessionStore, _ id: SessionID) throws -> SessionSt
         DeviceFacts(model: model, os: "iPadOS 27.0", nativeScale: 2,
                     app: AppInfo(version: "0", build: "0", sourceRevision: "test"), input: .pencil)
     }
-    #expect(DeviceTable.density(model: "iPad16,3")?.ppiConfirmed == false)
-    #expect(facts("iPad16,3").tableScale == nil)
+    let unconfirmed = PixelDensity(model: "iPad16,3", name: "test", ppi: 264, ppiConfirmed: false)
+    #expect(facts("iPad16,3").tableScale(density: { _ in unconfirmed }) == nil)
+    #expect(facts("iPad16,3").tableScale != nil)
     #expect(facts("iPad99,9").tableScale == nil)
     #expect(facts("iPad17,2").tableScale == MillimetreScale.lookup(model: "iPad17,2", nativeScale: 2))
 }

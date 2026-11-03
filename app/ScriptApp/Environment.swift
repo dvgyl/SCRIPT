@@ -117,8 +117,10 @@ struct DeviceFacts: Sendable {
     }
 
     /// The scale from the device table, when the table confirms the pixel density of this model.
-    var tableScale: MillimetreScale? {
-        guard !LaunchMode.measureScale, DeviceTable.density(model: model)?.ppiConfirmed == true else { return nil }
+    var tableScale: MillimetreScale? { tableScale(density: DeviceTable.density(model:)) }
+
+    func tableScale(density: (String) -> PixelDensity?) -> MillimetreScale? {
+        guard !LaunchMode.measureScale, density(model)?.ppiConfirmed == true else { return nil }
         return MillimetreScale.lookup(model: model, nativeScale: nativeScale)
     }
 }
