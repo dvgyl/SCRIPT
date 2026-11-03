@@ -50,3 +50,4 @@ The sections are `contract`, `core`, `app`, and `python`. Build output goes to `
 | [docs/DEVICE_TESTING.md](docs/DEVICE_TESTING.md) | How to run the app on a real iPad and check what it records |
 | [docs/RELEASE.md](docs/RELEASE.md) | How to version, sign, distribute, and record a release of the app |
 | [docs/PAPER_PLAN.md](docs/PAPER_PLAN.md) | The first paper: the venue, its quality bar, the design, and the schedule |
+| [docs/BENCH_PROTOCOL.md](docs/BENCH_PROTOCOL.md) | The robotic bench study: devices, programs, camera reference, limits, statistics, and the lock |
