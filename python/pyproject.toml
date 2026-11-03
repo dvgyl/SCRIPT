@@ -8,6 +8,7 @@ dependencies = [
     "scipy>=1.14",
     "scikit-learn>=1.5",
     "cryptography>=50",
+    "jsonschema>=4.23",
 ]
 
 [project.scripts]
@@ -18,7 +19,6 @@ dev = [
     "pytest>=8.3",
     "ruff>=0.8",
     "pyright>=1.1.390",
-    "jsonschema>=4.23",
 ]
 
 [build-system]
@@ -37,7 +37,7 @@ target-version = "py312"
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
 
 [tool.pyright]
-include = ["src", "tests"]
+include = ["src", "tests", "studies"]
 exclude = ["**/._*"]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"

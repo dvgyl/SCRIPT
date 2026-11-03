@@ -185,3 +185,21 @@ def test_pen_only_refuses_to_overwrite_its_source(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="own folder"):
         pen_only(tmp_path / "source", tmp_path / "source")
     assert (tmp_path / "source" / "journal.jsonl").read_bytes() == data
+
+
+def test_pen_only_refuses_a_questionnaire_block_before_the_tasks(tmp_path: Path) -> None:
+    # Detects a pen-only copy of a session with a beforeTasks block: the gap before the first task would show
+    # how long the block took.
+    rows = fixture_lines("self_administered")
+    first = [i for i, r in enumerate(rows) if r["kind"] in QUESTIONNAIRE_KINDS and r.get("block") == 0]
+    block = [rows[i] for i in first]
+    for k, row in enumerate(block):
+        row["t"] = rows[0]["openedUptime"] + 0.1 * (k + 1)
+    rows = [rows[0], *block, *(r for i, r in enumerate(rows[1:], 1) if i not in first)]
+    for seq, row in enumerate(rows):
+        row["seq"] = seq
+    write_export(tmp_path / "source", rows)
+    assert read_journal(tmp_path / "source").questionnaires
+    with pytest.raises(ValueError, match=r"after the last trialEnded\. Line 1 \(questionnaireStarted\)"):
+        pen_only(tmp_path / "source", tmp_path / "copy")
+    assert not (tmp_path / "copy").exists()

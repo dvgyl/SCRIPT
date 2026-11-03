@@ -1,7 +1,8 @@
 """The exports that the SCRIPT Capture UI tests leave in `$SCRIPT_CONTRACT_OUT/app/`.
 
 `./check app` runs the UI tests on the simulator and copies every export out of the app container. These
-tests read each export as an analyst does.
+tests read each export as an analyst does. They skip when no app exports exist, unless
+`SCRIPT_REQUIRE_APP_EXPORTS=1`: `./check` sets it when the `app` section ran in the same invocation.
 """
 
 from __future__ import annotations
@@ -23,13 +24,14 @@ from scriptkin.quality import Refusal
 
 
 def app_exports() -> list[Path]:
-    """The export folders in `$SCRIPT_CONTRACT_OUT/app/`. Skips when nothing configured them."""
+    """The export folders in `$SCRIPT_CONTRACT_OUT/app/`."""
+    missing = pytest.fail if os.environ.get("SCRIPT_REQUIRE_APP_EXPORTS") == "1" else pytest.skip
     configured = os.environ.get("SCRIPT_CONTRACT_OUT")
     if configured is None:
-        pytest.skip("SCRIPT_CONTRACT_OUT is not set.")
+        missing("SCRIPT_CONTRACT_OUT is not set.")
     folder = Path(configured) / "app"
     if not folder.is_dir():
-        pytest.skip("No app exports: `./check app` has not run.")
+        missing(f"No app exports in {folder}: `./check app` has not run.")
     exports = sorted(p.parent for p in folder.glob("*/manifest.json") if not p.parent.name.startswith("._"))
     assert exports, f"{folder} exists but has no exports."
     return exports
@@ -109,6 +111,28 @@ def test_app_export_checks_fail_for_an_empty_app_folder(
     (tmp_path / "app").mkdir()
     with pytest.raises(AssertionError, match="has no exports"):
         test_app_exports_read_and_match_the_schema()
+
+
+@pytest.mark.parametrize("contract_out", [False, True])
+def test_app_export_checks_fail_without_exports_after_check_ran_the_app(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, contract_out: bool
+) -> None:
+    # Detects an app export check that skips, and so passes, after `./check` ran the app section.
+    def outcome() -> type[BaseException] | None:
+        try:
+            test_app_exports_read_and_match_the_schema()
+        except (pytest.fail.Exception, pytest.skip.Exception) as e:
+            return type(e)
+        return None
+
+    if contract_out:
+        monkeypatch.setenv("SCRIPT_CONTRACT_OUT", str(tmp_path))
+    else:
+        monkeypatch.delenv("SCRIPT_CONTRACT_OUT", raising=False)
+    monkeypatch.setenv("SCRIPT_REQUIRE_APP_EXPORTS", "1")
+    assert outcome() is pytest.fail.Exception
+    monkeypatch.delenv("SCRIPT_REQUIRE_APP_EXPORTS")
+    assert outcome() is pytest.skip.Exception
 
 
 def test_app_export_checks_need_both_administrations(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
