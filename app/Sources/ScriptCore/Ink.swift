@@ -135,12 +135,13 @@ public struct FingerReading: Sendable {
 /// Turns UIKit readings into journal events. It owns the contact numbers and the update map for the whole
 /// session, so a correction that arrives after a lift or after the next trial starts still finds its contact.
 ///
-/// The recorder is the boundary for UIKit values: a non-finite channel value becomes an absent channel, and a
-/// reading with a non-finite time or position gives no event.
+/// The recorder is the boundary for UIKit values. It gives no value that the line decoder refuses: a non-finite
+/// channel value or a negative force becomes an absent channel, and a reading with a negative or non-finite time
+/// or a non-finite position gives no sample.
 public struct InkRecorder: Sendable {
     public let plan: ChannelPlan
     public private(set) var nextContact: ContactID
-    private var down: [TouchKey: ContactID] = [:]
+    private var down: [TouchKey: OpenContact] = [:]
     /// Every pending estimate of the session. Samples that share a key share one entry, so one correction applies
     /// to all of them.
     private var updates: [UpdateKey: (contact: ContactID, expect: TouchProperties)] = [:]
@@ -148,6 +149,12 @@ public struct InkRecorder: Sendable {
     private struct UpdateKey: Hashable {
         let touch: TouchKey
         let update: UpdateIndex
+    }
+
+    private struct OpenContact {
+        let contact: ContactID
+        /// The time of the contact's last sample.
+        var t: Double
     }
 
     public init(plan: ChannelPlan, nextContact: ContactID = .first) {
@@ -161,17 +168,31 @@ public struct InkRecorder: Sendable {
     }
 
     /// Events for coalesced Pencil touches. A touch that this recorder did not see begin gives no events.
+    ///
+    /// A contact always ends, so two strokes never share one: a `began` for a key that is down ends the old contact
+    /// as cancelled, because UIKit reuses `UITouch` objects, and a lift reading that gives no sample still ends its
+    /// contact at the time of the last sample.
     public mutating func pen(_ readings: [PenReading]) -> [Event] {
         var events: [Event] = []
-        for r in readings where r.t.isFinite && r.x.isFinite && r.y.isFinite {
+        for r in readings {
+            let lifts = r.phase == .ended || r.phase == .cancelled
+            if r.phase == .began, let stale = down.removeValue(forKey: r.key) {
+                events.append(.contactEnded(ContactEnded(t: stale.t, contact: stale.contact, cancelled: true)))
+            }
+            guard isUptime(r.t), r.x.isFinite, r.y.isFinite else {
+                if lifts, let open = down.removeValue(forKey: r.key) {
+                    events.append(.contactEnded(ContactEnded(t: open.t, contact: open.contact,
+                                                             cancelled: r.phase == .cancelled)))
+                }
+                continue
+            }
             let contact: ContactID
-            if let known = down[r.key] {
-                contact = known
+            if let open = down[r.key] {
+                contact = open.contact
             } else {
                 guard r.phase == .began else { continue }
                 contact = nextContact
                 nextContact = contact.next
-                down[r.key] = contact
                 events.append(.contactBegan(ContactBegan(t: r.t, contact: contact,
                                                          maxForce: plan.force ? positive(r.maxForce) : nil)))
             }
@@ -184,15 +205,17 @@ public struct InkRecorder: Sendable {
             }
             events.append(.sample(Sample(
                 contact: contact, t: r.t, x: r.x, y: r.y,
-                force: plan.force ? finite(r.force) : nil,
+                force: plan.force ? force(r.force) : nil,
                 altitude: plan.altitude ? finite(r.altitude) : nil,
                 azimuth: plan.azimuth ? finite(r.azimuth) : nil,
                 roll: plan.roll ? finite(r.roll) : nil,
                 phase: r.phase, est: r.estimated.intersection(plan.properties), pending: pending
             )))
-            if r.phase == .ended || r.phase == .cancelled {
+            if lifts {
                 down[r.key] = nil
                 events.append(.contactEnded(ContactEnded(t: r.t, contact: contact, cancelled: r.phase == .cancelled)))
+            } else {
+                down[r.key] = OpenContact(contact: contact, t: r.t)
             }
         }
         return events
@@ -201,6 +224,7 @@ public struct InkRecorder: Sendable {
     /// Events for `touchesEstimatedPropertiesUpdated`. Each correction carries the values that this update resolved.
     /// A correction that matches no pending estimate has no contact.
     public mutating func estimatesUpdated(_ readings: [PenReading], arrived: Double) -> [Event] {
+        guard isUptime(arrived) else { return [] }
         var events: [Event] = []
         for r in readings {
             guard let update = r.update else { continue }
@@ -213,7 +237,7 @@ public struct InkRecorder: Sendable {
             events.append(.correction(Correction(
                 contact: known?.contact, update: update, arrived: arrived,
                 x: location ? r.x : nil, y: location ? r.y : nil,
-                force: resolved.contains(.force) ? finite(r.force) : nil,
+                force: resolved.contains(.force) ? force(r.force) : nil,
                 altitude: resolved.contains(.altitude) ? finite(r.altitude) : nil,
                 azimuth: resolved.contains(.azimuth) ? finite(r.azimuth) : nil,
                 roll: resolved.contains(.roll) ? finite(r.roll) : nil,
@@ -226,13 +250,13 @@ public struct InkRecorder: Sendable {
 
     /// Ends every contact that is down, for a trial that ends while the Pencil touches the screen.
     public mutating func cancelAll(t: Double) -> [Event] {
-        let contacts = down.values.sorted()
+        let contacts = down.values.map(\.contact).sorted()
         down.removeAll()
         return contacts.map { .contactEnded(ContactEnded(t: t, contact: $0, cancelled: true)) }
     }
 
     public func hover(_ r: HoverReading) -> Event? {
-        guard plan.hover, r.t.isFinite, r.x.isFinite, r.y.isFinite, r.z.isFinite else { return nil }
+        guard plan.hover, isUptime(r.t), r.x.isFinite, r.y.isFinite, r.z.isFinite else { return nil }
         return .hover(Hover(
             t: r.t, clock: .callback, x: r.x, y: r.y, z: max(0, r.z),
             altitude: plan.altitude ? finite(r.altitude) : nil,
@@ -242,7 +266,7 @@ public struct InkRecorder: Sendable {
     }
 
     public func finger(_ r: FingerReading) -> Event? {
-        guard r.t.isFinite, r.x.isFinite, r.y.isFinite else { return nil }
+        guard isUptime(r.t), r.x.isFinite, r.y.isFinite else { return nil }
         return .finger(Finger(t: r.t, phase: r.phase, x: r.x, y: r.y))
     }
 
@@ -253,6 +277,12 @@ public struct InkRecorder: Sendable {
     private func positive(_ value: Double?) -> Double? {
         value.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
     }
+
+    private func force(_ value: Double?) -> Double? {
+        value.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
+    }
+
+    private func isUptime(_ t: Double) -> Bool { t.isFinite && t >= 0 }
 }
 
 // MARK: - JSON

@@ -93,3 +93,49 @@ private func corrections(_ events: [Event]) -> [Correction] {
     #expect(began.maxForce == nil && sample.force == nil && sample.roll == nil && sample.altitude == 1)
     #expect(recorder.hover(HoverReading(t: 1, x: 1, y: 1, z: 0.5)) == nil)
 }
+
+private func ends(_ events: [Event]) -> [ContactEnded] {
+    events.compactMap { if case .contactEnded(let e) = $0 { e } else { nil } }
+}
+
+@Test func aBeganOnAKeyThatIsDownEndsTheOldContactFirst() throws {
+    // Detects two strokes merged into one contact when UIKit reuses a touch whose lift reading was lost.
+    var recorder = InkRecorder(plan: pro)
+    let first = recorder.pen([reading(7, 1, .began), reading(7, 1.01, .moved)])
+    let second = recorder.pen([reading(7, 2, .began), reading(7, 2.01, .ended)])
+    #expect(contacts(first) == [1])
+    #expect(second.first == .contactEnded(ContactEnded(t: 1.01, contact: .first, cancelled: true)))
+    #expect(contacts(second) == [2])
+
+    let config = try Contract.demoConfiguration()
+    let opened = makeOpened(configuration: config, battery: try Contract.battery())
+    var d = try Driver(opened: opened, rules: try rules(for: opened, configuration: config))
+    try d.run(.startTrial(Driver.plan("spiral-trace"), t: 0.5))
+    try d.write(first + second)
+    #expect(d.state.summary.trials[0].contacts == 2)
+    try d.run(.endTrial(reason: .participantDone, t: 3))
+}
+
+@Test func aLiftWithoutAUsableReadingStillEndsItsContact() {
+    // Detects a contact left down by a lift reading with a non-finite time, so the next stroke joins it.
+    var recorder = InkRecorder(plan: pro)
+    _ = recorder.pen([reading(7, 1, .began), reading(7, 1.01, .moved)])
+    #expect(recorder.pen([reading(7, .nan, .ended)]) == [
+        .contactEnded(ContactEnded(t: 1.01, contact: .first, cancelled: false)),
+    ])
+    let next = recorder.pen([reading(7, 2, .began)])
+    #expect(contacts(next) == [2])
+    #expect(ends(next).isEmpty)
+}
+
+@Test func aNegativeForceOrTimeNeverReachesTheJournal() throws {
+    // Detects a reading that the recorder turns into a line the decoder refuses, which the writer then refuses.
+    var recorder = InkRecorder(plan: pro)
+    let events = recorder.pen([reading(4, 1, .began, force: -0.1), reading(4, -1, .moved), reading(4, 1.02, .ended)])
+    for (seq, event) in events.enumerated() {
+        _ = try LineCodec.decode(try LineCodec.encode(Entry(seq: seq, event: event)).dropLast())
+    }
+    let samples = events.compactMap { if case .sample(let s) = $0 { s } else { nil } }
+    #expect(samples.map(\.t) == [1, 1.02])
+    #expect(samples.first?.force == nil)
+}

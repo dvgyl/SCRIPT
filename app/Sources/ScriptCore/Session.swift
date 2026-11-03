@@ -398,10 +398,26 @@ public enum Command: Hashable, Sendable {
     case recordAction(Code, t: Double)
     case mark(trial: TrialIndex, code: MarkCode, t: Double)
     case close(t: Double)
+
+    /// The uptime of the intent, which every event it gives carries.
+    var t: Double {
+        switch self {
+        case .handoff(_, let t), .startTrial(_, let t), .beginTrial(let t), .endTrial(_, let t),
+             .startQuestionnaire(_, let t), .respond(_, _, let t), .endQuestionnaire(_, let t), .show(_, let t),
+             .recordAction(_, let t), .mark(_, _, let t), .close(let t):
+            t
+        }
+    }
 }
 
 public enum Rejection: Error, Hashable, Sendable {
     case sessionClosed
+    /// The command time is negative or not finite, which the journal schema refuses.
+    case invalidTime
+    /// A task position below 1. Positions start at 1.
+    case invalidPosition(Int)
+    case repeatedAccommodation(Accommodation)
+    case invalidStimulusOrigin
     case trialOpen
     case blockOpen
     case noOpenTrial
@@ -415,6 +431,8 @@ public enum Rejection: Error, Hashable, Sendable {
     case taskNotForPurpose(TaskID)
     case unknownInstrument(InstrumentID)
     case unverifiedInstrument(InstrumentID)
+    /// The instrument's lowest validated age is above the lowest age of the session's age band.
+    case instrumentNotForAgeBand(InstrumentID)
     /// A self-administered block with a safety item needs `safety.remoteReview` (docs/DESIGN.md section 15.3).
     case safetyItemNeedsRemoteReview(InstrumentID)
     case unknownItem(ItemID)
@@ -433,9 +451,11 @@ public enum Rejection: Error, Hashable, Sendable {
 }
 
 extension SessionState {
-    /// Turns an intent into the events to append, or refuses it. It never changes the state.
+    /// Turns an intent into the events to append, or refuses it. It never changes the state, and it never gives a
+    /// value that the line decoder refuses.
     public func decide(_ command: Command, rules: SessionRules) -> Result<[Event], Rejection> {
         if case .closed = phase { return .failure(.sessionClosed) }
+        guard command.t.isFinite, command.t >= 0 else { return .failure(.invalidTime) }
         let opened = session.opened
         switch command {
         case .handoff(let to, let t):
@@ -448,6 +468,14 @@ extension SessionState {
             let qualificationTask = Battery.qualificationTasks.contains(plan.task)
             guard qualificationTask == (opened.purpose == .qualification) else {
                 return .failure(.taskNotForPurpose(plan.task))
+            }
+            guard plan.position >= 1 else { return .failure(.invalidPosition(plan.position)) }
+            var seen = Set<Accommodation>()
+            for accommodation in plan.accommodations where !seen.insert(accommodation).inserted {
+                return .failure(.repeatedAccommodation(accommodation))
+            }
+            guard plan.stimulusOrigin.x.isFinite, plan.stimulusOrigin.y.isFinite else {
+                return .failure(.invalidStimulusOrigin)
             }
             let attempt = session.trials.count { $0.task == plan.task } + 1
             let trial = TrialRef(index: TrialIndex(count: session.trials.count), task: plan.task, attempt: attempt)
@@ -471,6 +499,7 @@ extension SessionState {
             if let busy = busyRejection { return .failure(busy) }
             guard let instrument = rules.instruments.instrument(id) else { return .failure(.unknownInstrument(id)) }
             guard instrument.isVerified else { return .failure(.unverifiedInstrument(id)) }
+            guard opened.ageBand.lowestAge >= instrument.minimumAge else { return .failure(.instrumentNotForAgeBand(id)) }
             guard rules.crisisList != nil else { return .failure(.noCrisisList) }
             if opened.administration == .selfAdministered, instrument.hasSafetyItem, rules.remoteReview == nil {
                 return .failure(.safetyItemNeedsRemoteReview(id))
