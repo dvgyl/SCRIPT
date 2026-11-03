@@ -269,6 +269,79 @@ private func export(_ bench: TestBench, _ opened: SessionOpened) throws -> (fold
     #expect(marks.map { $0["code"] as? String } == ["deviceProblem"])
 }
 
+@Test @MainActor func aRunIDOfTheSessionCannotBeginAgain() async throws {
+    // Detects a run screen that begins a second run with the run id of an earlier run, for example when the run
+    // index stays the same from one run to the next, so two runs share one camera file name.
+    let bench = try TestBench()
+    defer { bench.remove() }
+    let store = bench.store
+    bench.enter()
+    #expect(store.open(try bench.opened(.bench)))
+    #expect(store.refusal(loops) == nil)
+    store.begin(loops)
+    bench.stroke(x0: 1000, y: 1000)
+    store.done()
+    #expect(store.refusal(loops) == .repeatedRun("loops-l-v20", 1))
+    #expect(store.runID(loops) == "W-M3-loops-l-v20-r1")
+    store.begin(loops)
+    #expect(store.state?.phase == .ready && store.state?.session.trials.count == 1)
+    let rerun: RunChoice = .bench(BenchRunPlan(program: "loops-l-v20", run: 6))
+    #expect(store.refusal(rerun) == nil)
+    store.begin(rerun)
+    store.done()
+    #expect(try await bench.lines().of("trialStarted").map { ($0["bench"] as? [String: Any])?["clip"] as? String }
+        == ["W-M3-loops-l-v20-r1", "W-M3-loops-l-v20-r6"])
+}
+
+@Test @MainActor func aResumedBenchSessionOfAnotherProtocolOffersNoRun() async throws {
+    // Detects a build that continues a bench session of another bench protocol, so one journal mixes the runs of two
+    // registrations.
+    let first = try TestBench()
+    defer { first.remove() }
+    first.enter()
+    var opened = try first.opened(.bench)
+    guard case .bench(var facts) = opened.subject else { throw CocoaError(.featureUnsupported) }
+    facts.protocol = BenchProtocolRef(version: "1.0", sha256: facts.protocol.sha256)
+    opened.subject = .bench(facts)
+    #expect(first.store.open(opened))
+    try await first.requireLive().writer.close()
+
+    let second = try TestBench(root: first.root)
+    second.clock.now = first.clock.now + 60
+    second.enter()
+    second.store.refresh()
+    second.store.resume(opened.sessionID)
+    #expect(second.store.live != nil)
+    #expect(second.store.refusal(loops) == .otherProtocol)
+    second.store.begin(loops)
+    #expect(second.store.state?.session.trials.isEmpty == true)
+    await second.store.close()
+    #expect(second.store.live == nil)
+}
+
+@Test @MainActor func beginNeedsFullScreenAndAnOpenSessionKeepsTheMacAwake() async throws {
+    // Detects a run that begins while the window is not in full screen, where a pen position outside the window
+    // reaches another app, or a session that lets the Mac or its display sleep (bench protocol section 2.2).
+    let bench = try TestBench()
+    defer { bench.remove() }
+    let store = bench.store
+    bench.enter()
+    let opened = try bench.opened(.bench)
+    #expect(powerAssertions(of: opened).isEmpty)
+    #expect(store.open(opened))
+    #expect(powerAssertions(of: opened) == ["PreventUserIdleSystemSleep", "PreventUserIdleDisplaySleep"])
+    store.fullScreen = false
+    store.begin(loops)
+    #expect(store.state?.phase == .ready && store.state?.session.trials.isEmpty == true)
+    store.fullScreen = true
+    store.begin(loops)
+    #expect(store.state?.session.trials.count == 1)
+    store.done()
+    await store.close()
+    #expect(store.live == nil)
+    #expect(powerAssertions(of: opened).isEmpty)
+}
+
 @Test @MainActor func focusLossEndsAnOpenTrialAsBackgrounded() async throws {
     // Detects a trial that stays open after the window loses the keyboard focus, so a run could go on without the
     // capture (bench protocol section 2.4).
@@ -301,7 +374,7 @@ private func export(_ bench: TestBench, _ opened: SessionOpened) throws -> (fold
     first.store.begin(loops)
     first.stroke(x0: 7000, y: 20000)
     first.store.done()
-    first.store.begin(loops)
+    first.store.begin(.bench(BenchRunPlan(program: "loops-l-v20", run: 2)))
     first.point(.down, x: 7000, y: 20000)
     try await first.requireLive().writer.close()
 
@@ -313,8 +386,8 @@ private func export(_ bench: TestBench, _ opened: SessionOpened) throws -> (fold
     second.store.resume(opened.sessionID)
     let live = try second.requireLive()
     #expect(live.origin == Point(x: 7000, y: 9600))
-    #expect(live.labels == ["W-M3-loops-l-v20-r1", "W-M3-loops-l-v20-r1"])
-    second.store.begin(.bench(BenchRunPlan(program: "loops-l-v20", run: 2)))
+    #expect(live.labels == ["W-M3-loops-l-v20-r1", "W-M3-loops-l-v20-r2"])
+    second.store.begin(.bench(BenchRunPlan(program: "loops-l-v20", run: 3)))
     second.stroke(x0: 7000, y: 20000)
     second.store.done()
     #expect(try await second.lines().of("contactBegan").map { $0["contact"] as? Int } == [1, 2, 3])

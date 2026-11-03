@@ -60,22 +60,30 @@ struct BenchRunScreen: View {
                 }
             } else {
                 Section("Next run") {
-                    if isBench {
-                        Picker("Program", selection: $program) {
-                            ForEach(store.contract.programList, id: \.id) { Text(verbatim: $0.id.rawValue).tag($0.id) }
+                    let refusal = store.refusal(choice)
+                    if refusal != .otherProtocol {
+                        if isBench {
+                            Picker("Program", selection: $program) {
+                                ForEach(store.contract.programList, id: \.id) { Text(verbatim: $0.id.rawValue).tag($0.id) }
+                            }
+                            Stepper("Run \(run)", value: $run, in: BenchRun.runs)
+                            LabeledContent("Run id") {
+                                Text(verbatim: store.runID(choice) ?? "").monospaced()
+                            }
+                        } else {
+                            Picker("Task", selection: $task) {
+                                ForEach(BenchContract.qualificationTasks, id: \.self) { Text(verbatim: $0.rawValue).tag($0) }
+                            }
                         }
-                        Stepper("Run \(run)", value: $run, in: BenchRun.runs)
-                        LabeledContent("Run id") {
-                            Text(verbatim: store.runID(choice) ?? "").monospaced()
-                        }
-                    } else {
-                        Picker("Task", selection: $task) {
-                            ForEach(BenchContract.qualificationTasks, id: \.self) { Text(verbatim: $0.rawValue).tag($0) }
-                        }
+                        Button("Begin") { store.begin(choice) }
+                            .keyboardShortcut(.defaultAction)
+                            .disabled(store.plan(choice) == nil || live.stopped || refusal != nil || !store.fullScreen)
                     }
-                    Button("Begin") { store.begin(choice) }
-                        .keyboardShortcut(.defaultAction)
-                        .disabled(store.plan(choice) == nil || live.stopped)
+                    if let line = refusal?.runLine {
+                        Text(line).foregroundStyle(.red)
+                    } else if !store.fullScreen {
+                        Text("Begin needs full screen.").foregroundStyle(.red)
+                    }
                 }
             }
             Section("Origin") {
@@ -110,6 +118,17 @@ struct BenchRunScreen: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+extension Rejection {
+    /// The line that the run screen shows for a run that the session refuses.
+    var runLine: LocalizedStringKey? {
+        switch self {
+        case .repeatedRun: "This session already has this run id."
+        case .otherProtocol: "This session uses another bench protocol than this app, so it takes no more runs."
+        default: nil
+        }
     }
 }
 

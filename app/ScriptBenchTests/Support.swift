@@ -1,4 +1,5 @@
 import AppKit
+import IOKit.pwr_mgt
 import ScriptCore
 @testable import ScriptBench
 
@@ -41,6 +42,7 @@ final class TestBench {
             mac: mac, qualifications: QualificationRegistry(file: self.root.appendingPathComponent("Qualifications.json")),
             uptime: { clock.appEvent() }, freeSpace: { 50_000_000_000 }
         )
+        store.fullScreen = true
     }
 
     func remove() { try? FileManager.default.removeItem(at: root) }
@@ -117,6 +119,16 @@ final class TestBench {
         guard let live = store.live else { throw CocoaError(.featureUnsupported) }
         return live
     }
+}
+
+/// The types of the power assertions that this process holds for the session `opened`.
+func powerAssertions(of opened: SessionOpened) -> Set<String> {
+    var all: Unmanaged<CFDictionary>?
+    guard IOPMCopyAssertionsByProcess(&all) == kIOReturnSuccess,
+          let byProcess = all?.takeRetainedValue() as? [NSNumber: [[String: Any]]] else { return [] }
+    let mine = byProcess[NSNumber(value: getpid())] ?? []
+    return Set(mine.filter { ($0[kIOPMAssertionNameKey] as? String)?.hasSuffix(opened.sessionID.description) == true }
+        .compactMap { $0[kIOPMAssertionTypeKey] as? String })
 }
 
 extension [[String: Any]] {

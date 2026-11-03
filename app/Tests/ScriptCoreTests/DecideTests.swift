@@ -261,6 +261,68 @@ private func decidedRun(_ d: Driver, _ plan: TrialPlan) throws -> BenchRun? {
     #expect(ClipName("" as String) == nil && ClipName(String(repeating: "c", count: 65)) == nil)
 }
 
+@Test func aRunIDIsUsedOncePerSession() throws {
+    // Detects a session that records a second run with the program and run index of an earlier run, aborted or
+    // interrupted, so two runs share one run id and one camera file name (bench protocol sections 6.4 and 15).
+    var d = try benchDriver()
+    let loops = Driver.benchPlan("loops-l-v20", task: "bench-loops-l", run: 2)
+    try d.run(.startTrial(loops, t: 101))
+    try d.run(.endTrial(reason: .operatorAbort, t: 102))
+    try d.run(.startTrial(Driver.benchPlan("spiral-l-v20", task: "bench-spiral-l", position: 2), t: 103))
+    try d.write(d.state.recovery(t: 5, at: Fixed.launch.at, boot: Fixed.laterBoot, truncatedBytes: 0,
+                                 instruments: d.rules.instruments))
+    for (plan, run) in [(loops, BenchRunPlan(program: "loops-l-v20", run: 2)),
+                        (Driver.benchPlan("spiral-l-v20", task: "bench-spiral-l"), BenchRunPlan(program: "spiral-l-v20", run: 1))] {
+        #expect(d.state.decide(.startTrial(plan, t: 6), rules: d.rules).rejection == .repeatedRun(run.program, run.run))
+        #expect(d.state.benchRun(run, rules: d.rules).rejection == .repeatedRun(run.program, run.run))
+    }
+    #expect(try decidedRun(d, Driver.benchPlan("loops-l-v20", task: "bench-loops-l", run: 6))?.clip == "W-M3-loops-l-v20-r6")
+    #expect(try decidedRun(d, Driver.benchPlan("loops-l-v40", task: "bench-loops-l", run: 2))?.clip == "W-M3-loops-l-v40-r2")
+}
+
+@Test func aBenchRunHasNoTimeLimit() throws {
+    // Detects a bench run that a time limit can end, which cuts a run that the operator ends with Done (bench
+    // protocol section 5.2), or a study trial that loses its time limit.
+    var d = try benchDriver()
+    try d.run(.startTrial(Driver.benchPlan("line-osc8", task: "bench-line"), t: 101))
+    guard case .drawing(let run) = d.state.phase else { throw DecodeError.missing("open trial") }
+    #expect(run.deadline == nil)
+    #expect(d.state.decide(.endTrial(reason: .timeLimit, t: 400), rules: d.rules).rejection == .noTimeLimit)
+    #expect(throws: Never.self) { try d.state.decide(.endTrial(reason: .operatorDone, t: 400), rules: d.rules).get() }
+
+    var study = try driver()
+    try study.run(.startTrial(Driver.plan("spiral-trace"), t: 101))
+    guard case .drawing(let trial) = study.state.phase else { throw DecodeError.missing("open trial") }
+    #expect(trial.deadline == 221)
+    #expect(throws: Never.self) { try study.state.decide(.endTrial(reason: .timeLimit, t: 221), rules: study.rules).get() }
+}
+
+@Test func aPracticeBenchRunIsRefused() throws {
+    // Detects a bench run recorded as practice, which the feature table and the bench analysis treat as not measured.
+    let d = try benchDriver()
+    var plan = Driver.benchPlan("loops-l-v20", task: "bench-loops-l")
+    plan.practice = true
+    #expect(d.state.decide(.startTrial(plan, t: 101), rules: d.rules).rejection == .practiceBenchRun)
+}
+
+@Test func aBenchSessionOfAnotherProtocolTakesNoRun() throws {
+    // Detects a bench session that a build with another programs file continues, so one journal mixes the runs of
+    // two protocol registrations.
+    let programs = try Contract.benchPrograms()
+    var opened = makeBenchOpened(programs: programs, battery: try Contract.battery())
+    guard case .bench(var facts) = opened.subject else { throw DecodeError.missing("bench") }
+    let other = try #require(SHA256Digest(hex: String(repeating: "a", count: 64)))
+    for header in [BenchProtocolRef(version: "1.0", sha256: programs.protocol.sha256),
+                   BenchProtocolRef(version: programs.protocol.version, sha256: other)] {
+        facts.protocol = header
+        opened.subject = .bench(facts)
+        let d = try Driver(opened: opened, rules: try benchRules())
+        #expect(d.state.decide(.startTrial(Driver.benchPlan("loops-l-v20", task: "bench-loops-l"), t: 101), rules: d.rules)
+            .rejection == .otherProtocol, "\(header)")
+        #expect(d.state.benchRun(BenchRunPlan(program: "loops-l-v20", run: 1), rules: d.rules).rejection == .otherProtocol)
+    }
+}
+
 @Test func anExcludeMarkOnAFaultRunIsRefused() throws {
     // Detects a fault run that an operator can exclude, which removes it from the quality gate of bench protocol
     // section 5.3, in either capture app.

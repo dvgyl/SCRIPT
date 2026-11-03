@@ -30,6 +30,9 @@
     "Begin" : {
 
     },
+    "Begin needs full screen." : {
+
+    },
     "Bench %@-%@" : {
       "localizations" : {
         "en" : {
@@ -281,6 +284,12 @@
 
     },
     "The tablet of this session is not in the tablet table." : {
+
+    },
+    "This session already has this run id." : {
+
+    },
+    "This session uses another bench protocol than this app, so it takes no more runs." : {
 
     },
     "Time limit" : {

@@ -24,13 +24,14 @@ def fixture_store(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 def test_qc_report_counts_match_a_hand_count_of_the_contract_fixtures(fixture_store: Path) -> None:
-    # Detects a QC report that counts a session, trial, sample, correction, or safety event wrongly.
+    # Detects a QC report that counts a session, trial, sample, correction, or safety event wrongly, or
+    # that names one device by two assets, so its session counts and its device list do not join.
     # The expected values come from the .fold.json oracles and the header lines of the fixtures.
     report = qc_report(fixture_store)
     assert report["sessions"] == 19
     assert report["sessionsBy"] == {
         "site": {"DEMO": 17},
-        "deviceAsset": {"IPAD-01": 17, "IPAD-02": 1, "MAC-01": 1},
+        "deviceAsset": {"IPAD-01": 17, "IPAD-02": 1, "WACOM-01": 1},
         "configSHA256": {"f6873edd92a4f4d6d9f2a0f5c50c4df853e0c3af5595e7a4dc50cd7dbbe7b5c8": 17},
         "appVersion": {"1.0.0": 19},
         "administration": {"self": 3, "supervised": 14},
@@ -73,6 +74,7 @@ def test_qc_report_counts_match_a_hand_count_of_the_contract_fixtures(fixture_st
         for c in planned
     }
     devices = {(d["deviceAsset"], d["pencil"]): d for d in report["devices"]}
+    assert set(report["sessionsBy"]["deviceAsset"]) == {asset for asset, _ in devices}, "one asset per device"
     assert sorted(devices) == [
         ("IPAD-01", "none"),
         ("IPAD-01", "pro"),

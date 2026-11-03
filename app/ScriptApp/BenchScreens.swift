@@ -36,38 +36,45 @@ struct BenchRunScreen: View {
     var body: some View {
         let programs = store.contract.benchPrograms.listed
         let choice = BenchRunPlan(program: program, run: run)
+        let refusal = store.runRefusal(choice)
         let digest = store.digest ?? JournalDigest()
         NavigationStack {
             List {
                 Section("Next run") {
-                    Picker("Program", selection: $program) {
-                        Section("Main programs") {
-                            ForEach(programs.filter { $0.fault == nil }, id: \.id) { Text(verbatim: $0.id.rawValue).tag($0.id) }
+                    if refusal != .otherProtocol {
+                        Picker("Program", selection: $program) {
+                            Section("Main programs") {
+                                ForEach(programs.filter { $0.fault == nil }, id: \.id) { Text(verbatim: $0.id.rawValue).tag($0.id) }
+                            }
+                            Section("Fault programs") {
+                                ForEach(programs.filter { $0.fault != nil }, id: \.id) { Text(verbatim: $0.id.rawValue).tag($0.id) }
+                            }
                         }
-                        Section("Fault programs") {
-                            ForEach(programs.filter { $0.fault != nil }, id: \.id) { Text(verbatim: $0.id.rawValue).tag($0.id) }
+                        .accessibilityIdentifier("program")
+                        LabeledContent("Run") {
+                            Picker("Run", selection: $run) {
+                                ForEach(BenchRun.runs, id: \.self) { Text(verbatim: String($0)).tag($0) }
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+                            .frame(maxWidth: 480)
+                            .accessibilityIdentifier("runIndex")
                         }
-                    }
-                    .accessibilityIdentifier("program")
-                    LabeledContent("Run") {
-                        Picker("Run", selection: $run) {
-                            ForEach(BenchRun.runs, id: \.self) { Text(verbatim: String($0)).tag($0) }
+                        HStack {
+                            Text("Run ID")
+                            Spacer(minLength: 16)
+                            Text(verbatim: store.runID(choice)?.rawValue ?? "")
+                                .monospaced()
+                                .foregroundStyle(.secondary)
+                                .accessibilityIdentifier("runID")
                         }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                        .frame(maxWidth: 480)
-                        .accessibilityIdentifier("runIndex")
+                        Button("Start the run") { store.chooseRun(choice) }
+                            .disabled(refusal != nil)
+                            .accessibilityIdentifier("startRun")
                     }
-                    HStack {
-                        Text("Run ID")
-                        Spacer(minLength: 16)
-                        Text(verbatim: store.runID(choice)?.rawValue ?? "")
-                            .monospaced()
-                            .foregroundStyle(.secondary)
-                            .accessibilityIdentifier("runID")
+                    if let line = refusal?.runLine {
+                        Text(line).foregroundStyle(.red).accessibilityIdentifier("runRefusal")
                     }
-                    Button("Start the run") { store.chooseRun(choice) }
-                        .accessibilityIdentifier("startRun")
                 }
                 if !digest.trials.isEmpty {
                     Section("Runs") {
@@ -144,7 +151,6 @@ struct BenchTaskScreen: View {
             .padding(.vertical, 20)
         }
         .background(Color(UIColor.systemBackground))
-        .timeLimit(of: run.trial, at: run.deadline, store: store)
         .confirmationDialog("Stop this run?", isPresented: $stopping, titleVisibility: .visible) {
             Button("Stop the run", role: .destructive, action: store.stopRun)
         }
@@ -174,6 +180,17 @@ struct BenchTaskScreen: View {
     private func start(_ size: CGSize) {
         guard run.trial == nil, let view = ViewSize(width: Double(size.width), height: Double(size.height)) else { return }
         store.startRun(view: view)
+    }
+}
+
+extension Rejection {
+    /// The line that the run screen shows for a run that the session refuses.
+    var runLine: LocalizedStringKey? {
+        switch self {
+        case .repeatedRun: "This session already has this run ID."
+        case .otherProtocol: "This session uses another bench protocol than this app, so it takes no more runs."
+        default: nil
+        }
     }
 }
 

@@ -81,6 +81,11 @@ final class BenchStore {
     private(set) var revision = 0
     /// True while the pen is in range above the tablet, so Set origin has a position.
     private(set) var penInRange = false
+    /// True while the window is in full screen, as the window reports it. Begin needs it: a pen position outside the
+    /// window would reach another app, and the run would end as backgrounded.
+    var fullScreen = false
+    /// Keeps the Mac and its display awake while a session is open (bench protocol section 2.2).
+    @ObservationIgnored private var activity: (any NSObjectProtocol)?
     private(set) var listing: [Listed] = []
     @ObservationIgnored private var reconciled: [SessionID: SessionState] = [:]
     var notice: Notice?
@@ -255,6 +260,12 @@ final class BenchStore {
     private func started() {
         ink.clear()
         penInRange = false
+        if let live, activity == nil {
+            activity = ProcessInfo.processInfo.beginActivity(
+                options: [.idleSystemSleepDisabled, .idleDisplaySleepDisabled],
+                reason: "SCRIPT Bench session \(live.opened.sessionID)"
+            )
+        }
         revision += 1
     }
 
@@ -385,12 +396,17 @@ final class BenchStore {
         }
     }
 
-    /// The run id that `decide` writes as the clip of a bench run, or nil when `decide` refuses the plan.
+    /// The run id that `decide` writes as the clip of a bench run.
     func runID(_ choice: RunChoice) -> String? {
-        guard let live, let state, let plan = plan(choice),
-              case .success(let events) = state.decide(.startTrial(plan, t: uptime()), rules: live.rules),
-              case .trialStarted(let trial)? = events.first, case .bench(let run) = trial.subject else { return nil }
-        return run.clip?.rawValue
+        guard case .bench(let run) = choice, case .bench(let facts)? = live?.opened.subject else { return nil }
+        return ClipName(runOf: run.program, run: run.run, in: facts).rawValue
+    }
+
+    /// Why `decide` refuses the bench run of `choice` in this session, or nil when Begin can start it.
+    func refusal(_ choice: RunChoice) -> Rejection? {
+        guard case .bench(let run) = choice, let live, let state,
+              case .failure(let rejection) = state.benchRun(run, rules: live.rules) else { return nil }
+        return rejection
     }
 
     /// Stores the pen's hover position as the stimulus origin of the next trials.
@@ -402,7 +418,7 @@ final class BenchStore {
 
     /// Starts the trial and begins it, because the operator taps Begin before the stylus lowers.
     func begin(_ choice: RunChoice) {
-        guard let plan = plan(choice), perform(.startTrial(plan, t: uptime())) else { return }
+        guard fullScreen, let plan = plan(choice), perform(.startTrial(plan, t: uptime())) else { return }
         perform(.beginTrial(t: uptime()))
     }
 
@@ -457,6 +473,8 @@ final class BenchStore {
     func leave() async {
         guard let live else { return }
         try? await live.writer.close()
+        if let activity { ProcessInfo.processInfo.endActivity(activity) }
+        activity = nil
         self.live = nil
         core = nil
         ink.clear()

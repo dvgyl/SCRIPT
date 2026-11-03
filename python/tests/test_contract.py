@@ -200,8 +200,7 @@ def test_bench_tasks_cannot_enter_a_study_session() -> None:
     assert any("bench" in p for p in studyconfig.validate(config))
 
 
-def test_bench_programs_script_uses_the_package_registry(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Detects a study script that keeps its own copy of the program table instead of the package registry.
+def _bench_programs_script(monkeypatch: pytest.MonkeyPatch) -> Any:
     path = Path(__file__).resolve().parents[1] / "studies" / "bench_programs.py"
     spec = importlib.util.spec_from_file_location("bench_programs_study", path)
     assert spec is not None and spec.loader is not None
@@ -209,7 +208,23 @@ def test_bench_programs_script_uses_the_package_registry(monkeypatch: pytest.Mon
     # The script's dataclasses resolve their string annotations through sys.modules.
     monkeypatch.setitem(sys.modules, spec.name, script)
     spec.loader.exec_module(script)
+    return script
+
+
+def test_bench_programs_script_uses_the_package_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Detects a study script that keeps its own copy of the program table instead of the package registry.
+    script = _bench_programs_script(monkeypatch)
     assert script.MAIN is bench.MAIN and script.FAULTS is bench.FAULTS and script.Design is bench.Design
+
+
+def test_bench_move_lists_keep_the_program_keys_of_protocol_1_1(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Detects a Design field, such as base, that reaches the program object of a move-list file, which
+    # changes the files that the protocol lock hashes.
+    script = _bench_programs_script(monkeypatch)
+    keys = ["id", "task", "geometry", "scale", "speed_mm_s", "oscillation_hz", "oscillation_mm", "fault"]
+    summary, _ = script.program(bench.MAIN[0])
+    assert list(script.registered(summary)["design"]) == keys
+    assert list(script.registered(bench.FAULTS[0])) == keys
 
 
 def test_bench_programs_match_the_generator_and_the_battery() -> None:

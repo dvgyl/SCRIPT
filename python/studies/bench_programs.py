@@ -283,6 +283,12 @@ def program(design: Design) -> tuple[Program, list[Move]]:
     return summary, move_list
 
 
+def registered(program: Any) -> dict[str, Any]:
+    """The program fields of a move list without `Design.base`, so the files keep the bytes that protocol 1.1
+    registered. A fault file names its base at the top level."""
+    return asdict(program, dict_factory=lambda pairs: {k: v for k, v in pairs if k != "base"})
+
+
 def write_program(folder: Path, payload: dict[str, Any], program_id: str) -> None:
     folder.mkdir(parents=True, exist_ok=True)
     payload["battery"] = {"id": battery.BATTERY_ID, "version": battery.BATTERY_VERSION}
@@ -308,7 +314,7 @@ def main() -> None:
         summary, move_list = program(design)
         rows.append(summary)
         if args.write:
-            payload = {"program": asdict(summary), "moves": [asdict(m) for m in move_list]}
+            payload = {"program": registered(summary), "moves": [asdict(m) for m in move_list]}
             write_program(args.write, payload, design.id)
     fault_rows: list[tuple[Design, float, float, int]] = []
     for design in FAULTS:
@@ -316,7 +322,7 @@ def main() -> None:
         fault_rows.append((design, length, duration, len(move_list)))
         if args.write:
             payload = {
-                "program": asdict(design),
+                "program": registered(design),
                 "base": FAULT_BASE.id,
                 "path_length_mm": length,
                 "duration_s": duration,

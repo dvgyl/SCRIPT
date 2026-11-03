@@ -3,18 +3,23 @@ import ScriptCore
 import Testing
 @testable import ScriptApp
 
-/// A bench session as Setup opens it: role P, mounting M3, the motion system `nextdraw-8511` version `2.4`.
+/// The header that Setup writes for a bench session: role P, mounting M3, the motion system `nextdraw-8511` version
+/// `2.4`.
 @MainActor
-private func openBench(_ store: SessionStore) throws {
+private func benchHeader(_ store: SessionStore) throws -> SessionOpened {
     var draft = SetupDraft(configuration: store.contract.demo, input: store.device.input)
     draft.asset = "IPAD-01"
     draft.mounting = "M3"
     draft.motionID = "nextdraw-8511"
     draft.motionVersion = "2.4"
-    let opened = try #require(draft.session(purpose: .bench, configuration: store.contract.demo, device: store.device,
-                                            contract: store.contract, scale: store.device.tableScale,
-                                            qualifications: store.qualifications))
-    store.openBench(opened)
+    return try #require(draft.session(purpose: .bench, configuration: store.contract.demo, device: store.device,
+                                      contract: store.contract, scale: store.device.tableScale,
+                                      qualifications: store.qualifications))
+}
+
+@MainActor
+private func openBench(_ store: SessionStore) throws {
+    store.openBench(try benchHeader(store))
 }
 
 /// Records one run of `program`: the run screen picks it, the task view starts it, and the operator taps Begin, draws
@@ -110,6 +115,57 @@ private func lines(_ store: SessionStore) async throws -> [[String: Any]] {
     #expect(store.currentRun?.marks == [.disturbance])
 }
 
+@Test @MainActor func aRunIDOfTheSessionCannotStartAgain() async throws {
+    // Detects a run screen that starts a run with the run id of an earlier run, for example after Stop the run ends
+    // a wrong pick, so two runs share one camera file name.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try makeStore(root: root)
+    try openBench(store)
+    let picked = BenchRunPlan(program: "loops-l-v20", run: 2)
+    store.chooseRun(picked)
+    store.startRun(view: ViewSize(width: 834, height: 1000)!)
+    store.stopRun()
+    #expect(store.runRefusal(picked) == .repeatedRun("loops-l-v20", 2))
+    store.chooseRun(picked)
+    #expect(store.currentRun == nil)
+    store.startRun(view: ViewSize(width: 834, height: 1000)!)
+    #expect(store.state?.session.trials.count == 1)
+
+    #expect(store.runRefusal(BenchRunPlan(program: "loops-l-v20", run: 6)) == nil)
+    record("loops-l-v20", run: 6, in: store)
+    let started = try await lines(store).filter { $0["kind"] as? String == "trialStarted" }
+    let clips = started.map { ($0["bench"] as? [String: Any])?["clip"] as? String }
+    #expect(clips == ["P-M3-loops-l-v20-r2", "P-M3-loops-l-v20-r6"])
+}
+
+@Test @MainActor func aResumedBenchSessionOfAnotherProtocolOffersNoRun() async throws {
+    // Detects a build that continues a bench session of another bench protocol, so one journal mixes the runs of two
+    // registrations.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let first = try makeStore(root: root)
+    var opened = try benchHeader(first)
+    guard case .bench(var facts) = opened.subject else { throw CocoaError(.featureUnsupported) }
+    facts.protocol = BenchProtocolRef(version: "1.0", sha256: facts.protocol.sha256)
+    opened.subject = .bench(facts)
+    first.openBench(opened)
+    try await first.live!.sink.close()
+
+    let second = try makeStore(root: root)
+    second.launch()
+    second.resume(try #require(second.listing.first { $0.purpose == .bench }?.sessionID))
+    #expect(second.live?.stage == .bench)
+    let run = BenchRunPlan(program: "loops-l-v20", run: 1)
+    #expect(second.runRefusal(run) == .otherProtocol)
+    second.chooseRun(run)
+    #expect(second.currentRun == nil)
+    second.startRun(view: ViewSize(width: 834, height: 1000)!)
+    #expect(second.state?.session.trials.isEmpty == true)
+    second.endBench()
+    #expect(second.live?.stage == .sampleTiming)
+}
+
 @Test @MainActor func aBenchSessionRefusesEveryQuestionnaireSafetyAndHandoffStep() async throws {
     // Detects a bench session that reaches a handoff, a questionnaire, a safety screen, or the crisis list, which
     // name a person who is not there.
@@ -144,6 +200,20 @@ private func lines(_ store: SessionStore) async throws -> [[String: Any]] {
     #expect(kinds.isDisjoint(with: ["handoff", "questionnaireStarted", "response", "questionnaireEnded",
                                     "safetyFlagged", "safetyShown", "safetyAction"]))
     #expect(kinds.contains("sessionClosed"))
+}
+
+@Test @MainActor func aBenchSessionKeepsTheScreenOnUntilItEnds() throws {
+    // Detects a bench session that lets the iPad lock between runs, which ends the next run as backgrounded.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try makeStore(root: root)
+    #expect(!store.keepsScreenAwake)
+    try openBench(store)
+    #expect(store.keepsScreenAwake)
+    record("loops-l-v20", in: store)
+    #expect(store.keepsScreenAwake)
+    store.endBench()
+    #expect(!store.keepsScreenAwake)
 }
 
 @Test @MainActor func doneEndsABenchRunWithOperatorDone() async throws {

@@ -701,15 +701,27 @@ final class SessionStore {
 
     // MARK: Bench
 
+    /// True while a bench session is open. Between runs the operator works at the camera and the robot, not at the
+    /// screen, so an auto-lock would end the next run as backgrounded.
+    var keepsScreenAwake: Bool { live?.stage == .bench }
+
     /// The run id that `decide` writes as the clip of `run` in this bench session.
     func runID(_ run: BenchRunPlan) -> ClipName? {
         guard case .bench(let facts) = live?.opened.subject else { return nil }
         return ClipName(runOf: run.program, run: run.run, in: facts)
     }
 
+    /// Why `decide` refuses `run` in this bench session, or nil when the run screen can offer it.
+    func runRefusal(_ run: BenchRunPlan) -> Rejection? {
+        guard let live, let state, case .failure(let rejection) = state.benchRun(run, rules: live.rules) else {
+            return nil
+        }
+        return rejection
+    }
+
     /// The operator picked the next run on the run screen. The task screen starts it.
     func chooseRun(_ run: BenchRunPlan) {
-        guard live?.stage == .bench, openTrial == nil else { return }
+        guard live?.stage == .bench, openTrial == nil, runRefusal(run) == nil else { return }
         live?.chosenRun = run
     }
 
@@ -1088,7 +1100,6 @@ extension SessionStore {
         let view: ViewSize?
         let origin: Point?
         let began: Bool
-        let deadline: Double?
         let mmPerPoint: Double?
         let marks: [MarkCode]
         var markCodes: [MarkCode] { program.markCodes }
@@ -1106,12 +1117,12 @@ extension SessionStore {
             let geometry = live.trialGeometry.flatMap { $0.index == open.index ? $0 : nil }
             return RunModel(program: program, spec: spec, runID: runID, trial: open.index, view: geometry?.view,
                             origin: geometry?.origin, began: state.session.trials[open.index.rawValue].began,
-                            deadline: open.deadline, mmPerPoint: mm, marks: digested.marks)
+                            mmPerPoint: mm, marks: digested.marks)
         }
         guard let chosen = live.chosenRun, let program = programs.program(chosen.program),
               let spec = live.rules.battery.task(program.task), let runID = self.runID(chosen) else { return nil }
         return RunModel(program: program, spec: spec, runID: runID, trial: nil, view: nil, origin: nil, began: false,
-                        deadline: nil, mmPerPoint: mm, marks: [])
+                        mmPerPoint: mm, marks: [])
     }
 
     /// The item to answer in the open block. Items are answered in order and once.
