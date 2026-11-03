@@ -85,13 +85,6 @@ class _Block:
 
 
 @dataclass
-class _Pending:
-    trial: int
-    remaining: int
-    samples: int
-
-
-@dataclass
 class JournalBuilder:
     """Writes journal lines and records, by construction, the fold summary they must produce."""
 
@@ -118,7 +111,7 @@ class JournalBuilder:
     _open_contacts: set[int] = field(default_factory=set)
     _next_contact: int = 1
     _contact_trial: dict[int, int] = field(default_factory=dict)
-    _pending: dict[tuple[int, int], _Pending] = field(default_factory=dict)
+    _pending: dict[tuple[int, int], tuple[int, list[int]]] = field(default_factory=dict)
     _unmatched: int = 0
     _truncated: int = 0
     _flags: int = 0
@@ -274,12 +267,7 @@ class JournalBuilder:
         if pending is not None:
             expect, update = pending
             line["pending"] = {"expect": expect, "update": update}
-            known = self._pending.get((contact, update))
-            if known is None:
-                self._pending[(contact, update)] = _Pending(trial, expect, 1)
-            else:
-                known.remaining |= expect
-                known.samples += 1
+            self._pending.setdefault((contact, update), (trial, []))[1].append(expect)
         self._trials[trial].samples += 1
 
     def correction(
@@ -290,9 +278,9 @@ class JournalBuilder:
         if key is None or key not in self._pending:
             self._unmatched += 1
             return
-        pending = self._pending[key]
-        pending.remaining = expect
-        self._trials[pending.trial].corrections += 1
+        trial, remaining = self._pending[key]
+        remaining[:] = [expect] * len(remaining)
+        self._trials[trial].corrections += 1
 
     def lift(self, t: float, contact: int, cancelled: bool = False) -> None:
         self._open_contacts.remove(contact)
@@ -422,9 +410,8 @@ class JournalBuilder:
         for line in self.lines:
             counts[line["kind"]] += 1
         unresolved = [0] * len(self._trials)
-        for pending in self._pending.values():
-            if pending.remaining:
-                unresolved[pending.trial] += pending.samples
+        for trial, remaining in self._pending.values():
+            unresolved[trial] += sum(1 for bits in remaining if bits)
         return {
             "sessionID": self.session_id,
             "purpose": self.purpose,
@@ -857,6 +844,26 @@ def generated_files() -> dict[str, bytes]:
         "configs/demo.json": studyconfig.config_bytes(studyconfig.demo_config()),
         "fixtures/doubles.json": _doubles_bytes(),
     }
+    files["fixtures/svc/synthetic.svc"] = (
+        b"8\n"
+        b"100 200 1000 1 900 450 512\n"
+        b"200 300 1010 1 900 450 1024\n"
+        b"300 400 1020 1 900 450 256\n"
+        b"400 500 1030 1 900 450 512\n"
+        b"500 600 1040 0 1800 900 0\n"
+        b"600 700 1050 0 1800 900 0\n"
+        b"700 800 1060 0 1800 900 0\n"
+        b"800 900 1070 0 1800 900 0\n"
+    )
+    files["fixtures/parkinsonhw/synthetic.txt"] = (
+        b"X;Y;Z;Pressure;GripAngle;Timestamp;Test ID\n"
+        b"100;200;0;512;450;1000;0\n"
+        b"200;300;0;1023;450;1010;0\n"
+        b"300;400;1;0;450;1020;0\n"
+        b"400;500;2;0;450;1030;0\n"
+        b"500;600;0;256;450;0;1\n"
+        b"600;700;0;512;450;10;1\n"
+    )
     for name, build in JOURNAL_FIXTURES.items():
         b = build()
         files[f"fixtures/journal/{name}.jsonl"] = b.journal_bytes()
