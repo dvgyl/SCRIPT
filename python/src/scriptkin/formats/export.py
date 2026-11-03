@@ -10,6 +10,7 @@ import base64
 import binascii
 import hashlib
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
@@ -23,6 +24,10 @@ from scriptkin.recording import Recording
 
 HPKE_INFO = b"SCRIPT export 1.0"
 HPKE_SUITE = "X25519-HKDF-SHA256-ChaCha20Poly1305"
+
+
+class StudyKeyError(JournalError):
+    """The study private key is absent, or its public key does not give the manifest keyID."""
 
 
 def _facts(data: bytes) -> dict[str, Any]:
@@ -41,11 +46,11 @@ def _decrypt(folder: Path, manifest: dict[str, Any], private_key: bytes | None) 
     if encryption["scheme"] != "hpke-base" or encryption["suite"] != HPKE_SUITE:
         raise JournalError("I5", 0, "Unknown encryption scheme or suite.")
     if private_key is None:
-        raise JournalError("I5", 0, "This export is encrypted. Give the study's private key.")
+        raise StudyKeyError("I5", 0, "This export is encrypted. Give the study's private key.")
     if len(private_key) != 32:
         raise ValueError("The private key must be 32 raw X25519 bytes.")
     if hpke.key_id(hpke.public_key(private_key)) != encryption["keyID"]:
-        raise JournalError("I5", 0, "The public key of this private key does not give the manifest keyID.")
+        raise StudyKeyError("I5", 0, "The public key of this private key does not give the manifest keyID.")
     ciphertext = _read(folder / "journal.jsonl.hpke")
     sealed = {"bytes": len(ciphertext), "sha256": hashlib.sha256(ciphertext).hexdigest()}
     if encryption["ciphertext"] != sealed:
@@ -99,18 +104,35 @@ def load_export(folder: Path, private_key: bytes | None = None) -> tuple[dict[st
     return manifest, data
 
 
-def _verified(folder: Path, private_key: bytes | None) -> tuple[bytes, list[Line], FoldState]:
-    manifest, data = load_export(folder, private_key)
+@dataclass(frozen=True)
+class VerifiedExport:
+    """A closed export that passed the manifest checks and rules I1 to I7, with its plaintext journal."""
+
+    manifest: dict[str, Any]
+    journal: bytes
+    rows: list[Line]
+    state: FoldState
+
+    def to_recording(self) -> Recording:
+        return recording(self.state, hashlib.sha256(self.journal).hexdigest())
+
+
+def verify_export(path: str | Path, *, private_key: bytes | None = None) -> VerifiedExport:
+    """Check an export folder and return what it holds.
+
+    An encrypted export needs `private_key`. A missing or wrong key raises `StudyKeyError`. Every other
+    failed check raises `JournalError`.
+    """
+    manifest, data = load_export(Path(path), private_key)
     rows, state = replay(data.splitlines(keepends=True), closed=True)
     if manifest["sessionID"] != rows[0]["sessionID"]:
         raise JournalError("I5", 0, "The manifest names another session.")
-    return data, rows, state
+    return VerifiedExport(manifest, data, rows, state)
 
 
 def read_journal(path: str | Path, *, private_key: bytes | None = None) -> Recording:
     """Read a closed export folder and check rules I1 to I7. An encrypted export needs `private_key`."""
-    data, _, state = _verified(Path(path), private_key)
-    return recording(state, hashlib.sha256(data).hexdigest())
+    return verify_export(path, private_key=private_key).to_recording()
 
 
 def pen_only(export: str | Path, target: str | Path, *, private_key: bytes | None = None) -> Path:
@@ -127,7 +149,8 @@ def pen_only(export: str | Path, target: str | Path, *, private_key: bytes | Non
     source, out = Path(export), Path(target)
     if out.resolve() == source.resolve():
         raise ValueError("The pen-only copy needs its own folder.")
-    data, rows, _ = _verified(source, private_key)
+    verified = verify_export(source, private_key=private_key)
+    data, rows = verified.journal, verified.rows
     closing, body = dict(rows[-1]), rows[:-1]
     ended = [i for i, r in enumerate(body) if r["kind"] == "trialEnded"]
     if ended:

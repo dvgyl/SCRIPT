@@ -1,4 +1,4 @@
-"""Command line: `scriptkin contract`, `scriptkin evaluate`, and `scriptkin plan-size`."""
+"""Command line: `scriptkin contract`, `evaluate`, `plan-size`, `intake`, and `qc-report`."""
 
 from __future__ import annotations
 
@@ -87,6 +87,39 @@ def _plan_size(args: argparse.Namespace) -> int:
     return 0
 
 
+def _key(path: Path | None) -> bytes | None:
+    return None if path is None else path.read_bytes()
+
+
+def _intake(args: argparse.Namespace) -> int:
+    from scriptkin.intake import intake
+
+    try:
+        report = intake(
+            args.sources, args.store, private_key=_key(args.key), keep_plaintext=args.keep_plaintext
+        )
+    except (OSError, ValueError) as e:
+        print(f"intake: {e}", file=sys.stderr)
+        return 2
+    _write(report.to_json(), args.out)
+    settled = all(r.result in ("accepted", "duplicate") for r in report.receipts)
+    return 0 if settled and not report.refused else 1
+
+
+def _qc_report(args: argparse.Namespace) -> int:
+    from scriptkin.qcreport import qc_markdown, qc_report
+
+    try:
+        report = qc_report(args.store, private_key=_key(args.key))
+    except (OSError, ValueError) as e:
+        print(f"qc-report: {e}", file=sys.stderr)
+        return 2
+    _write(report, args.out)
+    if args.markdown is not None:
+        args.markdown.write_text(qc_markdown(report), encoding="utf-8")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="scriptkin")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -114,6 +147,25 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--half-width", type=float, help="report the smallest enrolment for this half-width")
     s.add_argument("--out", type=Path)
     s.set_defaults(run=_plan_size)
+
+    i = sub.add_parser("intake", help="verify exports and bring each session into a study store once")
+    i.add_argument("sources", type=Path, nargs="+", help="folders that hold export folders")
+    i.add_argument("--store", type=Path, required=True)
+    i.add_argument("--key", type=Path, help="the study private key file: 32 raw X25519 bytes")
+    i.add_argument(
+        "--keep-plaintext",
+        action="store_true",
+        help="also keep the decrypted journal of each encrypted export",
+    )
+    i.add_argument("--out", type=Path, help="the intake report (default: standard output)")
+    i.set_defaults(run=_intake)
+
+    q = sub.add_parser("qc-report", help="count sessions, trials, rates, and channels of a study store")
+    q.add_argument("store", type=Path)
+    q.add_argument("--key", type=Path, help="the study private key file, for encrypted sessions")
+    q.add_argument("--out", type=Path, help="the JSON report (default: standard output)")
+    q.add_argument("--markdown", type=Path, help="also write the short Markdown table here")
+    q.set_defaults(run=_qc_report)
 
     args = parser.parse_args(argv)
     return args.run(args)

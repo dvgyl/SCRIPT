@@ -27,7 +27,13 @@ python() {
     if [ -d "$BUILD/contract-out" ]; then
         export SCRIPT_CONTRACT_OUT="$BUILD/contract-out"
     fi
-    (cd "$ROOT/python" && "${UV[@]}" pytest -q)
+    # The unpacked public ParkinsonHW dataset, outside the repository. Its real-file tests skip without it.
+    local parkinsonhw="/Volumes/T7 Shield/SCRIPT-records/data/parkinsonhw/extracted"
+    if [ -z "${SCRIPT_PARKINSONHW:-}" ] && [ -d "$parkinsonhw" ]; then
+        export SCRIPT_PARKINSONHW="$parkinsonhw"
+    fi
+    # -I keeps the folders that the tests read off the import path.
+    (cd "$ROOT/python" && "${UV[@]}" python -I -m pytest -q)
 }
 
 core() {

@@ -354,6 +354,56 @@ print(recording.session_id)
 
 `read_journal` raises `JournalError` when the export fails a check. Do not delete the device copy of an export that fails. The export folder name holds the participant code. Treat the name as personal data.
 
+## Take exports into the study store
+
+The study store is the site's folder of verified sessions. The `scriptkin intake` command checks each export folder, copies each session into the store once, and records a receipt for each export. Use it at stage 4 of the [data flow](DATA_GOVERNANCE.md#data-flow).
+
+1. Put the transferred export folders in one incoming folder, for example `incoming/`.
+2. Run `uv run --project <repository>/python --frozen scriptkin intake incoming --store <study store> --key /secure/study-export-key.bin --out intake-report.json`.
+3. Read the result of each export in `intake-report.json`.
+4. Delete the device copy and the transfer copy only when the result is `accepted` or `duplicate`.
+5. When the result is `quarantined`, read the reason in `reason.json` in the quarantine folder. Keep the device copy, and tell the sponsor.
+6. When the result is `conflict`, keep the device copy, and tell the sponsor.
+7. When an export is in the `refused` list, find the study key of this study. Run the command again with that key.
+
+| Result | Meaning | What the store holds |
+| --- | --- | --- |
+| `accepted` | The export passed every check. | `sessions/<session identifier>/` holds the export as received. |
+| `duplicate` | The store already holds the same journal for this session. | Nothing new. |
+| `conflict` | The store already holds a different journal for this session. | Both versions are in `quarantine/`. `sessions/` holds neither. |
+| `quarantined` | The export failed a check. | `quarantine/<digest>/` holds the export and `reason.json`. |
+| `refused` | The key is absent, or it does not fit the export. | Nothing. |
+
+The command exits with 0 when each export is `accepted` or a `duplicate`. It exits with 1 when an export needs your attention, and with 2 when it cannot run.
+
+You can run the command again on the same folders. The store does not change for an export that it already recorded from the same folder.
+
+The store keeps each encrypted export encrypted. Add `--keep-plaintext` only when the protocol permits a decrypted copy in the store. The decrypted `journal.jsonl` is then beside the encrypted file.
+
+The receipt of a session is `receipts/<session identifier>.json`. It lists each intake of that session: the source folder, the SHA-256 digest of the journal, whether the export was encrypted, the key identifier, the result, and the time. `intake.jsonl` lists every intake in order. Add your name and the date to the site's own intake record. The source folder name can hold the participant code. Treat the whole store as personal data.
+
+## Check the quality of the store
+
+The `scriptkin qc-report` command counts what the store holds. It reads every session in `sessions/`.
+
+1. Run `uv run --project <repository>/python --frozen scriptkin qc-report <study store> --key /secure/study-export-key.bin --out qc-report.json --markdown qc-report.md`.
+2. Read the two tables in `qc-report.md`.
+3. Compare the sample rates of each iPad and Pencil with its qualification report.
+4. Look at each refused trial, unresolved estimate, interrupted trial, and recovered session with the site staff.
+5. File both report files with the study records.
+
+The report gives these counts:
+
+- Sessions by site, device asset code, configuration digest, app version, administration mode, and purpose.
+- The measured trials of study sessions that quality control accepted or refused, with the refusal codes.
+- For each iPad and declared Pencil: the sample rate (median, 5th percentile, and 95th percentile) and the latest qualification session in the store.
+- For each channel: the sessions that planned it, recorded it, or planned it but did not record it.
+- The share of unresolved estimates and unmatched corrections.
+- The interrupted trials and questionnaire blocks, and the recovered sessions.
+- The safety flags, operator actions, operator alerts, and crisis list displays. These counts are for audit only.
+
+The report never holds a questionnaire score, a label, a feature value, or a participant code. Do not use the safety counts as research data.
+
 ## Withdraw a participant
 
 Follow the [withdrawal and deletion procedure](DATA_GOVERNANCE.md#withdrawal-and-deletion-procedure). The steps on each iPad are:
