@@ -44,6 +44,8 @@ def _decrypt(folder: Path, manifest: dict[str, Any], private_key: bytes | None) 
         raise JournalError("I5", 0, "This export is encrypted. Give the study's private key.")
     if len(private_key) != 32:
         raise ValueError("The private key must be 32 raw X25519 bytes.")
+    if hpke.key_id(hpke.public_key(private_key)) != encryption["keyID"]:
+        raise JournalError("I5", 0, "The public key of this private key does not give the manifest keyID.")
     ciphertext = _read(folder / "journal.jsonl.hpke")
     sealed = {"bytes": len(ciphertext), "sha256": hashlib.sha256(ciphertext).hexdigest()}
     if encryption["ciphertext"] != sealed:
@@ -114,6 +116,11 @@ def read_journal(path: str | Path, *, private_key: bytes | None = None) -> Recor
 def pen_only(export: str | Path, target: str | Path, *, private_key: bytes | None = None) -> Path:
     """Write a copy of an export without questionnaire, response, or safety lines, for label-blind analysis.
 
+    The copy ends at the last `trialEnded`. It drops every later line except `sessionClosed`, whose `t`
+    becomes the time of that `trialEnded`, because the time after the last task shows whether an operator
+    handled a safety flag. A session with no `trialEnded` keeps all its non-questionnaire lines and its
+    `sessionClosed.t`.
+
     The copy has new `seq` values, recounted closing counts, its own manifest, and `derivation.json`
     with the source session and the SHA-256 of the source journal. It is checked like any export.
     """
@@ -121,7 +128,12 @@ def pen_only(export: str | Path, target: str | Path, *, private_key: bytes | Non
     if out.resolve() == source.resolve():
         raise ValueError("The pen-only copy needs its own folder.")
     data, rows, _ = _verified(source, private_key)
-    kept: list[Line] = [dict(r) for r in rows if r["kind"] not in QUESTIONNAIRE_KINDS]
+    closing, body = dict(rows[-1]), rows[:-1]
+    ended = [i for i, r in enumerate(body) if r["kind"] == "trialEnded"]
+    if ended:
+        body = body[: ended[-1] + 1]
+        closing["t"] = body[-1]["t"]
+    kept: list[Line] = [dict(r) for r in body if r["kind"] not in QUESTIONNAIRE_KINDS] + [closing]
     for seq, row in enumerate(kept):
         row["seq"] = seq
         row.pop("interruptedBlock", None)

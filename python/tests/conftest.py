@@ -57,7 +57,7 @@ def write_encrypted_export(folder: Path, data: bytes, session_id: str, private_k
     encryption = {
         "scheme": "hpke-base",
         "suite": HPKE_SUITE,
-        "keyID": "test",
+        "keyID": hashlib.sha256(hpke.public_key(private_key)).hexdigest(),
         "encapsulatedKey": base64.b64encode(enc).decode(),
         "plaintext": {
             "bytes": len(data),

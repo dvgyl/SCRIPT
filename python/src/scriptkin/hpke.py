@@ -6,6 +6,8 @@ message, so only sequence number 0 exists. Keys are raw 32-byte X25519 values.
 
 from __future__ import annotations
 
+import hashlib
+
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
@@ -43,6 +45,11 @@ def _key_and_nonce(shared_secret: bytes, info: bytes) -> tuple[bytes, bytes]:
 
 def public_key(private_key: bytes) -> bytes:
     return X25519PrivateKey.from_private_bytes(private_key).public_key().public_bytes_raw()
+
+
+def key_id(public: bytes) -> str:
+    """The export `keyID` (docs/DESIGN.md section 17): lowercase hex SHA-256 of the raw public key."""
+    return hashlib.sha256(public).hexdigest()
 
 
 def seal(

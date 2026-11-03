@@ -6,10 +6,12 @@ The app applies the same rules when it imports a configuration (docs/DESIGN.md s
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 from typing import Any
 
-from scriptkin import battery, instruments
+from scriptkin import battery, hpke, instruments
 
 AGE_BANDS = ("13-17", "18-24")
 ADMINISTRATIONS = ("supervised", "self")
@@ -152,6 +154,18 @@ def config_bytes(config: dict[str, Any]) -> bytes:
     return (json.dumps(config, indent=1, ensure_ascii=False) + "\n").encode()
 
 
+def _key_id_problems(export: dict[str, Any]) -> list[str]:
+    if export["recipientPublicKey"] is None or export["keyID"] is None:
+        return []
+    try:
+        public = base64.b64decode(export["recipientPublicKey"], validate=True)
+    except binascii.Error:
+        return ["export.recipientPublicKey is not valid base64"]
+    if hpke.key_id(public) != export["keyID"]:
+        return ["export.keyID is not the SHA-256 of export.recipientPublicKey"]
+    return []
+
+
 def validate(config: dict[str, Any]) -> list[str]:
     """Rules a schema cannot express. An empty list means the configuration passes."""
     problems: list[str] = []
@@ -206,4 +220,5 @@ def validate(config: dict[str, Any]) -> list[str]:
             problems.append("a study configuration needs export.recipientPublicKey")
         if config["operatorPin"] is None:
             problems.append("a study configuration needs operatorPin")
+    problems += _key_id_problems(config["export"])
     return problems

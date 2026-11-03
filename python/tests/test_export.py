@@ -99,6 +99,22 @@ def test_tampered_or_misaddressed_ciphertext_is_refused(tmp_path: Path, change: 
         read_journal(sealed, private_key=key)
 
 
+def test_wrong_private_key_is_refused_by_key_id_before_decryption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Detects a reader that tries to decrypt with a private key whose public key does not give the keyID.
+    _, sealed = encrypted_basic(tmp_path)
+    manifest = json.loads((sealed / "manifest.json").read_text())
+    assert manifest["encryption"]["keyID"] == hashlib.sha256(hpke.public_key(KEY)).hexdigest()
+
+    def opened(*_: object) -> bytes:
+        raise AssertionError("The reader tried to decrypt with the wrong key.")
+
+    monkeypatch.setattr(hpke, "open_sealed", opened)
+    with pytest.raises(JournalError, match=r"I5, line 0: .*keyID"):
+        read_journal(sealed, private_key=bytes(range(2, 34)))
+
+
 @pytest.mark.parametrize(
     "name", ["supervised_minor_safety", "self_with_remote_review", "recovered_in_questionnaire"]
 )
@@ -124,6 +140,33 @@ def test_pen_only_copy_passes_integrity_and_has_no_response(tmp_path: Path, name
     derivation = json.loads((copy / "derivation.json").read_text())
     assert derivation["sourceSessionID"] == rows[0]["sessionID"]
     assert derivation["sourceJournalSHA256"] == hashlib.sha256(data).hexdigest()
+
+
+def test_pen_only_copy_ends_at_the_last_trial(tmp_path: Path) -> None:
+    # Detects a pen-only copy whose lines or closing time after the last task leak a safety label.
+    rows = fixture_lines("supervised_minor_safety")
+    write_export(tmp_path / "source", rows)
+    copy = pen_only(tmp_path / "source", tmp_path / "copy")
+    lines = [json.loads(s) for s in (copy / "journal.jsonl").read_bytes().splitlines()]
+    last_ended = max(i for i, r in enumerate(lines) if r["kind"] == "trialEnded")
+    assert [r["kind"] for r in lines[last_ended + 1 :]] == ["sessionClosed"]
+    source_ended = max(r["t"] for r in rows if r["kind"] == "trialEnded")
+    assert source_ended < rows[-1]["t"]
+    assert lines[-2]["t"] == lines[-1]["t"] == source_ended
+
+
+def test_pen_only_copy_of_a_session_without_a_trial_keeps_its_closing_time(tmp_path: Path) -> None:
+    # Detects a pen-only copy that fails or moves sessionClosed.t when the session has no trialEnded.
+    opened, handoff, closed = (fixture_lines("supervised_minor_safety")[i] for i in (0, 1, -1))
+    rows = [opened, handoff, closed]
+    for seq, row in enumerate(rows):
+        row["seq"] = seq
+    closed["counts"] = {kind: sum(r["kind"] == kind for r in rows[:-1]) for kind in KINDS[:-1]}
+    write_export(tmp_path / "source", rows)
+    copy = pen_only(tmp_path / "source", tmp_path / "copy")
+    lines = [json.loads(s) for s in (copy / "journal.jsonl").read_bytes().splitlines()]
+    assert [r["kind"] for r in lines] == ["sessionOpened", "handoff", "sessionClosed"]
+    assert lines[-1]["t"] == closed["t"]
 
 
 def test_pen_only_reads_an_encrypted_source(tmp_path: Path) -> None:

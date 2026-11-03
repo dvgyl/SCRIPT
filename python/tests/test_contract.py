@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import copy
+import hashlib
 import itertools
 import json
 import math
@@ -165,6 +167,19 @@ def test_study_config_without_key_or_pin_is_refused() -> None:
     problems = studyconfig.validate(config)
     assert any("recipientPublicKey" in p for p in problems)
     assert any("operatorPin" in p for p in problems)
+
+
+def test_export_key_id_must_be_the_hash_of_the_public_key() -> None:
+    # Detects a configuration whose keyID names another key than export.recipientPublicKey.
+    public = bytes.fromhex("4310ee97d88cc1f088a5576c77ab0cf5c3ac797f3d95139c6c84b5429c59662a")
+    config = _demo()
+    config["export"] = {
+        "recipientPublicKey": base64.b64encode(public).decode(),
+        "keyID": hashlib.sha256(public).hexdigest(),
+    }
+    assert studyconfig.validate(config) == []
+    config["export"]["keyID"] = hashlib.sha256(bytes(32)).hexdigest()
+    assert any("keyID" in p for p in studyconfig.validate(config))
 
 
 def test_qualification_tasks_cannot_enter_a_study_session() -> None:
