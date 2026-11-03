@@ -1,0 +1,32 @@
+{
+ "sessionID": "3F2A9C1E-0000-4000-8000-000000000004",
+ "state": "closed",
+ "counts": {
+  "sessionOpened": 1,
+  "trialStarted": 1,
+  "contactBegan": 1,
+  "sample": 5,
+  "correction": 0,
+  "contactEnded": 1,
+  "hover": 0,
+  "finger": 0,
+  "trialEnded": 1,
+  "mark": 0,
+  "recovered": 0,
+  "sessionClosed": 1
+ },
+ "trials": [
+  {
+   "index": 0,
+   "task": "pentagons",
+   "attempt": 1,
+   "outcome": "completed",
+   "contacts": 1,
+   "samples": 5,
+   "corrections": 0,
+   "unresolved": 0
+  }
+ ],
+ "unmatchedCorrections": 0,
+ "truncatedBytes": 0
+}

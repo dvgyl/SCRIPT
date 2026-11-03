@@ -1,0 +1,211 @@
+"""The task battery: stimulus geometry in millimetres, written to contract/battery.json.
+
+Geometry lives here and nowhere else. The app draws the polylines that this module writes.
+Frame coordinates have the origin at the top-left of the stimulus frame, x to the right, y down.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import itertools
+import json
+import math
+import re
+from collections.abc import Callable, Sequence
+from typing import Any
+
+BATTERY_ID = "script-v1"
+BATTERY_VERSION = "1.0.0"
+
+Point = tuple[float, float]
+Polyline = list[Point]
+
+_MAX_CHORD_MM = 0.5
+_DECIMALS = 4
+
+SPIRAL_INNER_RADIUS_MM = 8.0
+SPIRAL_TURN_SPACING_MM = 21.0
+SPIRAL_TURNS = 2
+STIMULUS_STROKE_MM = 0.6
+
+
+def _round(p: Point) -> list[float]:
+    return [round(p[0], _DECIMALS) + 0.0, round(p[1], _DECIMALS) + 0.0]
+
+
+def _sample(curve: Callable[[float], Point], t0: float, t1: float) -> Polyline:
+    """Sample a smooth curve at equal arc-length steps no longer than _MAX_CHORD_MM."""
+    probe = 20000
+    ts = [t0 + (t1 - t0) * i / probe for i in range(probe + 1)]
+    pts = [curve(t) for t in ts]
+    cumulative = [0.0]
+    for a, b in itertools.pairwise(pts):
+        cumulative.append(cumulative[-1] + math.dist(a, b))
+    n = max(1, math.ceil(cumulative[-1] / _MAX_CHORD_MM))
+    out: Polyline = []
+    j = 0
+    for i in range(n + 1):
+        s = cumulative[-1] * i / n
+        while j < probe - 1 and cumulative[j + 1] < s:
+            j += 1
+        span = cumulative[j + 1] - cumulative[j]
+        u = 0.0 if span == 0 else (s - cumulative[j]) / span
+        out.append(curve(ts[j] + (ts[j + 1] - ts[j]) * u))
+    return out
+
+
+def spiral_radius_mm(theta: float) -> float:
+    return SPIRAL_INNER_RADIUS_MM + SPIRAL_TURN_SPACING_MM / (2 * math.pi) * theta
+
+
+def spiral() -> dict[str, Any]:
+    outer = spiral_radius_mm(2 * math.pi * SPIRAL_TURNS)
+    margin = 2.0
+    side = 2 * (outer + margin)
+    c = side / 2
+
+    def curve(theta: float) -> Point:
+        r = spiral_radius_mm(theta)
+        return (c + r * math.cos(theta), c - r * math.sin(theta))
+
+    path = _sample(curve, 0.0, 2 * math.pi * SPIRAL_TURNS)
+    return _paths_stimulus((side, side), [path], start=path[0])
+
+
+def loops(
+    count: int = 8, pitch: float = 12.0, overshoot: float = 4.0, height: float = 20.0
+) -> dict[str, Any]:
+    """A row of joined cursive "l" loops: each loop rises, turns back at the top, and descends."""
+    margin = 4.0
+    baseline = margin + height
+
+    def curve(t: float) -> Point:
+        return (
+            margin + overshoot + pitch * t / (2 * math.pi) + overshoot * math.sin(t),
+            baseline - height * (1 - math.cos(t)) / 2,
+        )
+
+    path = _sample(curve, 0.0, 2 * math.pi * count)
+    width = 2 * margin + 2 * overshoot + pitch * count
+    return _paths_stimulus((width, height + 2 * margin), [path], start=path[0])
+
+
+def _pentagon(cx: float, cy: float, r: float, rotation: float) -> Polyline:
+    corners = [
+        (cx + r * math.cos(rotation + k * 2 * math.pi / 5), cy - r * math.sin(rotation + k * 2 * math.pi / 5))
+        for k in range(5)
+    ]
+    path: Polyline = []
+    for a, b in zip(corners, [*corners[1:], corners[0]], strict=True):
+        steps = max(1, math.ceil(math.dist(a, b) / _MAX_CHORD_MM))
+        path.extend(
+            (a[0] + (b[0] - a[0]) * i / steps, a[1] + (b[1] - a[1]) * i / steps) for i in range(steps)
+        )
+    path.append(corners[0])
+    return path
+
+
+def pentagons(radius: float = 18.0, separation: float = 28.8) -> dict[str, Any]:
+    """Two regular pentagons. A corner of each enters the other, so the overlap has four sides."""
+    margin = 3.0
+    half_height = radius * math.sin(2 * math.pi / 5)
+    cy = margin + half_height
+    left = margin + radius * math.cos(math.pi / 5)
+    right = left + separation
+    paths = [_pentagon(left, cy, radius, 0.0), _pentagon(right, cy, radius, math.pi)]
+    width = right + radius * math.cos(math.pi / 5) + margin
+    return _paths_stimulus((width, 2 * half_height + 2 * margin), paths)
+
+
+def _polyline(points: Sequence[Point], closed: bool = False) -> Polyline:
+    corners = [*points, points[0]] if closed else list(points)
+    path: Polyline = []
+    for a, b in itertools.pairwise(corners):
+        steps = max(1, math.ceil(math.dist(a, b) / _MAX_CHORD_MM))
+        path.extend(
+            (a[0] + (b[0] - a[0]) * i / steps, a[1] + (b[1] - a[1]) * i / steps) for i in range(steps)
+        )
+    path.append(corners[-1])
+    return path
+
+
+def house() -> dict[str, Any]:
+    body = _polyline([(10, 30), (50, 30), (50, 60), (10, 60)], closed=True)
+    roof = _polyline([(6, 30), (30, 10), (54, 30)])
+    door = _polyline([(26, 60), (26, 46), (34, 46), (34, 60)])
+    window = _polyline([(14, 38), (22, 38), (22, 46), (14, 46)], closed=True)
+    return _paths_stimulus((60.0, 64.0), [body, roof, door, window])
+
+
+def _paths_stimulus(frame: Point, paths: Sequence[Polyline], start: Point | None = None) -> dict[str, Any]:
+    stimulus: dict[str, Any] = {"kind": "paths", "frameMM": _round(frame), "strokeMM": STIMULUS_STROKE_MM}
+    if start is not None:
+        stimulus["start"] = _round(start)
+    stimulus["paths"] = [[_round(p) for p in path] for path in paths]
+    return stimulus
+
+
+def _task(
+    task_id: str, mode: str, instruction: str, stimulus: dict[str, Any] | None, max_seconds: float
+) -> dict[str, Any]:
+    return {
+        "id": task_id,
+        "mode": mode,
+        "instruction": instruction,
+        "stimulus": stimulus,
+        "completion": {"kind": "participantDone", "maxSeconds": max_seconds},
+    }
+
+
+def battery() -> dict[str, Any]:
+    tasks = [
+        _task(
+            "spiral-trace",
+            "trace",
+            "Trace the spiral. Start at the dot near the middle. Try not to lift the pencil.",
+            spiral(),
+            120,
+        ),
+        _task(
+            "loops", "copy", "Copy this row of loops in one line. Try not to lift the pencil.", loops(), 90
+        ),
+        _task("pentagons", "copy", "Copy this drawing.", pentagons(), 120),
+        _task("house", "copy", "Copy this drawing.", house(), 180),
+        _task(
+            "clock",
+            "free",
+            "Draw a clock. Put in all the numbers and set the hands to ten past eleven.",
+            None,
+            180,
+        ),
+        _task(
+            "sentence",
+            "copy",
+            "Copy this sentence in your usual handwriting.",
+            {
+                "kind": "text",
+                "frameMM": [110.0, 12.0],
+                "text": "The quick brown fox jumps over the lazy dog.",
+                "fontSizeMM": 6.0,
+            },
+            180,
+        ),
+    ]
+    return {"id": BATTERY_ID, "version": BATTERY_VERSION, "tasks": tasks}
+
+
+def battery_bytes() -> bytes:
+    text = json.dumps(battery(), indent=1, ensure_ascii=False, allow_nan=False)
+    text = re.sub(r"\[\s+(-?[0-9.e+-]+),\s+(-?[0-9.e+-]+)\s+\]", r"[\1, \2]", text)
+    return (text + "\n").encode()
+
+
+def battery_sha256() -> str:
+    return hashlib.sha256(battery_bytes()).hexdigest()
+
+
+def task_spec(task_id: str) -> dict[str, Any]:
+    for task in battery()["tasks"]:
+        if task["id"] == task_id:
+            return task
+    raise KeyError(task_id)

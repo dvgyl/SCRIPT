@@ -1,0 +1,307 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/dvgyl/SCRIPT/contract/journal.schema.json",
+  "title": "SCRIPT journal line, format 1.0",
+  "description": "One line of journal.jsonl. docs/DESIGN.md section 3 explains each kind.",
+  "oneOf": [
+    {"$ref": "#/$defs/sessionOpened"},
+    {"$ref": "#/$defs/trialStarted"},
+    {"$ref": "#/$defs/contactBegan"},
+    {"$ref": "#/$defs/sample"},
+    {"$ref": "#/$defs/correction"},
+    {"$ref": "#/$defs/contactEnded"},
+    {"$ref": "#/$defs/hover"},
+    {"$ref": "#/$defs/finger"},
+    {"$ref": "#/$defs/trialEnded"},
+    {"$ref": "#/$defs/mark"},
+    {"$ref": "#/$defs/recovered"},
+    {"$ref": "#/$defs/sessionClosed"}
+  ],
+  "$defs": {
+    "seq": {"type": "integer", "minimum": 0},
+    "uptime": {"type": "number", "minimum": 0},
+    "coord": {"type": "number"},
+    "angle": {"type": "number"},
+    "contact": {"type": "integer", "minimum": 1},
+    "trialIndex": {"type": "integer", "minimum": 0},
+    "bits": {"type": "integer", "minimum": 0, "maximum": 31},
+    "uuid": {"type": "string", "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"},
+    "pointMM": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
+    "taskSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "mode", "instruction", "stimulus", "completion"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9-]+$"},
+        "mode": {"enum": ["trace", "copy", "free"]},
+        "instruction": {"type": "string", "minLength": 1},
+        "stimulus": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "frameMM", "strokeMM", "paths"],
+              "properties": {
+                "kind": {"const": "paths"},
+                "frameMM": {"$ref": "#/$defs/pointMM"},
+                "strokeMM": {"type": "number", "exclusiveMinimum": 0},
+                "start": {"$ref": "#/$defs/pointMM"},
+                "paths": {"type": "array", "minItems": 1,
+                          "items": {"type": "array", "minItems": 2, "items": {"$ref": "#/$defs/pointMM"}}}
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "frameMM", "text", "fontSizeMM"],
+              "properties": {
+                "kind": {"const": "text"},
+                "frameMM": {"$ref": "#/$defs/pointMM"},
+                "text": {"type": "string", "minLength": 1},
+                "fontSizeMM": {"type": "number", "exclusiveMinimum": 0}
+              }
+            }
+          ]
+        },
+        "completion": {
+          "oneOf": [
+            {"type": "object", "additionalProperties": false, "required": ["kind", "maxSeconds"],
+             "properties": {"kind": {"const": "participantDone"}, "maxSeconds": {"type": "number", "exclusiveMinimum": 0}}},
+            {"type": "object", "additionalProperties": false, "required": ["kind", "seconds"],
+             "properties": {"kind": {"const": "timed"}, "seconds": {"type": "number", "exclusiveMinimum": 0}}}
+          ]
+        }
+      }
+    },
+    "sessionOpened": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seq", "kind", "format", "sessionID", "participant", "openedAt", "openedUptime", "boot", "app", "device",
+                   "scale", "pencil", "channels", "input", "battery"],
+      "properties": {
+        "seq": {"$ref": "#/$defs/seq"},
+        "kind": {"const": "sessionOpened"},
+        "format": {"const": "1.0"},
+        "sessionID": {"$ref": "#/$defs/uuid"},
+        "participant": {"type": "string", "pattern": "^[A-Z0-9-]{3,16}$"},
+        "openedAt": {"type": "string", "format": "date-time"},
+        "openedUptime": {"$ref": "#/$defs/uptime"},
+        "boot": {"$ref": "#/$defs/uuid"},
+        "app": {"type": "object", "additionalProperties": false, "required": ["version", "build", "sourceRevision"],
+                "properties": {"version": {"type": "string"}, "build": {"type": "string"},
+                               "sourceRevision": {"type": "string"}}},
+        "device": {"type": "object", "additionalProperties": false, "required": ["model", "os", "nativeScale"],
+                   "properties": {"model": {"type": "string"}, "os": {"type": "string"},
+                                  "nativeScale": {"type": "number", "exclusiveMinimum": 0}}},
+        "scale": {
+          "oneOf": [
+            {"type": "object", "additionalProperties": false, "required": ["kind", "mmPerPoint", "ppi", "nativeScale"],
+             "properties": {"kind": {"const": "modelTable"}, "mmPerPoint": {"type": "number", "exclusiveMinimum": 0},
+                            "ppi": {"type": "number", "exclusiveMinimum": 0},
+                            "nativeScale": {"type": "number", "exclusiveMinimum": 0}}},
+            {"type": "object", "additionalProperties": false,
+             "required": ["kind", "mmPerPoint", "measuredMM", "drawnPoints"],
+             "properties": {"kind": {"const": "ruler"}, "mmPerPoint": {"type": "number", "exclusiveMinimum": 0},
+                            "measuredMM": {"type": "number", "exclusiveMinimum": 0},
+                            "drawnPoints": {"type": "number", "exclusiveMinimum": 0}}},
+            {"type": "object", "additionalProperties": false, "required": ["kind"],
+             "properties": {"kind": {"const": "unknown"}}}
+          ]
+        },
+        "pencil": {"type": "object", "additionalProperties": false, "required": ["declared"],
+                   "properties": {"declared": {"enum": ["pro", "second", "usbC", "none"]}}},
+        "channels": {"type": "object", "additionalProperties": false,
+                     "required": ["force", "altitude", "azimuth", "roll", "hover"],
+                     "properties": {"force": {"type": "boolean"}, "altitude": {"type": "boolean"},
+                                    "azimuth": {"type": "boolean"}, "roll": {"type": "boolean"},
+                                    "hover": {"type": "boolean"}}},
+        "input": {"enum": ["pencil", "directTouchAsPen"]},
+        "battery": {"type": "object", "additionalProperties": false, "required": ["id", "version", "sha256"],
+                    "properties": {"id": {"type": "string"}, "version": {"type": "string"},
+                                   "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}}
+      }
+    },
+    "trialStarted": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seq", "kind", "t", "trial", "spec", "view", "stimulusOrigin"],
+      "properties": {
+        "seq": {"$ref": "#/$defs/seq"},
+        "kind": {"const": "trialStarted"},
+        "t": {"$ref": "#/$defs/uptime"},
+        "trial": {"type": "object", "additionalProperties": false, "required": ["index", "task", "attempt"],
+                  "properties": {"index": {"$ref": "#/$defs/trialIndex"}, "task": {"type": "string"},
+                                 "attempt": {"type": "integer", "minimum": 1}}},
+        "spec": {"$ref": "#/$defs/taskSpec"},
+        "view": {"type": "object", "additionalProperties": false, "required": ["width", "height"],
+                 "properties": {"width": {"type": "number", "exclusiveMinimum": 0},
+                                "height": {"type": "number", "exclusiveMinimum": 0}}},
+        "stimulusOrigin": {"type": "object", "additionalProperties": false, "required": ["x", "y"],
+                           "properties": {"x": {"$ref": "#/$defs/coord"}, "y": {"$ref": "#/$defs/coord"}}}
+      }
+    },
+    "contactBegan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seq", "kind", "t", "contact"],
+      "properties": {
+        "seq": {"$ref": "#/$defs/seq"},
+        "kind": {"const": "contactBegan"},
+        "t": {"$ref": "#/$defs/uptime"},
+        "contact": {"$ref": "#/$defs/contact"},
+        "maxForce": {"type": "number", "exclusiveMinimum": 0}
+      }
+    },
+    "sample": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seq", "kind", "contact", "t", "x", "y", "phase", "est"],
+      "properties": {
+        "seq": {"$ref": "#/$defs/seq"},
+        "kind": {"const": "sample"},
+        "contact": {"$ref": "#/$defs/contact"},
+        "t": {"$ref": "#/$defs/uptime"},
+        "x": {"$ref": "#/$defs/coord"},
+        "y": {"$ref": "#/$defs/coord"},
+        "force": {"type": "number", "minimum": 0},
+        "altitude": {"$ref": "#/$defs/angle"},
+        "azimuth": {"$ref": "#/$defs/angle"},
+        "roll": {"$ref": "#/$defs/angle"},
+        "phase": {"enum": ["began", "moved", "stationary", "ended", "cancelled"]},
+        "est": {"$ref": "#/$defs/bits"},
+        "pending": {"type": "object", "additionalProperties": false, "required": ["expect", "update"],
+                    "properties": {"expect": {"type": "integer", "minimum": 1, "maximum": 31},
+                                   "update": {"type": "integer"}}}
+      }
+    },
+    "correction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seq", "kind", "update", "arrived", "expect"],
+      "properties": {
+        "seq": {"$ref": "#/$defs/seq"},
+        "kind": {"const": "correction"},
+        "contact": {"$ref": "#/$defs/contact"},
+        "update": {"type": "integer"},
+        "arrived": {"$ref": "#/$defs/uptime"},
+        "x": {"$ref": "#/$defs/coord"},
+        "y": {"$ref": "#/$defs/coord"},
+        "force": {"type": "number", "minimum": 0},
+        "altitude": {"$ref": "#/$defs/angle"},
+        "azimuth": {"$ref": "#/$defs/angle"},
+        "roll": {"$ref": "#/$defs/angle"},
+        "expect": {"$ref": "#/$defs/bits"}
+      }
+    },
+    "contactEnded": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seq", "kind", "t", "contact", "cancelled"],
+      "properties": {
+        "seq": {"$ref": "#/$defs/seq"},
+        "kind": {"const": "contactEnded"},
+        "t": {"$ref": "#/$defs/uptime"},
+        "contact": {"$ref": "#/$defs/contact"},
+        "cancelled": {"type": "boolean"}
+      }
+    },
+    "hover": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seq", "kind", "t", "clock", "x", "y", "z"],
+      "properties": {
+        "seq": {"$ref": "#/$defs/seq"},
+        "kind": {"const": "hover"},
+        "t": {"$ref": "#/$defs/uptime"},
+        "clock": {"enum": ["callback"]},
+        "x": {"$ref": "#/$defs/coord"},
+        "y": {"$ref": "#/$defs/coord"},
+        "z": {"type": "number", "minimum": 0},
+        "altitude": {"$ref": "#/$defs/angle"},
+        "azimuth": {"$ref": "#/$defs/angle"},
+        "roll": {"$ref": "#/$defs/angle"}
+      }
+    },
+    "finger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seq", "kind", "t", "phase", "x", "y"],
+      "properties": {
+        "seq": {"$ref": "#/$defs/seq"},
+        "kind": {"const": "finger"},
+        "t": {"$ref": "#/$defs/uptime"},
+        "phase": {"enum": ["began", "ended", "cancelled"]},
+        "x": {"$ref": "#/$defs/coord"},
+        "y": {"$ref": "#/$defs/coord"}
+      }
+    },
+    "trialEnded": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seq", "kind", "t", "trial", "reason"],
+      "properties": {
+        "seq": {"$ref": "#/$defs/seq"},
+        "kind": {"const": "trialEnded"},
+        "t": {"$ref": "#/$defs/uptime"},
+        "trial": {"$ref": "#/$defs/trialIndex"},
+        "reason": {"enum": ["participantDone", "timeLimit", "operatorAbort", "backgrounded"]}
+      }
+    },
+    "mark": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seq", "kind", "t", "trial", "code"],
+      "properties": {
+        "seq": {"$ref": "#/$defs/seq"},
+        "kind": {"const": "mark"},
+        "t": {"$ref": "#/$defs/uptime"},
+        "trial": {"$ref": "#/$defs/trialIndex"},
+        "code": {"enum": ["repeatRequested", "disturbance", "deviceProblem", "exclude"]}
+      }
+    },
+    "recovered": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seq", "kind", "t", "at", "boot", "truncatedBytes"],
+      "properties": {
+        "seq": {"$ref": "#/$defs/seq"},
+        "kind": {"const": "recovered"},
+        "t": {"$ref": "#/$defs/uptime"},
+        "at": {"type": "string", "format": "date-time"},
+        "boot": {"$ref": "#/$defs/uuid"},
+        "truncatedBytes": {"type": "integer", "minimum": 0},
+        "interrupted": {"$ref": "#/$defs/trialIndex"}
+      }
+    },
+    "sessionClosed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seq", "kind", "t", "counts"],
+      "properties": {
+        "seq": {"$ref": "#/$defs/seq"},
+        "kind": {"const": "sessionClosed"},
+        "t": {"$ref": "#/$defs/uptime"},
+        "counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sessionOpened", "trialStarted", "contactBegan", "sample", "correction", "contactEnded",
+                       "hover", "finger", "trialEnded", "mark", "recovered"],
+          "properties": {
+            "sessionOpened": {"type": "integer", "minimum": 0},
+            "trialStarted": {"type": "integer", "minimum": 0},
+            "contactBegan": {"type": "integer", "minimum": 0},
+            "sample": {"type": "integer", "minimum": 0},
+            "correction": {"type": "integer", "minimum": 0},
+            "contactEnded": {"type": "integer", "minimum": 0},
+            "hover": {"type": "integer", "minimum": 0},
+            "finger": {"type": "integer", "minimum": 0},
+            "trialEnded": {"type": "integer", "minimum": 0},
+            "mark": {"type": "integer", "minimum": 0},
+            "recovered": {"type": "integer", "minimum": 0}
+          }
+        }
+      }
+    }
+  }
+}

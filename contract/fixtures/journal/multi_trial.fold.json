@@ -1,0 +1,52 @@
+{
+ "sessionID": "3F2A9C1E-0000-4000-8000-000000000002",
+ "state": "closed",
+ "counts": {
+  "sessionOpened": 1,
+  "trialStarted": 3,
+  "contactBegan": 3,
+  "sample": 16,
+  "correction": 2,
+  "contactEnded": 3,
+  "hover": 1,
+  "finger": 2,
+  "trialEnded": 3,
+  "mark": 1,
+  "recovered": 0,
+  "sessionClosed": 1
+ },
+ "trials": [
+  {
+   "index": 0,
+   "task": "spiral-trace",
+   "attempt": 1,
+   "outcome": "completed",
+   "contacts": 1,
+   "samples": 3,
+   "corrections": 2,
+   "unresolved": 1
+  },
+  {
+   "index": 1,
+   "task": "loops",
+   "attempt": 1,
+   "outcome": "completed",
+   "contacts": 1,
+   "samples": 5,
+   "corrections": 0,
+   "unresolved": 0
+  },
+  {
+   "index": 2,
+   "task": "spiral-trace",
+   "attempt": 2,
+   "outcome": "timeLimit",
+   "contacts": 1,
+   "samples": 8,
+   "corrections": 0,
+   "unresolved": 0
+  }
+ ],
+ "unmatchedCorrections": 0,
+ "truncatedBytes": 0
+}

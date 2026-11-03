@@ -1,0 +1,42 @@
+{
+ "sessionID": "3F2A9C1E-0000-4000-8000-000000000005",
+ "state": "closed",
+ "counts": {
+  "sessionOpened": 1,
+  "trialStarted": 2,
+  "contactBegan": 3,
+  "sample": 13,
+  "correction": 0,
+  "contactEnded": 2,
+  "hover": 0,
+  "finger": 0,
+  "trialEnded": 1,
+  "mark": 0,
+  "recovered": 1,
+  "sessionClosed": 1
+ },
+ "trials": [
+  {
+   "index": 0,
+   "task": "house",
+   "attempt": 1,
+   "outcome": "interrupted",
+   "contacts": 2,
+   "samples": 8,
+   "corrections": 0,
+   "unresolved": 0
+  },
+  {
+   "index": 1,
+   "task": "house",
+   "attempt": 2,
+   "outcome": "completed",
+   "contacts": 1,
+   "samples": 5,
+   "corrections": 0,
+   "unresolved": 0
+  }
+ ],
+ "unmatchedCorrections": 0,
+ "truncatedBytes": 37
+}

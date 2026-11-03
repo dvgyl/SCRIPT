@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Run the checks. With no arguments, run all sections in order and stop at the first failure.
+# Sections: contract python core app. Example: ./check contract python
+set -euo pipefail
+
+ROOT=$(cd "$(dirname "$0")" && pwd)
+BUILD="$ROOT/build"
+DESTINATION=${SCRIPT_DESTINATION:-'platform=iOS Simulator,name=iPad Pro 11-inch (M5),OS=latest'}
+export UV_PROJECT_ENVIRONMENT="$BUILD/venv"
+UV=(uv run --project "$ROOT/python" --frozen --quiet)
+
+step() { printf '\n== %s\n' "$1"; }
+
+contract() {
+    step "contract: generated files match the generator"
+    "${UV[@]}" scriptkin contract verify
+}
+
+python() {
+    step "python: lint"
+    "${UV[@]}" ruff check "$ROOT/python"
+    "${UV[@]}" ruff format --check "$ROOT/python"
+    step "python: types"
+    (cd "$ROOT/python" && "${UV[@]}" pyright)
+    step "python: tests"
+    (cd "$ROOT/python" && "${UV[@]}" pytest -q)
+}
+
+core() {
+    step "swift: ScriptCore tests on the Mac"
+    SCRIPT_CONTRACT_OUT="$BUILD/contract-out" swift test --package-path "$ROOT/app" --scratch-path "$BUILD/swiftpm"
+}
+
+app() {
+    step "app: build on the simulator ($DESTINATION)"
+    xcodebuild build -quiet -project "$ROOT/app/ScriptApp.xcodeproj" -scheme ScriptApp \
+        -destination "$DESTINATION" -derivedDataPath "$BUILD/DerivedData"
+}
+
+uv sync --project "$ROOT/python" --frozen --quiet
+sections=("$@")
+[ ${#sections[@]} -eq 0 ] && sections=(contract python core app)
+for section in "${sections[@]}"; do
+    case "$section" in
+        contract|python|core|app) "$section" ;;
+        *) echo "unknown section: $section (use: contract python core app)" >&2; exit 2 ;;
+    esac
+done
+printf '\nall requested checks passed: %s\n' "${sections[*]}"
