@@ -192,10 +192,10 @@ final class SessionStore {
     /// Closes an interrupted self-administered session whose resume window has passed. True when the window has
     /// passed, so the session must not resume, even when the close could not be written; the next launch tries again.
     private func expireIfDue(_ id: SessionID, at launch: Storage.Launch) -> Bool {
-        guard let state = reconciled[id], let configuration = configurations.configuration(
-            sha: state.session.opened.study.configSHA256.hex) else { return false }
+        guard let state = reconciled[id], let person = state.session.opened.person,
+              let configuration = configurations.configuration(of: state.session.opened) else { return false }
         let command = Command.expire(at: launch.at, t: launch.uptime)
-        guard case .success(let events) = state.decide(command, rules: rules(state.session.opened, configuration)) else {
+        guard case .success(let events) = state.decide(command, rules: rules(person, configuration)) else {
             return false
         }
         var closed = state
@@ -220,7 +220,7 @@ final class SessionStore {
             reconciled = [:]
             do {
                 let results = try storage.reconcile(launch, instruments: contract.instruments) { [configurations] opened in
-                    guard let config = configurations.configuration(sha: opened.study.configSHA256.hex) else {
+                    guard let config = configurations.configuration(of: opened) else {
                         throw ConfigurationLibrary.Refusal.unreadable
                     }
                     return try ExportPolicy(configuration: config)
@@ -256,8 +256,8 @@ final class SessionStore {
 
     private func row(_ state: SessionState, status: Listed.Status) -> Listed {
         let opened = state.session.opened
-        return Listed(id: opened.sessionID.description, status: status, title: opened.participant.rawValue,
-                      sessionID: opened.sessionID, purpose: opened.purpose, administration: opened.administration,
+        return Listed(id: opened.sessionID.description, status: status, title: opened.participant?.rawValue ?? "",
+                      sessionID: opened.sessionID, purpose: opened.purpose, administration: opened.person?.administration,
                       openedAt: opened.openedAt.text, encrypted: nil, participant: opened.participant)
     }
 
@@ -315,7 +315,7 @@ final class SessionStore {
             notice = .sessionOpen
             return
         }
-        guard hasRoom() else { return }
+        guard hasRoom(), let person = opened.person else { return }
         let entry = Entry(seq: 0, event: .sessionOpened(opened))
         let state: SessionState
         do throws(FoldError) {
@@ -332,7 +332,7 @@ final class SessionStore {
             try sink.append([entry])
             core = Core(state: state, recorder: InkRecorder(plan: opened.channels), digest: JournalDigest([entry]))
             live = LiveSession(
-                opened: opened, configuration: configuration, rules: rules(opened, configuration),
+                opened: opened, configuration: configuration, rules: rules(person, configuration),
                 plan: SessionPlan(configuration: configuration, opened: opened, dominant: dominant),
                 url: url, sink: sink, stage: opened.purpose == .qualification ? .working : .ready, dominant: dominant
             )
@@ -350,9 +350,9 @@ final class SessionStore {
         return false
     }
 
-    private func rules(_ opened: SessionOpened, _ configuration: StudyConfiguration) -> SessionRules {
+    private func rules(_ person: ParticipantFacts, _ configuration: StudyConfiguration) -> SessionRules {
         SessionRules(battery: contract.battery, instruments: contract.instruments, configuration: configuration,
-                     jurisdiction: opened.jurisdiction, locale: opened.locale)
+                     jurisdiction: person.jurisdiction, locale: person.locale)
     }
 
     /// Opens an interrupted journal again with a new writer. The configuration that the session recorded must be on
@@ -361,12 +361,12 @@ final class SessionStore {
     func resume(_ id: SessionID, at launch: Storage.Launch = Clock.launch) {
         guard live == nil, let state = reconciled[id], !state.session.isClosed else { return }
         let opened = state.session.opened
-        if opened.administration == .selfAdministered, expireIfDue(id, at: launch) {
+        if opened.person?.administration == .selfAdministered, expireIfDue(id, at: launch) {
             refresh(at: launch)
             return
         }
         guard hasRoom() else { return }
-        guard let configuration = configurations.configuration(sha: opened.study.configSHA256.hex) else {
+        guard let person = opened.person, let configuration = configurations.configuration(of: opened) else {
             notice = .configurationMissing
             return
         }
@@ -379,13 +379,13 @@ final class SessionStore {
             var stage = Stage.ready
             if opened.purpose == .qualification {
                 stage = .working
-            } else if opened.administration == .selfAdministered {
+            } else if person.administration == .selfAdministered {
                 stage = .confirmCode
             } else if plan.next(state.session) == .done {
                 stage = .review
             }
             core = Core(state: state, recorder: InkRecorder(resuming: state.session), digest: digest)
-            live = LiveSession(opened: opened, configuration: configuration, rules: rules(opened, configuration),
+            live = LiveSession(opened: opened, configuration: configuration, rules: rules(person, configuration),
                                plan: plan, url: url, sink: sink, stage: stage, dominant: dominant)
             reconciled[id] = nil
             revision += 1
@@ -405,7 +405,7 @@ final class SessionStore {
     /// The hand of the first trial of a task that the configuration runs with the dominant hand.
     private static func dominantHand(configuration: StudyConfiguration, digest: JournalDigest) -> Hand? {
         let tasks = Set(configuration.tasks.filter { $0.hands == .dominant || $0.hands == .both }.map(\.task))
-        return digest.trials.first { tasks.contains($0.task) && $0.hand != .unknown }?.hand
+        return digest.trials.first { tasks.contains($0.task) && ($0.hand ?? .unknown) != .unknown }?.hand
     }
 
     private func failureHandler(_ url: URL) -> @Sendable (JournalWriter.WriteError) -> Void {
@@ -522,15 +522,15 @@ final class SessionStore {
 
     /// Starts the next trial once the capture view has its size, so `trialStarted` records the real geometry.
     func startTrial(view: ViewSize) {
-        guard let live, live.stage == .working, let state = core?.state,
+        guard let live, live.stage == .working, let person = live.opened.person, let state = core?.state,
               case .task(let step, open: false) = live.plan.next(state.session),
               let spec = live.rules.battery.task(step.task) else { return }
         let origin = StimulusLayout.origin(for: spec, in: view, mmPerPoint: live.opened.scale.mmPerPoint)
-        let version = live.configuration.locales[live.opened.locale.rawValue]?.instructionVersion
+        let version = live.configuration.locales[person.locale.rawValue]?.instructionVersion
             ?? live.rules.battery.version
-        let plan = TrialPlan(task: step.task, practice: step.practice, position: step.position, hand: step.hand,
-                             instruction: InstructionRef(id: step.task.rawValue, version: version,
-                                                         locale: live.opened.locale),
+        let instruction = InstructionRef(id: step.task.rawValue, version: version, locale: person.locale)
+        let plan = TrialPlan(task: step.task, practice: step.practice, position: step.position,
+                             subject: .participant(ParticipantTrialFacts(hand: step.hand, instruction: instruction)),
                              view: view, stimulusOrigin: origin)
         let index = TrialIndex(state.session.trials.count)!
         if perform(.startTrial(plan, t: Clock.uptime)) {
@@ -599,7 +599,7 @@ final class SessionStore {
     /// self-administered session first shows the crisis list for a flag that has not had it, as after a recovery.
     func advance() {
         guard let live, live.stage != .stopped, let state = core?.state else { return }
-        if live.opened.administration == .selfAdministered, state.session.safety.flaggedSinceCrisisList {
+        if live.opened.person?.administration == .selfAdministered, state.session.safety.flaggedSinceCrisisList {
             if perform(.show(.crisisList, t: Clock.uptime)) { self.live?.stage = .flagCrisisList }
             return
         }
@@ -607,7 +607,7 @@ final class SessionStore {
         case .task, .block(_, open: true):
             self.live?.stage = .working
         case .block(let id, open: false):
-            if live.opened.administration == .selfAdministered, !live.disclosureShown,
+            if live.opened.person?.administration == .selfAdministered, !live.disclosureShown,
                live.plan.hasSafetyItem(in: live.rules.instruments) {
                 self.live?.stage = .disclosure
             } else if perform(.startQuestionnaire(id, t: Clock.uptime)) {
@@ -625,7 +625,7 @@ final class SessionStore {
             qualifications.record(live.opened)
             self.live?.stage = .qualified
             closeSink()
-        } else if live.opened.administration == .supervised {
+        } else if live.opened.person?.administration == .supervised {
             self.live?.stage = .handBack
         } else if !state.session.blocks.isEmpty {
             showClosingCrisisList()
@@ -733,7 +733,7 @@ final class SessionStore {
 
     /// Records one neutral alert line when the review shows flags that have no action yet.
     private func showOperatorAlert() {
-        guard live?.opened.administration == .supervised, let state = core?.state,
+        guard live?.opened.person?.administration == .supervised, let state = core?.state,
               state.session.safety.unactionedFlags > 0 else { return }
         perform(.show(.operatorAlert, t: Clock.uptime))
     }
@@ -747,7 +747,7 @@ final class SessionStore {
     /// flag needs its action first; a self-administered flag goes to the study reviewer after export.
     func showSupportList() {
         guard let live, live.stage == .review, let state = core?.state,
-              state.session.safety.unactionedFlags == 0 || live.opened.administration == .selfAdministered
+              state.session.safety.unactionedFlags == 0 || live.opened.person?.administration == .selfAdministered
         else { return }
         guard perform(.handoff(to: .participant, t: Clock.uptime)) else { return }
         showClosingCrisisList()
@@ -809,7 +809,7 @@ final class SessionStore {
         } else {
             opened = reconciled[id]?.session.opened
         }
-        guard let opened, let configuration = configurations.configuration(sha: opened.study.configSHA256.hex),
+        guard let opened, let configuration = configurations.configuration(of: opened),
               let policy = try? ExportPolicy(configuration: configuration) else {
             notice = .configurationMissing
             return nil
@@ -832,7 +832,7 @@ final class SessionStore {
     /// configuration that its first line names, or of the active configuration when that line does not decode.
     func exportDamaged(_ file: String) async -> ExportResult? {
         let configuration = if let opened = storage.opened(damaged: file) {
-            configurations.configuration(sha: opened.study.configSHA256.hex)
+            configurations.configuration(of: opened)
         } else {
             activeConfiguration
         }
@@ -883,6 +883,13 @@ extension Session {
     var isClosed: Bool { counts[.sessionClosed] > 0 }
 }
 
+extension SessionOpened {
+    /// The facts of the person in a study or qualification session. Nil for a bench session, which has no person.
+    var person: ParticipantFacts? {
+        if case .participant(let facts) = subject { facts } else { nil }
+    }
+}
+
 extension SessionPlan {
     /// True when a step runs with a hand that is not known, which a resumed session must ask for.
     var usesUnknownHand: Bool {
@@ -922,8 +929,8 @@ extension SessionStore {
     var currentTask: TaskModel? {
         guard let live, let state, case .task(let step, let open) = live.plan.next(state.session),
               let spec = live.rules.battery.task(step.task) else { return nil }
-        let text = live.configuration.locales[live.opened.locale.rawValue]?.instructions[step.task.rawValue]
-            ?? spec.instruction
+        let locale = live.opened.person.flatMap { live.configuration.locales[$0.locale.rawValue] }
+        let text = locale?.instructions[step.task.rawValue] ?? spec.instruction
         var trial: TrialIndex?
         var deadline: Double?
         var began = false

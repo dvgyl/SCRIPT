@@ -69,20 +69,22 @@ struct SetupDraft {
               let entry = configuration.consentModel[ageBand.rawValue]
         else { return nil }
         let now = Clock.now
-        return SessionOpened(
-            purpose: purpose, sessionID: SessionID(), participant: participant, openedAt: now,
-            openedUptime: Clock.uptime, boot: Clock.boot, app: device.app,
-            device: DeviceInfo(model: device.model, os: device.os, nativeScale: device.nativeScale, asset: asset),
-            surface: Surface(protector: protector, nib: nib), qualification: qualification, scale: scale,
-            pencil: pencil, channels: ChannelPlan.plan(pencil: pencil, hoverSupported: pencil != .none),
-            input: device.input, administration: administration,
-            study: configuration.studyRef(site: site), visit: visit, ageBand: ageBand, jurisdiction: jurisdiction,
-            locale: locale,
+        let person = ParticipantFacts(
+            participant: participant, administration: administration, study: configuration.studyRef(site: site),
+            visit: visit, ageBand: ageBand, jurisdiction: jurisdiction, locale: locale,
             consent: Consent(model: study ? entry.model : .adult,
                              attestedBy: Attestor(code: attestor, role: administration == .supervised ? .operator : .enrolment),
                              attestedAt: now, documents: study ? entry.documents : [],
                              waiverReference: study ? entry.waiverReference : nil),
-            ethics: configuration.ethics, battery: battery.reference
+            ethics: configuration.ethics
+        )
+        return SessionOpened(
+            purpose: purpose, sessionID: SessionID(), openedAt: now, openedUptime: Clock.uptime, boot: Clock.boot,
+            app: device.app,
+            device: DeviceInfo(model: device.model, os: device.os, nativeScale: device.nativeScale, asset: asset),
+            surface: Surface(protector: protector, nib: nib), qualification: qualification, scale: scale,
+            pencil: pencil, channels: ChannelPlan.plan(pencil: pencil, hoverSupported: pencil != .none),
+            input: device.input, subject: .participant(person), battery: battery.reference
         )
     }
 }

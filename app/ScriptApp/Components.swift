@@ -218,6 +218,7 @@ extension Purpose {
         switch self {
         case .study: "Study"
         case .qualification: "Qualification"
+        case .bench: "Bench"
         }
     }
 }

@@ -10,9 +10,11 @@ struct PausedScreen: View {
     var body: some View {
         NavigationStack {
             List {
-                Section {
-                    LabeledContent("Participant", value: live.opened.participant.rawValue)
-                    LabeledContent("Administration") { Text(live.opened.administration.name) }
+                if let person = live.opened.person {
+                    Section {
+                        LabeledContent("Participant", value: person.participant.rawValue)
+                        LabeledContent("Administration") { Text(person.administration.name) }
+                    }
                 }
                 Section {
                     Button("Return to the participant", action: store.returnToParticipant)
@@ -38,7 +40,7 @@ struct ReviewScreen: View {
     var body: some View {
         let digest = store.digest ?? JournalDigest()
         let session = store.state?.session
-        let supervised = live.opened.administration == .supervised
+        let supervised = live.opened.person?.administration == .supervised
         let open = supervised ? session?.safety.unactionedFlags ?? 0 : 0
         NavigationStack {
             List {
@@ -147,7 +149,7 @@ struct TrialRow: View {
     private var outcome: LocalizedStringKey {
         switch trial.reason {
         case nil: "Open"
-        case .participantDone: "Done"
+        case .participantDone, .operatorDone: "Done"
         case .timeLimit: "Time limit"
         case .declined: "Declined"
         case .unable: "Unable"

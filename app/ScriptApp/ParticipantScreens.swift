@@ -89,7 +89,7 @@ struct ReadyScreen: View {
 
     var body: some View {
         ParticipantFrame(step: nil, pin: live.pin, onOperator: store.operatorTookOver) {
-            Text(live.opened.administration == .supervised
+            Text(live.opened.person?.administration == .supervised
                  ? "Please give the iPad to the participant."
                  : "Tap Start when you are ready.")
                 .font(.largeTitle.weight(.semibold))
@@ -394,7 +394,7 @@ struct ThankYouScreen: View {
                 Text("Thank you.")
                     .font(.largeTitle.weight(.semibold))
                     .accessibilityIdentifier("thankYou")
-                Text(live.opened.administration == .supervised
+                Text(live.opened.person?.administration == .supervised
                      ? "Please give the iPad back to the researcher."
                      : "You can now give the iPad back to the study team, or save the session to Files.")
                     .font(.title2)
@@ -402,7 +402,7 @@ struct ThankYouScreen: View {
             .fixedSize(horizontal: false, vertical: true)
             .padding(.top, 120)
         } actions: {
-            if live.opened.administration == .selfAdministered {
+            if live.opened.person?.administration == .selfAdministered {
                 Button {
                     if let saved {
                         result = saved

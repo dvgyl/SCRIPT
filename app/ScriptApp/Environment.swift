@@ -52,6 +52,11 @@ struct ConfigurationLibrary {
         return try? StudyConfiguration(data: data)
     }
 
+    /// The configuration that a session recorded, when it is on this device. A bench session records none.
+    func configuration(of opened: SessionOpened) -> StudyConfiguration? {
+        opened.person.flatMap { configuration(sha: $0.study.configSHA256.hex) }
+    }
+
     enum Refusal: Error, Hashable {
         case unreadable
         case decode(DecodeError)

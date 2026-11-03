@@ -39,8 +39,9 @@ struct SessionPlan: Hashable, Sendable {
             }
             return
         }
+        let person = opened.person
         let blocks = configuration.questionnaires.filter {
-            $0.administration == opened.administration && $0.ageBand == opened.ageBand
+            $0.administration == person?.administration && $0.ageBand == person?.ageBand
         }
         func blockSteps(_ position: StudyConfiguration.BlockPosition) -> [Step] {
             blocks.filter { $0.position == position }.flatMap(\.instruments).map(Step.block)
@@ -170,7 +171,7 @@ struct JournalDigest: Sendable {
         let task: TaskID
         let attempt: Int
         let practice: Bool
-        let hand: Hand
+        let subject: TrialSubject
         let started: Double
         var began: Double?
         var ended: Double?
@@ -182,6 +183,11 @@ struct JournalDigest: Sendable {
         var tilt = false
         var roll = false
         var hover = 0
+
+        /// The hand of a participant trial. A bench run has none.
+        var hand: Hand? {
+            if case .participant(let facts) = subject { facts.hand } else { nil }
+        }
     }
 
     struct Flag: Hashable, Sendable {
@@ -209,7 +215,7 @@ struct JournalDigest: Sendable {
     mutating func add(_ entry: Entry) {
         switch entry.event {
         case .trialStarted(let e):
-            trials.append(Trial(task: e.trial.task, attempt: e.trial.attempt, practice: e.practice, hand: e.hand,
+            trials.append(Trial(task: e.trial.task, attempt: e.trial.attempt, practice: e.practice, subject: e.subject,
                                 started: e.t))
         case .trialBegan(let e):
             trials[e.trial.rawValue].began = e.t
