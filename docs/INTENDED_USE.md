@@ -1,6 +1,6 @@
 # SCRIPT intended use
 
-This document states what SCRIPT is for, what it is not for, and which claims the current evidence supports. It applies to the SCRIPT Capture app, the scriptkin library, and the evaluation harness that [the design](DESIGN.md#7-evaluation) describes.
+This document states what SCRIPT is for, what it is not for, and which claims the current evidence supports. It applies to the SCRIPT Capture app, the SCRIPT Bench app, the scriptkin library, and the evaluation harness that [the design](DESIGN.md#7-evaluation) describes.
 
 ## Intended use
 
@@ -12,10 +12,14 @@ SCRIPT is a research platform. It records drawing movement and reference questio
 | Population | People aged 13 to 24, recorded in two age bands: 13 to 17, and 18 to 24. |
 | Administration | Supervised sessions, with an operator present. Self-administered sessions, with no operator present. |
 | Users | The operator runs the session. The participant draws and answers the questionnaires. The analyst reads the exports. |
-| Device | An iPad with Apple Pencil. The app needs iPadOS 18 or later. |
+| Device | An iPad with Apple Pencil. The app needs iPadOS 18 or later. For the bench study only, a Mac with macOS 15 or later runs SCRIPT Bench with a Wacom tablet. |
 | Outputs | One journal and one export for each session. Features, quality findings, and questionnaire scores for the analyst only. |
 
 A study uses SCRIPT only with an ethics approval, a study configuration, and a safety protocol. The [study guide](STUDY_GUIDE.md) gives the procedure.
+
+## Bench sessions
+
+SCRIPT Capture in bench mode and SCRIPT Bench record the robotic bench study of the [bench protocol](BENCH_PROTOCOL.md). A motion system draws in a bench session, so the session records no person. It has no participant code, no questionnaire, and no safety step. Do not use a bench session to record a person.
 
 ## What SCRIPT is not
 
@@ -44,6 +48,7 @@ SCRIPT supports engineering claims about its software only. Each claim below nam
 | A configuration with an unverified instrument, or an instrument outside its validated ages, is refused. | `anUnverifiedInstrumentIsRefused` and `anInstrumentOutsideItsValidatedAgesIsRefused` in `app/Tests/ScriptCoreTests/StudyTests.swift` |
 | An encrypted export opens only with the study private key. | `test_wrong_private_key_is_refused_by_key_id_before_decryption` in `python/tests/test_export.py` |
 | A pen-only copy has no questionnaire or safety line and ends at the last task. | `test_pen_only_copy_passes_integrity_and_has_no_response` and `test_pen_only_copy_ends_at_the_last_trial` in `python/tests/test_export.py` |
+| A bench session cannot hold a handoff, questionnaire, or safety line. | `aBenchSessionRefusesEveryParticipantCommand` in `app/Tests/ScriptCoreTests/DecideTests.swift` and `test_a_questionnaire_line_in_a_bench_session_is_refused` in `python/tests/test_journal.py` |
 
 These claims apply to `ScriptCore` and scriptkin. The app applies these rules through `ScriptCore`. Before a study uses a release, the release must pass the [release process](RELEASE.md), which includes `./check` and the [device test](DEVICE_TESTING.md). The simulator cannot make Pencil force or tilt.
 

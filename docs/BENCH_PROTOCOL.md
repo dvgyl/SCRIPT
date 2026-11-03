@@ -1,6 +1,6 @@
 # Bench protocol
 
-Version 1.1. The status is draft until the lock (section 14). After the lock, every change is a deviation (section 13). Version 1.1 revises version 1.0 after its independent review.
+Version 1.1. The status is draft until the lock (section 14). After the lock, every change is a deviation (section 13). Version 1.1 revises version 1.0 after its independent review. The clip wording of sections 2.4 and 5.2 was corrected to match the capture tools before the lock.
 
 This protocol defines the robotic bench study of `docs/PAPER_PLAN.md`. A motion system moves a stylus along registered programs on two devices. A camera records the executed movement of every run. The study has no participants and uses no data from people. It makes no mental health claim and no claim about people.
 
@@ -100,7 +100,7 @@ Both tools:
 - `sessionOpened.purpose` is `bench`. The header has no participant keys. Its `bench` object holds the device role (`P` or `W`) and the mounting code (`M1` to `M8`). It also holds the motion system id and version, and the protocol version and SHA-256.
 - One journal holds one mounting of one device, which is one block (section 6.3).
 - Each run is one trial of a bench task of `contract/battery.json`: `bench-loops-l`, `bench-loops-s`, `bench-spiral-l`, `bench-spiral-s`, or `bench-line` (section 5.1). `trialStarted.spec` holds the task specification, so the journal is self-contained.
-- `trialStarted.bench` holds the program id, the run index, the trajectory digest, and the clip name. The run index is 1 to 5 for the planned runs and 6 or 7 for the reruns of section 6.4. The trajectory digest is the SHA-256 of the controller file that the motion system executes (section 4.1). The tool copies it from the bundled programs file `contract/bench_programs.json`, so the operator never types it. The clip name is the run id of section 15, typed before Begin.
+- `trialStarted.bench` holds the program id, the run index, the trajectory digest, and the clip name. The run index is 1 to 5 for the planned runs and 6 or 7 for the reruns of section 6.4. The trajectory digest is the SHA-256 of the controller file that the motion system executes (section 4.1). The tool copies it from the bundled programs file `contract/bench_programs.json`, so the operator never types it. The clip name is the run id of section 15. The tool writes it, and the run screen shows it before Begin. The operator names the camera file with that run id.
 - The operator taps Begin before the stylus lowers and Done after the stylus lifts. Done ends the trial with reason `operatorDone`.
 - The operator never marks a fault run as excluded. The quality gate of section 5.3 needs the fault runs as ordinary trials.
 - The session refuses every questionnaire, safety, and handoff line.
@@ -263,7 +263,7 @@ Every program except `loops-l-v80` lasts 6 s or more, so one gap split still lea
 For every run:
 
 1. Move the stylus above the start point of the program at the lift height.
-2. The operator types the clip name and taps Begin.
+2. The operator checks the run id on the run screen and taps Begin.
 3. Lower the stylus. Wait 0.5 s.
 4. Execute the move list.
 5. Wait 0.3 s. Lift the stylus.

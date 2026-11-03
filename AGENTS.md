@@ -4,7 +4,8 @@ Read `docs/DESIGN.md` before you change code. The design is the contract.
 
 ## Check your work
 
-- Run `./check` before you report a change as done. Run one section with `./check python`, `./check core`, `./check contract`, or `./check app`.
+- Run `./check` before you report a change as done. It runs the sections `contract core bench app python` in this order. Run one section with `./check python`, `./check core`, `./check contract`, `./check bench`, or `./check app`.
+- `app/ScriptApp.xcodeproj` has two app targets: `ScriptApp`, the iPad app SCRIPT Capture, and `ScriptBench`, the Mac app SCRIPT Bench. `./check bench` runs the `ScriptBench` tests on the Mac.
 - Build output, the Python environment, and test exports live outside the repository, in `~/Library/Caches/SCRIPT/<checkout>-<hash>/`. `./check` prints nothing about it and creates it on demand. Set `SCRIPT_BUILD` to use another folder.
 - The repository may sit on an exFAT drive. macOS then writes a `._` file beside each file. Every tool must skip names that start with `._`.
 - Write each test to detect one named defect. State the defect in the first comment line of the test. Do not test source spelling.

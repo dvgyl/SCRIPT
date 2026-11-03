@@ -58,6 +58,7 @@ A script checks that every code symbol, file, and test in these tables exists. T
 | [H13](#h13-research-data-enter-a-device-backup) | Research data enter a device backup | S3 | L3 | L1 | Maintainers and site |
 | [H14](#h14-a-session-has-the-wrong-participant-code) | A session has the wrong participant code | S2 | L3 | L2 | Site |
 | [H15](#h15-a-withdrawal-misses-a-copy) | A withdrawal misses a copy | S3 | L3 | L2 | Site |
+| [H16](#h16-a-bench-journal-is-read-as-a-participant-journal) | A bench journal is read as a participant journal | S3 | L2 | L1 | Maintainers and analyst |
 
 H7 has the highest residual likelihood. It stays at L3 until human evidence shows that features agree between devices.
 
@@ -66,6 +67,7 @@ These grades changed at this review:
 - H6 fell from L2 to L1. Setup now asks for a reference measurement when the device table does not confirm the iPad model.
 - H13 fell from L3 to L1. The app now excludes every research folder and log from device backups, and a test proves it.
 - H15 is new. Export names no longer hold the participant code, so the withdrawal of copies outside the iPad depends on the site session register.
+- H16 is new. Bench sessions now write the same journal format as participant sessions.
 
 ## Hazards
 
@@ -192,13 +194,13 @@ These grades changed at this review:
 | Field | Entry |
 | --- | --- |
 | Hazard | Features in millimetres use a wrong scale. |
-| Cause | A wrong pixel density in the device table. An operator measures the reference wrongly. |
+| Cause | A wrong pixel density in the device table. An operator measures the reference wrongly. A wrong resolution or y direction in the tablet table. |
 | Harm | Wrong spatial and kinematic values, and false differences between devices. |
 | Severity | S2 |
 | Likelihood before controls | L3 |
-| Duty of the site | Qualify each device with a reference length. Measure with a steel rule or an ID-1 card. |
+| Duty of the site | Qualify each device with a reference length. Measure with a steel rule or an ID-1 card. Run the tablet test of the [device test](DEVICE_TESTING.md#test-script-bench-on-a-mac-with-the-wacom-tablet) on the bench tablet. |
 | Residual likelihood | L1 |
-| Residual risk | Acceptable with device qualification. An operator can still measure wrongly on an iPad model that the device table does not confirm. |
+| Residual risk | Acceptable with device qualification. An operator can still measure wrongly on an iPad model that the device table does not confirm. The y direction of the tablet table stays provisional until the tablet test. |
 | Owner | Maintainers and site |
 
 | Control | Status | Code | Test |
@@ -207,6 +209,8 @@ These grades changed at this review:
 | Setup asks for a reference measurement when the device table does not confirm the iPad model. | Implemented | `DeviceFacts.tableScale` in `app/ScriptApp/Environment.swift`. `MeasurementScreen` in `app/ScriptApp/SetupScreen.swift`. | `aModelWhoseDensityIsNotConfirmedNeedsAReferenceMeasurement` in `app/ScriptAppTests/StoreTests.swift`. `testQualificationFromAMeasuredScaleShowsTheSampleTiming` in `app/ScriptAppUITests/SessionFlowTests.swift`. |
 | An unknown scale makes the features in millimetres refuse. | Implemented | `extract` in `python/src/scriptkin/features.py` | `test_unknown_scale_refuses_distance_but_keeps_time` in `python/tests/test_quality_features.py` |
 | The qualification report gives the jitter and the line deviation in millimetres. | Implemented | `qualify` in `python/src/scriptkin/qualification.py` | `test_hold_jitter_and_line_deviation_are_in_millimetres` in `python/tests/test_qualification.py` |
+| A tablet journal records the tablet scale of the tablet table, with `mmPerPoint = 1 / linesPerMM`. | Implemented | `MillimetreScale.tablet` and `TabletTable` in `app/Sources/ScriptCore/Scale.swift` | `theTabletScaleMatchesTheContractFormula` in `app/Tests/ScriptCoreTests/StudyTests.swift` |
+| The capture flips y for a tablet that reports y up, so every tablet journal is y down. | Implemented | `TabletMapper` in `app/ScriptBench/TabletInput.swift` | `theTabletTableFlipsYForATabletThatReportsYUp` in `app/ScriptBenchTests/BenchTests.swift` |
 
 ### H7. Device differences are mistaken for symptoms
 
@@ -225,6 +229,7 @@ These grades changed at this review:
 | Control | Status | Code | Test |
 | --- | --- | --- | --- |
 | The channel plan follows the declared Pencil. | Implemented | `ChannelPlan.plan` in `app/Sources/ScriptCore/Ink.swift` | `theChannelPlanFollowsTheDeclaredPencil` in `app/Tests/ScriptCoreTests/InkTests.swift` |
+| A tablet sample keeps only the channels that the declared tablet pen plans, and it has no estimate. | Implemented | `ChannelPlan.plan` and `InkRecorder` in `app/Sources/ScriptCore/Ink.swift` | `aTabletReadingKeepsOnlyPlannedChannelsAndNoEstimates` in `app/Tests/ScriptCoreTests/InkTests.swift`. `aTabletSampleKeepsOnlyThePlannedChannels` in `app/ScriptBenchTests/BenchTests.swift`. |
 | Quality control reports a planned channel that the data do not show. | Implemented | `assess` in `python/src/scriptkin/quality.py` | `test_qc_reports_planned_channel_absent` in `python/tests/test_quality_features.py` |
 | Simulated input refuses the features that need a Pencil-only channel. | Implemented | `assess` in `python/src/scriptkin/quality.py` | `test_simulator_refuses_pen_channels` in `python/tests/test_quality_features.py` |
 | The harness measures agreement between devices, and its gate removes a feature that fails. | Implemented | `reliability` and `reliability_gate` in `python/src/scriptkin/evaluate/reliability.py` | `test_device_agreement_pairs_each_participant_across_devices` and `test_gate_fails_a_feature_with_injected_session_noise` in `python/tests/test_reliability.py` |
@@ -402,3 +407,26 @@ SCRIPT shows no score to anyone ([H2](#h2-a-participant-infers-a-score)). Each s
 | The export index finds an encrypted export of the code on the iPad. | Implemented | `Storage.index` in `app/Sources/ScriptCore/Storage.swift` | `anExportNameHoldsNoParticipantCodeAndWithdrawalStillFindsAnEncryptedExport` in `app/Tests/ScriptCoreTests/StorageTests.swift` |
 | The intake receipt of a session names its source folder and its export digest, so the store folders of a session can be found. | Implemented | `intake` in `python/src/scriptkin/intake.py` | `test_intake_copies_a_verified_export_with_its_manifest_and_receipt` in `python/tests/test_intake.py` |
 | A record that links a participant code to the copies outside the iPad. | Not implemented | None | None |
+
+### H16. A bench journal is read as a participant journal
+
+| Field | Entry |
+| --- | --- |
+| Hazard | The movement of the bench motion system enters an analysis of people. |
+| Cause | Bench sessions write the same journal format as study sessions. A bench export reaches a study store. A bench journal holds a participant key, or a study journal holds a bench run. |
+| Harm | A misleading research result, because the movement of a machine counts as the movement of a person. |
+| Severity | S3 |
+| Likelihood before controls | L2 |
+| Duty of the site | Keep bench exports in the store of the bench study. Run a bench session with the motion system only, never with a person. |
+| Residual likelihood | L1 |
+| Residual risk | Acceptable. A bench session in a study store never enters the feature table or the labels. It still adds to the device and channel counts of the QC report. |
+| Owner | Maintainers and analyst |
+
+| Control | Status | Code | Test |
+| --- | --- | --- | --- |
+| The reader refuses a participant key in a bench header and a bench key in a participant header. | Implemented | `_shape` in `python/src/scriptkin/formats/journal.py` | `test_a_participant_key_on_a_bench_session_is_refused` in `python/tests/test_journal.py` |
+| A bench session refuses every handoff, questionnaire, and safety command, and the fold refuses such a line. | Implemented | `SessionState.decide` in `app/Sources/ScriptCore/Session.swift`. `FoldState` in `python/src/scriptkin/formats/journal.py`. | `aBenchSessionRefusesEveryParticipantCommand` in `app/Tests/ScriptCoreTests/DecideTests.swift`. `test_a_questionnaire_line_in_a_bench_session_is_refused` in `python/tests/test_journal.py`. |
+| A study session cannot start a bench task, and a study configuration cannot hold one. | Implemented | `Battery.tasks` in `app/Sources/ScriptCore/Battery.swift`. `validate` in `app/Sources/ScriptCore/Study.swift`. | `aStudySessionRefusesABenchTaskAndABenchSessionRefusesAStudyTask` in `app/Tests/ScriptCoreTests/DecideTests.swift`. `aQualificationOrBenchTaskCannotEnterAStudyConfiguration` in `app/Tests/ScriptCoreTests/StudyTests.swift`. `test_bench_tasks_cannot_enter_a_study_session` in `python/tests/test_contract.py`. |
+| Bench sessions never enter the feature table. | Implemented | `feature_table` in `python/src/scriptkin/features.py` | `test_bench_sessions_never_enter_the_feature_table` in `python/tests/test_session_features.py` |
+| A bench export name starts with `SCRIPT_BENCH_`, and the recording of a bench session has no participant. | Implemented | `SessionOpened.exportName` in `app/Sources/ScriptCore/Journal.swift` | `test_bench_export_is_plaintext_and_keeps_every_bench_fact` in `python/tests/test_app_export.py` |
+| The site, configuration, and administration counts of the QC report leave out bench sessions. | Implemented | `qc_report` in `python/src/scriptkin/qcreport.py` | `test_qc_report_counts_match_a_hand_count_of_the_contract_fixtures` in `python/tests/test_qcreport.py` |

@@ -57,9 +57,9 @@ Working title: *Do Apple Pencil and Wacom measure the same drawing movement? A r
 
 ### 2.3 Design in brief
 
-- **Devices.** P: iPad Pro (M4 or M5) with Apple Pencil Pro, SCRIPT Capture in bench mode. W: a Wacom tablet on a Mac, with a SCRIPT Bench capture that writes the same journal format.
+- **Devices.** P: iPad Pro (M4 or M5) with Apple Pencil Pro, SCRIPT Capture in bench mode. W: a Wacom tablet on a Mac, with SCRIPT Bench. Both captures write journal format 2.0 (`docs/DESIGN.md` section 3).
 - **Motion.** A motion system (a pen plotter or a 3D printer) holds the stylus at a fixed angle with a constant load. The choice changes the motion model in the analysis. The camera records the executed movement.
-- **Programs.** The SCRIPT battery loops and spiral at two sizes and two speeds, one fast loops program, and three line programs with a designed 5 to 11 Hz oscillation (12 programs), plus three fault programs for the quality gate.
+- **Programs.** The SCRIPT battery loops and spiral at two sizes and two speeds, one fast loops program, and three line programs with a designed 5 to 11 Hz oscillation (12 programs), plus three fault programs for the quality gate. `contract/bench_programs.json` registers each program with its task, speed, and trajectory digest.
 - **Replication.** Six mountings per device and five runs per program per mounting: 720 main runs and 108 fault runs.
 - **Measures.** Sampling interval, jitter, and noise floor; spatial accuracy against the camera and the commanded path; and agreement of a fixed feature set on the motion interval (duration, path length, mean speed, loop height, speed variability, tremor-band power on the designed oscillations). Four of these are referenced to the camera track of each run. Normalised jerk is descriptive.
 - **Statistics.** For each feature: the device difference per program with a confidence interval that includes mounting effects, a two-one-sided-tests (TOST) equivalence decision against prespecified limits on every program of the feature's set, Holm-adjusted across features, and Bland-Altman limits with repeated measures. Per-program results are descriptive. The limits and the analysis are fixed and hashed before the main runs.

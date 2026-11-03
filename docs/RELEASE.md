@@ -1,6 +1,6 @@
 # How to release SCRIPT Capture
 
-This document gives a proportionate release process for SCRIPT Capture, the iPad app. A study uses only a release that went through this process. The process sets the version and build numbers, puts the source revision into every journal, signs the build, and limits who can install it. It ends with the record that each site keeps about the release that it uses.
+This document gives a proportionate release process for SCRIPT Capture, the iPad app. A study uses only a release that went through this process. The process sets the version and build numbers, puts the source revision into every journal, signs the build, and limits who can install it. It ends with the record that each site keeps about the release that it uses. The [last section](#build-script-bench-for-the-bench-study) tells how to build SCRIPT Bench, the Mac app of the bench study.
 
 SCRIPT is a research platform, not a medical device. This process is not a claim of conformity with IEC 62304 or any other standard.
 
@@ -92,3 +92,25 @@ Each site keeps a record of the release that it uses. The record lets an analyst
 | Repository revision of the scriptkin that reads the exports | The analyst's records |
 
 The QC report counts the sessions of the study store by app version. Use it to check that every session came from a release that the site recorded.
+
+## Build SCRIPT Bench for the bench study
+
+SCRIPT Bench records the Wacom tablet of the [bench protocol](BENCH_PROTOCOL.md). It records no person, and it is not distributed. The `ScriptBench` target of `app/ScriptApp.xcodeproj` has its own two numbers, and every journal of SCRIPT Bench records both in `sessionOpened.app`.
+
+| Number | Build setting | Journal field | Now |
+| --- | --- | --- | --- |
+| Version | `MARKETING_VERSION` of the `ScriptBench` target | `app.version` | 0.1.0 |
+| Build number | `CURRENT_PROJECT_VERSION` of the `ScriptBench` target | `app.build` | 1 |
+
+1. Make the build on the bench Mac from a commit that `./check` passed, with no change in the working tree.
+2. Run the build command below. Use the Release configuration.
+3. Run the [tablet test](DEVICE_TESTING.md#test-script-bench-on-a-mac-with-the-wacom-tablet) with this build.
+4. Record the version, the build number, and the source revision from the first journal of the build.
+
+```sh
+xcodebuild build -project app/ScriptApp.xcodeproj -scheme ScriptBench -configuration Release \
+  -destination "platform=macOS,arch=$(uname -m)" -derivedDataPath "<release folder>/ScriptBench-<version>-<build>" \
+  MARKETING_VERSION=<version> CURRENT_PROJECT_VERSION=<build> SCRIPT_SOURCE_REVISION="$(git rev-parse --short HEAD)"
+```
+
+The app is `Build/Products/Release/ScriptBench.app` in the folder of `-derivedDataPath`. A Debug build accepts the launch argument `-ScriptBenchWithoutTablet`, which skips the clock check. So use only a Release build for bench sessions. The target signs the app ad hoc (`CODE_SIGN_IDENTITY` is `-`), so the build needs no developer team. The bench lock records `app.build` and `app.sourceRevision` of SCRIPT Bench (`docs/BENCH_PROTOCOL.md` section 14).
