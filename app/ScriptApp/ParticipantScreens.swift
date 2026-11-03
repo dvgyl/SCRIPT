@@ -19,14 +19,15 @@ struct SessionView: View {
         case .finished: ThankYouScreen(store: store, live: live)
         case .paused: PausedScreen(store: store, live: live)
         case .review: ReviewScreen(store: store, live: live)
-        case .qualified: QualificationResultScreen(store: store, live: live)
+        case .bench: BenchScreen(store: store, live: live)
+        case .sampleTiming: SampleTimingScreen(store: store, live: live)
         case .stopped: StoppedScreen(store: store, live: live)
         }
     }
 }
 
 private extension LiveSession {
-    var pin: OperatorPin? { configuration.operatorPin }
+    var pin: OperatorPin? { participant?.configuration.operatorPin }
 }
 
 extension StudyConfiguration.RemoteReview {
@@ -129,7 +130,7 @@ struct DisclosureScreen: View {
             VStack(alignment: .leading, spacing: 24) {
                 Text("Before the questions")
                     .font(.largeTitle.weight(.semibold))
-                if let review = live.configuration.safety.remoteReview {
+                if let review = live.participant?.configuration.safety.remoteReview {
                     Text(review.disclosure).font(.title2)
                 }
                 Text("If you want to talk to someone sooner, the services on the support list can help. The list comes at the end.")
@@ -215,13 +216,7 @@ struct TaskScreen: View {
             .padding(.vertical, 20)
         }
         .background(Color(UIColor.systemBackground))
-        .task(id: task.trial) {
-            guard let deadline = task.deadline, let trial = task.trial else { return }
-            let remaining = deadline - Clock.uptime
-            if remaining > 0 { try? await Task.sleep(for: .seconds(remaining)) }
-            guard !Task.isCancelled, store.currentTask?.trial == trial else { return }
-            store.timeLimitReached()
-        }
+        .timeLimit(of: task.trial, at: task.deadline, store: store)
     }
 
     private var instruction: some View {

@@ -201,8 +201,8 @@ public struct ClipName: PatternText {
     }
 
     /// The run id of bench protocol section 15, `<role>-<mounting>-<program>-r<run>`, for example
-    /// `P-M3-loops-s-v40-r2`.
-    init(runOf program: ProgramID, run: Int, in bench: BenchFacts) {
+    /// `P-M3-loops-s-v40-r2`. `decide` writes it as the clip, and a run screen shows it before the run starts.
+    public init(runOf program: ProgramID, run: Int, in bench: BenchFacts) {
         // At most 59 characters for any Int run, so the text always fits the 64-character limit.
         rawValue = "\(bench.role.rawValue)-\(bench.mounting.rawValue)-\(program.rawValue)-r\(run)"
     }

@@ -2,11 +2,12 @@ import Foundation
 import ScriptCore
 import UIKit
 
-/// The contract files that the app ships: the battery, the instruments, and the demo configuration.
+/// The contract files that the app ships: the battery, the instruments, the demo configuration, and the bench programs.
 struct BundledContract: Sendable {
     let battery: Battery
     let instruments: InstrumentSet
     let demo: StudyConfiguration
+    let benchPrograms: BenchPrograms
 
     enum LoadError: Error { case missing(String), invalid(String) }
 
@@ -19,6 +20,7 @@ struct BundledContract: Sendable {
             battery = try Battery(data: try data("battery"))
             instruments = try InstrumentSet(data: try data("instruments"))
             demo = try StudyConfiguration(data: try data("demo"))
+            benchPrograms = try BenchPrograms(data: try data("bench_programs"))
         } catch let error as LoadError {
             throw error
         } catch {
@@ -55,6 +57,14 @@ struct ConfigurationLibrary {
     /// The configuration that a session recorded, when it is on this device. A bench session records none.
     func configuration(of opened: SessionOpened) -> StudyConfiguration? {
         opened.person.flatMap { configuration(sha: $0.study.configSHA256.hex) }
+    }
+
+    /// The export format of a session. A bench session is plaintext, because the bench data are released. Every other
+    /// session takes the format of the configuration that it recorded.
+    func exportPolicy(_ opened: SessionOpened) throws -> ExportPolicy {
+        if case .bench = opened.subject { return .demo }
+        guard let configuration = configuration(of: opened) else { throw Refusal.unreadable }
+        return try ExportPolicy(configuration: configuration)
     }
 
     enum Refusal: Error, Hashable {
@@ -142,6 +152,9 @@ enum LaunchMode {
 
     /// Setup asks for the reference measurement even on a model in the device table, so a UI test reaches it.
     static var measureScale: Bool { debugArgument("-ScriptMeasureScale") }
+
+    /// A UI test run writes the Swift fold summary beside each export, so `./check` can compare it with the Python fold.
+    static var writesFoldSummaries: Bool { debugArgument("-ScriptUITest") }
 
     private static func debugArgument(_ name: String) -> Bool {
         #if DEBUG

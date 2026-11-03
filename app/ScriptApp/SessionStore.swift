@@ -37,31 +37,42 @@ enum Stage: Hashable, Sendable {
     case closingCrisisList
     /// The session is closed. The participant sees the thank-you screen.
     case finished
-    /// The qualification session is closed. The operator sees the sample timing.
-    case qualified
+    /// The operator records bench runs: the run screen, or the task screen of the chosen or open run.
+    case bench
+    /// A qualification or bench session is closed. The operator sees the sample timing and exports the session.
+    case sampleTiming
     /// A write failed. The session stopped, and the operator sees the storage alert.
     case stopped
 }
 
-/// One open session: its frozen configuration and rules, its plan, its writer, and where the flow is.
-struct LiveSession {
-    let opened: SessionOpened
+/// What the participant flow of a study or qualification session needs: its frozen configuration, its plan, and
+/// where the participant is.
+struct ParticipantFlow {
     let configuration: StudyConfiguration
-    let rules: SessionRules
     var plan: SessionPlan
-    let url: URL
-    let sink: any JournalSink
-    var stage: Stage
     var dominant: Hand?
     var disclosureShown = false
     /// The stage to go back to when the operator returns the iPad.
     var participantStage: Stage = .working
+    /// True after the operator ended the session early. The review follows the crisis list.
+    var endedEarly = false
+}
+
+/// One open session: its rules, its writer, where the flow is, and the participant flow when a person draws.
+struct LiveSession {
+    let opened: SessionOpened
+    let rules: SessionRules
+    /// Nil for a bench session, which has no configuration and no fixed plan: the operator picks each run.
+    var participant: ParticipantFlow?
+    let url: URL
+    let sink: any JournalSink
+    var stage: Stage
+    /// The bench run that the operator picked. Its trial starts once the task view has its size.
+    var chosenRun: BenchRunPlan?
     /// The view and stimulus origin of the open trial, as `trialStarted` recorded them.
     var trialGeometry: (index: TrialIndex, view: ViewSize, origin: Point)?
     /// True while the operator is on Home and the session stays open.
     var away = false
-    /// True after the operator ended the session early. The review follows the crisis list.
-    var endedEarly = false
     /// The close of the writer. Reconcile waits for it, because it must never read a journal that is open.
     var closing: Task<Void, Never>?
 }
@@ -109,10 +120,20 @@ enum Notice: Hashable, Identifiable {
 
 /// The result of a publish, for the export screen.
 struct ExportResult: Hashable, Identifiable {
+    /// How the export holds its journal.
+    enum Form: Hashable { case encrypted, demo, bench }
+
     let url: URL
-    let encrypted: Bool
+    let form: Form
+    var encrypted: Bool { form == .encrypted }
     var name: String { url.lastPathComponent }
     var id: String { name }
+
+    /// A plaintext export of a bench session holds released data. Any other plaintext export is a demo.
+    init(url: URL, policy: ExportPolicy, opened: SessionOpened?) {
+        self.url = url
+        form = if case .encrypted = policy { .encrypted } else if case .bench? = opened?.subject { .bench } else { .demo }
+    }
 }
 
 /// Owns storage, the writer, the frozen rules, and the folded state. Every user action goes through `decide`; the
@@ -195,7 +216,7 @@ final class SessionStore {
         guard let state = reconciled[id], let person = state.session.opened.person,
               let configuration = configurations.configuration(of: state.session.opened) else { return false }
         let command = Command.expire(at: launch.at, t: launch.uptime)
-        guard case .success(let events) = state.decide(command, rules: rules(person, configuration)) else {
+        guard case .success(let events) = state.decide(command, rules: participantRules(person, configuration)) else {
             return false
         }
         var closed = state
@@ -220,10 +241,7 @@ final class SessionStore {
             reconciled = [:]
             do {
                 let results = try storage.reconcile(launch, instruments: contract.instruments) { [configurations] opened in
-                    guard let config = configurations.configuration(of: opened) else {
-                        throw ConfigurationLibrary.Refusal.unreadable
-                    }
-                    return try ExportPolicy(configuration: config)
+                    try configurations.exportPolicy(opened)
                 }
                 for result in results {
                     switch result {
@@ -256,8 +274,9 @@ final class SessionStore {
 
     private func row(_ state: SessionState, status: Listed.Status) -> Listed {
         let opened = state.session.opened
-        return Listed(id: opened.sessionID.description, status: status, title: opened.participant?.rawValue ?? "",
-                      sessionID: opened.sessionID, purpose: opened.purpose, administration: opened.person?.administration,
+        return Listed(id: opened.sessionID.description, status: status,
+                      title: opened.participant?.rawValue ?? opened.benchLabel ?? "", sessionID: opened.sessionID,
+                      purpose: opened.purpose, administration: opened.person?.administration,
                       openedAt: opened.openedAt.text, encrypted: nil, participant: opened.participant)
     }
 
@@ -278,8 +297,9 @@ final class SessionStore {
             .filter { !$0.lastPathComponent.hasPrefix("._") }
     }
 
+    /// The export folders. A UI test run also writes a summary file beside each folder, which is not an export.
     private func exportedRows() -> [Listed] {
-        entries(in: storage.exports).map { folder in
+        entries(in: storage.exports).filter(\.isFolder).map { folder in
             let manifest = (try? Data(contentsOf: folder.appendingPathComponent(Storage.Export.manifest)))
                 .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
             let id = (manifest?["sessionID"] as? String).flatMap(UUID.init(uuidString:)).map(SessionID.init)
@@ -309,13 +329,34 @@ final class SessionStore {
 
     // MARK: Open and resume
 
-    /// Writes line 0 and opens the session.
+    /// Writes line 0 of a study or qualification session and opens it under its frozen configuration.
     func open(_ opened: SessionOpened, configuration: StudyConfiguration, dominant: Hand) {
+        guard let person = opened.person else {
+            log.fault("a session without a participant needs openBench")
+            return
+        }
+        let flow = ParticipantFlow(configuration: configuration,
+                                   plan: SessionPlan(configuration: configuration, opened: opened, dominant: dominant),
+                                   dominant: dominant)
+        open(opened, rules: participantRules(person, configuration), participant: flow,
+             stage: opened.purpose == .qualification ? .working : .ready)
+    }
+
+    /// Writes line 0 of a bench session and opens it at the run screen.
+    func openBench(_ opened: SessionOpened) {
+        guard case .bench = opened.subject else {
+            log.fault("a session with a participant needs a configuration")
+            return
+        }
+        open(opened, rules: benchRules, participant: nil, stage: .bench)
+    }
+
+    private func open(_ opened: SessionOpened, rules: SessionRules, participant: ParticipantFlow?, stage: Stage) {
         guard live == nil else {
             notice = .sessionOpen
             return
         }
-        guard hasRoom(), let person = opened.person else { return }
+        guard hasRoom() else { return }
         let entry = Entry(seq: 0, event: .sessionOpened(opened))
         let state: SessionState
         do throws(FoldError) {
@@ -331,11 +372,7 @@ final class SessionStore {
             let sink = try makeSink(url, failureHandler(url))
             try sink.append([entry])
             core = Core(state: state, recorder: InkRecorder(plan: opened.channels), digest: JournalDigest([entry]))
-            live = LiveSession(
-                opened: opened, configuration: configuration, rules: rules(person, configuration),
-                plan: SessionPlan(configuration: configuration, opened: opened, dominant: dominant),
-                url: url, sink: sink, stage: opened.purpose == .qualification ? .working : .ready, dominant: dominant
-            )
+            live = LiveSession(opened: opened, rules: rules, participant: participant, url: url, sink: sink, stage: stage)
             revision += 1
         } catch {
             log.error("open failed: \(String(describing: error), privacy: .public)")
@@ -350,14 +387,20 @@ final class SessionStore {
         return false
     }
 
-    private func rules(_ person: ParticipantFacts, _ configuration: StudyConfiguration) -> SessionRules {
+    private func participantRules(_ person: ParticipantFacts, _ configuration: StudyConfiguration) -> SessionRules {
         SessionRules(battery: contract.battery, instruments: contract.instruments, configuration: configuration,
                      jurisdiction: person.jurisdiction, locale: person.locale)
     }
 
-    /// Opens an interrupted journal again with a new writer. The configuration that the session recorded must be on
-    /// this device, because a configuration is frozen for the life of a session. A self-administered session past its
-    /// resume window closes instead, and one inside it waits for its participant code.
+    /// A bench session runs under the bundled battery and programs file, without a configuration.
+    private var benchRules: SessionRules {
+        SessionRules(battery: contract.battery, instruments: contract.instruments, benchPrograms: contract.benchPrograms)
+    }
+
+    /// Opens an interrupted journal again with a new writer. A study or qualification session needs the configuration
+    /// that it recorded on this device, because a configuration is frozen for the life of a session. A
+    /// self-administered session past its resume window closes instead, and one inside it waits for its participant
+    /// code. A bench session opens at the run screen.
     func resume(_ id: SessionID, at launch: Storage.Launch = Clock.launch) {
         guard live == nil, let state = reconciled[id], !state.session.isClosed else { return }
         let opened = state.session.opened
@@ -366,27 +409,36 @@ final class SessionStore {
             return
         }
         guard hasRoom() else { return }
-        guard let person = opened.person, let configuration = configurations.configuration(of: opened) else {
+        let configuration = configurations.configuration(of: opened)
+        if opened.person != nil, configuration == nil {
             notice = .configurationMissing
             return
         }
         let url = storage.journalURL(id)
         do {
             let digest = JournalDigest(Self.entries(try Data(contentsOf: url)))
-            let dominant = Self.dominantHand(configuration: configuration, digest: digest)
             let sink = try makeSink(url, failureHandler(url))
-            let plan = SessionPlan(configuration: configuration, opened: opened, dominant: dominant ?? .unknown)
-            var stage = Stage.ready
-            if opened.purpose == .qualification {
-                stage = .working
-            } else if person.administration == .selfAdministered {
-                stage = .confirmCode
-            } else if plan.next(state.session) == .done {
-                stage = .review
+            let rules: SessionRules
+            var participant: ParticipantFlow?
+            var stage = Stage.bench
+            if let person = opened.person, let configuration {
+                let dominant = Self.dominantHand(configuration: configuration, digest: digest)
+                let plan = SessionPlan(configuration: configuration, opened: opened, dominant: dominant ?? .unknown)
+                rules = participantRules(person, configuration)
+                participant = ParticipantFlow(configuration: configuration, plan: plan, dominant: dominant)
+                stage = .ready
+                if opened.purpose == .qualification {
+                    stage = .working
+                } else if person.administration == .selfAdministered {
+                    stage = .confirmCode
+                } else if plan.next(state.session) == .done {
+                    stage = .review
+                }
+            } else {
+                rules = benchRules
             }
             core = Core(state: state, recorder: InkRecorder(resuming: state.session), digest: digest)
-            live = LiveSession(opened: opened, configuration: configuration, rules: rules(person, configuration),
-                               plan: plan, url: url, sink: sink, stage: stage, dominant: dominant)
+            live = LiveSession(opened: opened, rules: rules, participant: participant, url: url, sink: sink, stage: stage)
             reconciled[id] = nil
             revision += 1
             refresh()
@@ -497,9 +549,9 @@ final class SessionStore {
     }
 
     func start() {
-        guard let live, live.stage == .ready else { return }
+        guard let flow = live?.participant, live?.stage == .ready else { return }
         guard perform(.handoff(to: .participant, t: Clock.uptime)) else { return }
-        if live.dominant == nil, live.plan.usesUnknownHand {
+        if flow.dominant == nil, flow.plan.usesUnknownHand {
             self.live?.stage = .hand
         } else {
             advance()
@@ -507,26 +559,26 @@ final class SessionStore {
     }
 
     func chooseHand(_ hand: Hand) {
-        guard let live, live.stage == .hand else { return }
-        self.live?.dominant = hand
-        self.live?.plan = SessionPlan(configuration: live.configuration, opened: live.opened, dominant: hand)
+        guard let live, let flow = live.participant, live.stage == .hand else { return }
+        self.live?.participant?.dominant = hand
+        self.live?.participant?.plan = SessionPlan(configuration: flow.configuration, opened: live.opened, dominant: hand)
         self.live?.stage = .working
         advance()
     }
 
     func acknowledgeDisclosure() {
         guard live?.stage == .disclosure else { return }
-        live?.disclosureShown = true
+        live?.participant?.disclosureShown = true
         advance()
     }
 
     /// Starts the next trial once the capture view has its size, so `trialStarted` records the real geometry.
     func startTrial(view: ViewSize) {
-        guard let live, live.stage == .working, let person = live.opened.person, let state = core?.state,
-              case .task(let step, open: false) = live.plan.next(state.session),
+        guard let live, live.stage == .working, let flow = live.participant, let person = live.opened.person,
+              let state = core?.state, case .task(let step, open: false) = flow.plan.next(state.session),
               let spec = live.rules.battery.task(step.task) else { return }
         let origin = StimulusLayout.origin(for: spec, in: view, mmPerPoint: live.opened.scale.mmPerPoint)
-        let version = live.configuration.locales[person.locale.rawValue]?.instructionVersion
+        let version = flow.configuration.locales[person.locale.rawValue]?.instructionVersion
             ?? live.rules.battery.version
         let instruction = InstructionRef(id: step.task.rawValue, version: version, locale: person.locale)
         let plan = TrialPlan(task: step.task, practice: step.practice, position: step.position,
@@ -542,7 +594,8 @@ final class SessionStore {
         perform(.beginTrial(t: Clock.uptime))
     }
 
-    func done() { endTrial(.participantDone) }
+    /// The one who draws taps Done: the participant, or the operator of a bench session.
+    func done() { endTrial(live?.opened.person == nil ? .operatorDone : .participantDone) }
 
     func timeLimitReached() { endTrial(.timeLimit) }
 
@@ -587,7 +640,7 @@ final class SessionStore {
     func continueAfterCrisisList() {
         switch live?.stage {
         case .flagCrisisList:
-            if live?.endedEarly == true { live?.stage = .review } else { advance() }
+            if live?.participant?.endedEarly == true { live?.stage = .review } else { advance() }
         case .closingCrisisList:
             close()
         default:
@@ -596,19 +649,20 @@ final class SessionStore {
     }
 
     /// Moves to the next step of the plan: a trial, the disclosure, a block, or the end of the session. A
-    /// self-administered session first shows the crisis list for a flag that has not had it, as after a recovery.
+    /// self-administered session first shows the crisis list for a flag that has not had it, as after a recovery. A
+    /// bench session has no plan, so it stays where it is.
     func advance() {
-        guard let live, live.stage != .stopped, let state = core?.state else { return }
+        guard let live, let flow = live.participant, live.stage != .stopped, let state = core?.state else { return }
         if live.opened.person?.administration == .selfAdministered, state.session.safety.flaggedSinceCrisisList {
             if perform(.show(.crisisList, t: Clock.uptime)) { self.live?.stage = .flagCrisisList }
             return
         }
-        switch live.plan.next(state.session) {
+        switch flow.plan.next(state.session) {
         case .task, .block(_, open: true):
             self.live?.stage = .working
         case .block(let id, open: false):
-            if live.opened.person?.administration == .selfAdministered, !live.disclosureShown,
-               live.plan.hasSafetyItem(in: live.rules.instruments) {
+            if live.opened.person?.administration == .selfAdministered, !flow.disclosureShown,
+               flow.plan.hasSafetyItem(in: live.rules.instruments) {
                 self.live?.stage = .disclosure
             } else if perform(.startQuestionnaire(id, t: Clock.uptime)) {
                 self.live?.stage = .working
@@ -623,7 +677,7 @@ final class SessionStore {
         if live.opened.purpose == .qualification {
             guard perform(.close(t: Clock.uptime)) else { return }
             qualifications.record(live.opened)
-            self.live?.stage = .qualified
+            self.live?.stage = .sampleTiming
             closeSink()
         } else if live.opened.person?.administration == .supervised {
             self.live?.stage = .handBack
@@ -642,6 +696,57 @@ final class SessionStore {
     private func close() {
         guard perform(.close(t: Clock.uptime)) else { return }
         live?.stage = .finished
+        closeSink()
+    }
+
+    // MARK: Bench
+
+    /// The run id that `decide` writes as the clip of `run` in this bench session.
+    func runID(_ run: BenchRunPlan) -> ClipName? {
+        guard case .bench(let facts) = live?.opened.subject else { return nil }
+        return ClipName(runOf: run.program, run: run.run, in: facts)
+    }
+
+    /// The operator picked the next run on the run screen. The task screen starts it.
+    func chooseRun(_ run: BenchRunPlan) {
+        guard live?.stage == .bench, openTrial == nil else { return }
+        live?.chosenRun = run
+    }
+
+    /// Starts the chosen run once the task view has its size, so `trialStarted` records the real geometry. The
+    /// stimulus origin is the origin of the task view (bench protocol section 2.4). A run that `decide` refuses goes
+    /// back to the run screen.
+    func startRun(view: ViewSize) {
+        guard let live, live.stage == .bench, let run = live.chosenRun, let state = core?.state else { return }
+        self.live?.chosenRun = nil
+        guard let program = live.rules.benchPrograms?.program(run.program) else { return }
+        let origin = Point(x: 0, y: 0)
+        let plan = TrialPlan(task: program.task, practice: false, position: state.session.trials.count + 1,
+                             subject: .bench(run), view: view, stimulusOrigin: origin)
+        let index = TrialIndex(state.session.trials.count)!
+        if perform(.startTrial(plan, t: Clock.uptime)) {
+            self.live?.trialGeometry = (index, view, origin)
+        }
+    }
+
+    /// Adds a mark to the open run. False for a code that the run does not offer.
+    @discardableResult
+    func mark(_ code: MarkCode) -> Bool {
+        guard let run = currentRun, let trial = run.trial, run.markCodes.contains(code) else { return false }
+        return perform(.mark(trial: trial, code: code, t: Clock.uptime))
+    }
+
+    /// The operator stops the open run, for example after a wrong pick or a fault of the motion system.
+    func stopRun() {
+        guard live?.stage == .bench else { return }
+        endTrial(.operatorAbort)
+    }
+
+    /// Closes a bench session between runs. The operator then exports it.
+    func endBench() {
+        guard live?.stage == .bench, perform(.close(t: Clock.uptime)) else { return }
+        live?.chosenRun = nil
+        live?.stage = .sampleTiming
         closeSink()
     }
 
@@ -669,7 +774,7 @@ final class SessionStore {
 
     /// Ink is recorded from the Begin tap to the end of the trial.
     var isRecordingInk: Bool {
-        guard live?.stage == .working, let state = core?.state, case .drawing(let open) = state.phase else {
+        guard live?.stage.showsTrials == true, let state = core?.state, case .drawing(let open) = state.phase else {
             return false
         }
         return state.session.trials[open.index.rawValue].began
@@ -683,9 +788,9 @@ final class SessionStore {
         if withPIN { codesUnlocked = true }
         guard let live else { return }
         switch live.stage {
-        case .finished, .qualified, .stopped:
+        case .finished, .sampleTiming, .stopped:
             leave()
-        case .paused, .review:
+        case .paused, .review, .bench:
             break
         case .handBack:
             perform(.handoff(to: .operator, t: Clock.uptime))
@@ -693,15 +798,15 @@ final class SessionStore {
             showOperatorAlert()
         default:
             perform(.handoff(to: .operator, t: Clock.uptime))
-            self.live?.participantStage = live.stage
+            self.live?.participant?.participantStage = live.stage
             self.live?.stage = .paused
         }
     }
 
     func returnToParticipant() {
-        guard let live, live.stage == .paused else { return }
+        guard let flow = live?.participant, live?.stage == .paused else { return }
         guard perform(.handoff(to: .participant, t: Clock.uptime)) else { return }
-        self.live?.stage = live.participantStage
+        self.live?.stage = flow.participantStage
     }
 
     /// Ends the open trial or block for the operator and opens the review, which leads to the close. A block that
@@ -722,7 +827,7 @@ final class SessionStore {
         }
         guard await syncedFlags(since: before), live?.stage == .paused,
               let after = core?.state.session.safety else { return }
-        live?.endedEarly = true
+        live?.participant?.endedEarly = true
         if after.crisisListShown > before.crisisListShown {
             live?.stage = .flagCrisisList
         } else {
@@ -786,7 +891,7 @@ final class SessionStore {
 
     /// The iPad left the app: an open trial ends as backgrounded, and every line reaches storage.
     func enterBackground() {
-        if case .drawing = core?.state.phase, live?.stage == .working {
+        if case .drawing = core?.state.phase, live?.stage.showsTrials == true {
             endTrial(.backgrounded)
         }
         guard let live, live.closing == nil else { return }
@@ -799,7 +904,8 @@ final class SessionStore {
 
     // MARK: Export and withdrawal
 
-    /// Publishes a closed session with the export policy of its own configuration.
+    /// Publishes a closed session with its export policy: plaintext for a bench session, else the policy of the
+    /// session's own configuration.
     func export(_ id: SessionID) async -> ExportResult? {
         let opened: SessionOpened?
         if let live, live.opened.sessionID == id {
@@ -809,18 +915,17 @@ final class SessionStore {
         } else {
             opened = reconciled[id]?.session.opened
         }
-        guard let opened, let configuration = configurations.configuration(of: opened),
-              let policy = try? ExportPolicy(configuration: configuration) else {
+        guard let opened, let policy = try? configurations.exportPolicy(opened) else {
             notice = .configurationMissing
             return nil
         }
         let storage = storage
         do {
             let url = try await Task.detached { try storage.publish(id, policy: policy) }.value
+            if LaunchMode.writesFoldSummaries { writeFoldSummary(of: url) }
             reconciled[id] = nil
             if live == nil || live?.away == true { refresh() }
-            if case .encrypted = policy { return ExportResult(url: url, encrypted: true) }
-            return ExportResult(url: url, encrypted: false)
+            return ExportResult(url: url, policy: policy, opened: opened)
         } catch {
             log.error("export failed: \(String(describing: error), privacy: .public)")
             notice = .exportFailed
@@ -829,14 +934,15 @@ final class SessionStore {
     }
 
     /// Publishes a journal from `Damaged/` as found, so its flags reach the study, under the export policy of the
-    /// configuration that its first line names, or of the active configuration when that line does not decode.
+    /// session that its first line names, or of the active configuration when that line does not decode.
     func exportDamaged(_ file: String) async -> ExportResult? {
-        let configuration = if let opened = storage.opened(damaged: file) {
-            configurations.configuration(of: opened)
+        let opened = storage.opened(damaged: file)
+        let policy = if let opened {
+            try? configurations.exportPolicy(opened)
         } else {
-            activeConfiguration
+            try? ExportPolicy(configuration: activeConfiguration)
         }
-        guard let configuration, let policy = try? ExportPolicy(configuration: configuration) else {
+        guard let policy else {
             notice = .configurationMissing
             return nil
         }
@@ -844,13 +950,20 @@ final class SessionStore {
         do {
             let url = try await Task.detached { try storage.publishDamaged(file, policy: policy) }.value
             if live == nil || live?.away == true { refresh() }
-            if case .encrypted = policy { return ExportResult(url: url, encrypted: true) }
-            return ExportResult(url: url, encrypted: false)
+            return ExportResult(url: url, policy: policy, opened: opened)
         } catch {
             log.error("damaged export failed: \(String(describing: error), privacy: .public)")
             notice = .exportFailed
             return nil
         }
+    }
+
+    /// Writes the Swift fold summary of a plaintext export beside its folder as `<name>.summary.json`.
+    private func writeFoldSummary(of export: URL) {
+        guard let data = try? Data(contentsOf: export.appendingPathComponent(Storage.Export.journal)),
+              let state = try? Journal.read(data) else { return }
+        let file = export.deletingLastPathComponent().appendingPathComponent("\(export.lastPathComponent).summary.json")
+        try? state.summary.jsonData().write(to: file)
     }
 
     func withdraw(_ code: ParticipantCode) -> Storage.Withdrawal? {
@@ -888,6 +1001,20 @@ extension SessionOpened {
     var person: ParticipantFacts? {
         if case .participant(let facts) = subject { facts } else { nil }
     }
+
+    /// The role and the mounting of a bench session, for example `P-M3`, as each of its run ids begins.
+    var benchLabel: String? {
+        if case .bench(let facts) = subject { "\(facts.role.rawValue)-\(facts.mounting.rawValue)" } else { nil }
+    }
+}
+
+extension Stage {
+    /// A stage whose screen can be the task screen of the open trial.
+    var showsTrials: Bool { self == .working || self == .bench }
+}
+
+fileprivate extension URL {
+    var isFolder: Bool { (try? resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
 }
 
 extension SessionPlan {
@@ -925,11 +1052,16 @@ extension SessionStore {
         let count: Int
     }
 
+    /// The index of the open trial, or nil when no trial is open.
+    var openTrial: TrialIndex? {
+        if case .drawing(let open) = state?.phase { open.index } else { nil }
+    }
+
     /// The task of the current step, open or about to start.
     var currentTask: TaskModel? {
-        guard let live, let state, case .task(let step, let open) = live.plan.next(state.session),
+        guard let live, let flow = live.participant, let state, case .task(let step, let open) = flow.plan.next(state.session),
               let spec = live.rules.battery.task(step.task) else { return nil }
-        let locale = live.opened.person.flatMap { live.configuration.locales[$0.locale.rawValue] }
+        let locale = live.opened.person.flatMap { flow.configuration.locales[$0.locale.rawValue] }
         let text = locale?.instructions[step.task.rawValue] ?? spec.instruction
         var trial: TrialIndex?
         var deadline: Double?
@@ -943,6 +1075,43 @@ extension SessionStore {
         return TaskModel(step: step, spec: spec, instruction: text, trial: trial, view: geometry?.view,
                          origin: geometry?.origin, began: began, deadline: deadline,
                          mmPerPoint: live.opened.scale.mmPerPoint, purpose: live.opened.purpose)
+    }
+
+    /// One bench run on the task screen: the run that the operator picked, then its open trial.
+    struct RunModel: Hashable {
+        let program: BenchProgram
+        let spec: TaskSpec
+        /// The run id. The open run shows the clip that its `trialStarted` line records.
+        let runID: ClipName
+        /// Nil until `trialStarted`.
+        let trial: TrialIndex?
+        let view: ViewSize?
+        let origin: Point?
+        let began: Bool
+        let deadline: Double?
+        let mmPerPoint: Double?
+        let marks: [MarkCode]
+        var markCodes: [MarkCode] { program.markCodes }
+    }
+
+    /// The open trial of a bench session, or the run that the operator picked before its trial starts. Nil between
+    /// runs, when the run screen shows.
+    var currentRun: RunModel? {
+        guard let live, live.stage == .bench, let state, let programs = live.rules.benchPrograms else { return nil }
+        let mm = live.opened.scale.mmPerPoint
+        if case .drawing(let open) = state.phase {
+            guard let digested = digest?.trials[open.index.rawValue], let run = digested.run,
+                  let program = programs.program(run.program), let spec = live.rules.battery.task(program.task),
+                  let runID = run.clip ?? self.runID(BenchRunPlan(program: run.program, run: run.run)) else { return nil }
+            let geometry = live.trialGeometry.flatMap { $0.index == open.index ? $0 : nil }
+            return RunModel(program: program, spec: spec, runID: runID, trial: open.index, view: geometry?.view,
+                            origin: geometry?.origin, began: state.session.trials[open.index.rawValue].began,
+                            deadline: open.deadline, mmPerPoint: mm, marks: digested.marks)
+        }
+        guard let chosen = live.chosenRun, let program = programs.program(chosen.program),
+              let spec = live.rules.battery.task(program.task), let runID = self.runID(chosen) else { return nil }
+        return RunModel(program: program, spec: spec, runID: runID, trial: nil, view: nil, origin: nil, began: false,
+                        deadline: nil, mmPerPoint: mm, marks: [])
     }
 
     /// The item to answer in the open block. Items are answered in order and once.

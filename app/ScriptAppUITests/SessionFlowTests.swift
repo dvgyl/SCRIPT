@@ -126,8 +126,46 @@ final class SessionFlowTests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["medianInterval"].firstMatch.waitForExistence(timeout: 10))
         XCTAssertTrue(app.descendants(matching: .any)["gapShare"].firstMatch.exists)
         snap("33-qualification-result")
-        tap("qualificationExport")
+        tap("timingExport")
         XCTAssertTrue(app.staticTexts["exportName"].waitForExistence(timeout: 30))
+        tap("exportDone")
+    }
+
+    @MainActor func testBenchSessionRecordsTwoRunsAndExportsPlaintext() {
+        // Detects a bench session that cannot record a main run and a fault run without a participant step, that
+        // offers exclude on a fault run, or that cannot reach a plaintext export.
+        launch()
+        tap("newBench")
+        app.segmentedControls["mounting"].buttons["M2"].tap()
+        replace(app.textFields["motionVersion"], with: "2.4")
+        replace(app.textFields["asset"], with: "IPAD-01")
+        snap("60-bench-setup")
+        tap("startSession")
+
+        startRun("loops-l-v20", snapAs: "61-bench-run")
+        XCTAssertEqual(app.staticTexts["runID"].label, "P-M2-loops-l-v20-r1")
+        XCTAssertTrue(app.buttons["mark-exclude"].exists)
+        tap("begin")
+        draw(app.descendants(matching: .any)["drawingArea"])
+        tap("mark-disturbance")
+        XCTAssertFalse(app.buttons["mark-disturbance"].isEnabled)
+        snap("62-bench-task")
+        tap("done")
+
+        startRun("fault-lift", snapAs: nil)
+        XCTAssertFalse(app.buttons["mark-exclude"].exists)
+        tap("begin")
+        draw(app.descendants(matching: .any)["drawingArea"])
+        tap("done")
+
+        XCTAssertTrue(app.buttons["startRun"].waitForExistence(timeout: 10))
+        snap("63-bench-runs")
+        tap("endBench")
+        tap("confirmEndBench")
+        tap("timingExport")
+        XCTAssertTrue(app.staticTexts["exportName"].waitForExistence(timeout: 30))
+        XCTAssertTrue(app.staticTexts["exportName"].label.hasPrefix("SCRIPT_BENCH_PM2_"))
+        snap("64-bench-export")
         tap("exportDone")
     }
 
@@ -168,6 +206,15 @@ final class SessionFlowTests: XCTestCase {
         replace(app.textFields["asset"], with: "IPAD-01")
         snap(selfAdministered ? "02-self-setup" : "02-setup")
         tap("startSession")
+    }
+
+    /// Picks `program` with run index 1 on the run screen and starts the run.
+    @MainActor private func startRun(_ program: String, snapAs name: String?) {
+        tap("program")
+        app.buttons[program].firstMatch.tap()
+        XCTAssertEqual(app.staticTexts["runID"].label, "P-M2-\(program)-r1")
+        tap("startRun", snapAs: name)
+        XCTAssertTrue(app.buttons["begin"].waitForExistence(timeout: 10))
     }
 
     /// Runs every task. The first `drawn` tasks get synthesised drags; the rest end with Begin and Done.

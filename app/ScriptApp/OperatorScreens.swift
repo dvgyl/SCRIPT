@@ -2,6 +2,11 @@ import ScriptCore
 import SwiftUI
 import UIKit
 
+extension LiveSession {
+    /// True for a session under a demo configuration. A bench session has no configuration, so it shows no banner.
+    var isDemo: Bool { participant?.configuration.demo == true }
+}
+
 /// The operator took over in the middle of the session.
 struct PausedScreen: View {
     let store: SessionStore
@@ -26,7 +31,7 @@ struct PausedScreen: View {
             }
             .navigationTitle("Session paused")
         }
-        .demoBanner(live.configuration.demo)
+        .demoBanner(live.isDemo)
     }
 }
 
@@ -69,7 +74,7 @@ struct ReviewScreen: View {
             }
             .navigationTitle("Session review")
         }
-        .demoBanner(live.configuration.demo)
+        .demoBanner(live.isDemo)
     }
 
     @ViewBuilder
@@ -118,8 +123,9 @@ struct TrialRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(verbatim: trial.task.rawValue).font(.body.weight(.medium))
-                if trial.attempt > 1 { Text("attempt \(trial.attempt)").foregroundStyle(.secondary) }
+                Text(verbatim: trial.label).font(.body.weight(.medium))
+                // Bench programs share tasks, so the attempt of a bench task is no fact about one run.
+                if trial.attempt > 1, trial.run == nil { Text("attempt \(trial.attempt)").foregroundStyle(.secondary) }
                 Spacer()
                 Text(outcome).foregroundStyle(.secondary)
             }
@@ -144,6 +150,7 @@ struct TrialRow: View {
             Text("\(1 / timing.median, format: .number.precision(.significantDigits(1...3))) Hz").fixedSize()
         }
         Text(channels).fixedSize()
+        ForEach(Array(trial.marks.enumerated()), id: \.offset) { _, code in Text(code.name).fixedSize() }
     }
 
     private var outcome: LocalizedStringKey {
@@ -169,8 +176,8 @@ struct TrialRow: View {
     }
 }
 
-/// The closed qualification session: the sample timing from the recorded samples.
-struct QualificationResultScreen: View {
+/// A closed qualification or bench session: the sample timing from the recorded samples, the trials, and the export.
+struct SampleTimingScreen: View {
     let store: SessionStore
     let live: LiveSession
     @State private var result: ExportResult?
@@ -199,7 +206,7 @@ struct QualificationResultScreen: View {
                         Text("No contact has two samples.")
                     }
                 }
-                Section("Trials") {
+                Section(live.opened.purpose == .bench ? "Runs" : "Trials") {
                     ForEach(Array(digest.trials.enumerated()), id: \.offset) { _, trial in TrialRow(trial: trial) }
                 }
                 Section {
@@ -213,14 +220,14 @@ struct QualificationResultScreen: View {
                         if exporting { ProgressView() } else { Text("Export") }
                     }
                     .disabled(exporting)
-                    .accessibilityIdentifier("qualificationExport")
+                    .accessibilityIdentifier("timingExport")
                     Button("Go to Home", action: store.leave)
                 }
             }
-            .navigationTitle("Qualification")
+            .navigationTitle(live.opened.purpose == .bench ? "Bench session" : "Qualification")
             .sheet(item: $result) { result in ExportScreen(result: result) }
         }
-        .demoBanner(live.configuration.demo)
+        .demoBanner(live.isDemo)
     }
 }
 
@@ -241,7 +248,7 @@ struct StoppedScreen: View {
                     .accessibilityIdentifier("goHome")
             }
         }
-        .demoBanner(live.configuration.demo)
+        .demoBanner(live.isDemo)
     }
 }
 
@@ -262,8 +269,7 @@ struct ExportScreen: View {
                         .accessibilityIdentifier("exportName")
                 }
                 Section("Encryption") {
-                    Text(result.encrypted ? "Encrypted to the study key" : "Not encrypted (demo configuration)")
-                        .accessibilityIdentifier("exportEncryption")
+                    Text(encryption).accessibilityIdentifier("exportEncryption")
                 }
                 Section("Location") {
                     Text("On My iPad › SCRIPT Capture › Exports")
@@ -280,6 +286,14 @@ struct ExportScreen: View {
                 }
             }
             .sheet(isPresented: $saving) { FilesExporter(url: result.url) }
+        }
+    }
+
+    private var encryption: LocalizedStringKey {
+        switch result.form {
+        case .encrypted: "Encrypted to the study key"
+        case .demo: "Not encrypted (demo configuration)"
+        case .bench: "Not encrypted (bench session)"
         }
     }
 }
