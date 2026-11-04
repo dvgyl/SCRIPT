@@ -176,8 +176,9 @@ def comparison_value(name: str, cell: Cell) -> float:
     return cell
 
 
-def trial_of(journal: Journal, row: RunRow) -> Trial:
-    """The trial of a row in its journal. The row, the trial, and the programs file must agree."""
+def trial_of(journal: Journal, row: RunRow, trajectory_sha256: str) -> Trial:
+    """The trial of a row in its journal. The row and the trial must agree, and the trial must record the
+    trajectory digest of the controller file of its program."""
     if (journal.role, journal.mounting) != (row.device, row.mounting):
         raise InputError(
             f"{row.run_id}: session {journal.recording.session_id} is device {journal.role} mounting"
@@ -192,7 +193,7 @@ def trial_of(journal: Journal, row: RunRow) -> Trial:
     if not isinstance(context, BenchRunContext):
         raise InputError(f"{row.run_id}: trial {row.trial_index} is not a bench run.")
     program = bench.program(row.program)
-    expected = (row.run_id, row.program, row.run_index, bench.trajectory_sha256(program.id), program.task)
+    expected = (row.run_id, row.program, row.run_index, trajectory_sha256, program.task)
     found = (context.clip, context.program, context.run, context.trajectory_sha256, trial.task.id)
     if found != expected:
         raise InputError(

@@ -5,8 +5,10 @@ a motion of one bench task at one speed, with or without a fault. It goes into `
 Both captures bundle the programs file, and the decider checks each run against it. The study script
 `python/studies/bench_programs.py` imports the designs from here and computes their move lists.
 
-The programs and the tasks are final for the build (protocol 1.2, section 5). The digests are
-provisional: `PROTOCOL_SHA256` and each trajectory digest are placeholders until the protocol lock.
+The programs and the tasks are final for the build (protocol 1.2, section 5). `PROTOCOL_SHA256` is a
+placeholder until the protocol lock. The trajectory digest of a program is the SHA-256 of its controller
+file under `bench/programs/` (section 2.4). That folder exists from step 4 of the lock (section 14).
+Until then, each trajectory digest is the SHA-256 of a placeholder text that names the program.
 To add a program, add a row to `MAIN`. Its task follows from its geometry and scale. A new geometry
 needs one row in `_TASK_OF_GEOMETRY` here and one figure function in `battery.FIGURES`.
 """
@@ -17,11 +19,14 @@ import functools
 import hashlib
 import json
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any, Literal
 
 PROTOCOL_VERSION = "1.2"
 # Provisional. At the protocol lock, this becomes the SHA-256 of docs/BENCH_PROTOCOL.md.
 PROTOCOL_SHA256 = "0" * 64
+PROGRAM_FOLDER = Path(__file__).resolve().parents[4] / "bench" / "programs"
+"""The move lists and the controller files of the repository (section 15)."""
 
 Geometry = Literal["loops", "spiral", "line"]
 SCALES = {"l": 1.0, "s": 0.7}
@@ -123,12 +128,26 @@ def program(program_id: str) -> Design:
     raise KeyError(program_id)
 
 
+@functools.cache
+def registered_digests() -> dict[str, str]:
+    """The trajectory digests of the controller files of the repository, read once. Each controller file
+    must be the translation of its move list (`scriptkin.bench.controller.translated_digests`)."""
+    # The controller module imports this module, so it is imported here and not at the top.
+    from scriptkin.bench.controller import translated_digests
+
+    return translated_digests(PROGRAM_FOLDER)
+
+
 def trajectory_sha256(program_id: str) -> str:
-    """The digest of the registered move list of one program."""
-    # Provisional. The real digest is of the controller file under bench/programs/, which exists only
-    # when the motion system arrives. Until then, the digest is of a placeholder text that names the program.
-    placeholder = f"SCRIPT bench placeholder trajectory {program(program_id).id}"
-    return hashlib.sha256(placeholder.encode()).hexdigest()
+    """The trajectory digest of one program: the SHA-256 of its controller file under `bench/programs/`.
+
+    A program without a move list there has the SHA-256 of a placeholder text that names the program.
+    This holds for every program before the lock, and for a program that section 4.2 step 7 excludes."""
+    pid = program(program_id).id
+    digest = registered_digests().get(pid)
+    if digest is not None:
+        return digest
+    return hashlib.sha256(f"SCRIPT bench placeholder trajectory {pid}".encode()).hexdigest()
 
 
 def programs() -> dict[str, Any]:

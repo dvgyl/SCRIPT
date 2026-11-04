@@ -32,6 +32,7 @@ import test_bench_camera as camera_tests
 import test_bench_inputs as inputs_tests
 
 from scriptkin import battery, bench
+from scriptkin.bench.controller import NEXTDRAW_8511, controller_digests, translate, write_translation
 from scriptkin.bench.inputs import ORDER_COLUMNS, PLANNED_RUNS, RUN_COLUMNS, Build
 from scriptkin.bench.moves import MoveList, commanded_trial
 from scriptkin.bench.study import BLOCK_ORDER
@@ -232,6 +233,7 @@ def _write_run(
     position: int,
     t0: float,
     move_list: MoveList,
+    trajectory_sha256: str,
     rng: np.random.Generator,
     truth: Truth,
 ) -> tuple[int, float, Defect | None]:
@@ -239,12 +241,7 @@ def _write_run(
     rid = run_id(device, mounting, program, index)
     defect = DEFECTS.get(rid)
     design = bench.program(program)
-    facts = {
-        "program": program,
-        "run": index,
-        "trajectorySHA256": bench.trajectory_sha256(program),
-        "clip": rid,
-    }
+    facts = {"program": program, "run": index, "trajectorySHA256": trajectory_sha256, "clip": rid}
     trial = b.trial(design.task, 1, t0, position=position, bench=facts)
     b.began(t0 + 0.5)
     speed_factor = SPEED_FACTORS.get(rid, 1.0)
@@ -358,6 +355,20 @@ def write_runs_csv(path: Path, rows: list[dict[str, object]]) -> None:
             writer.writerow([row[c] for c in RUN_COLUMNS])
 
 
+def write_controllers(root: Path, move_lists: dict[str, MoveList]) -> dict[str, str]:
+    """The controller files of the move lists, and a programs file with their digests, as step 4 of the lock
+    writes them. Returns the digests, which the journals record."""
+    folder = root / "bench" / "programs"
+    for move_list in move_lists.values():
+        write_translation(folder, move_list, translate(move_list), NEXTDRAW_8511)
+    digests = controller_digests(folder)
+    programs = bench.programs()
+    for p in programs["programs"]:
+        p["trajectorySHA256"] = digests[p["id"]]
+    (root / "contract" / "bench_programs.json").write_text(json.dumps(programs, indent=1), encoding="utf-8")
+    return digests
+
+
 def write_study(
     root: Path,
     programs_folder: Path,
@@ -377,6 +388,7 @@ def write_study(
     inputs_tests.lock_root(root)
     shutil.rmtree(root / "bench" / "programs")
     shutil.copytree(programs_folder, root / "bench" / "programs")
+    digests = write_controllers(root, move_lists)
     shutil.rmtree(root / "bench" / "order")
     blocks = BLOCKS[: 2 * mountings]
     write_registry(root, blocks)
@@ -391,7 +403,7 @@ def write_study(
             rid = run_id(device, mounting, program, index)
             move_list = move_lists[program]
             trial, speed_factor, defect = _write_run(
-                b, device, mounting, program, index, position, t0, move_list, rng, truth
+                b, device, mounting, program, index, position, t0, move_list, digests[program], rng, truth
             )
             if bench.program(program).fault is None:
                 _write_track(store, device, mounting, rid, move_list, speed_factor, defect)

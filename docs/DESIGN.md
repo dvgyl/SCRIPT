@@ -271,9 +271,9 @@ A bench task is one figure at one scale. `scriptkin.bench` lists the bench tasks
 
 The battery also gives each bench task a time limit (`maxSeconds`, 60 to 120 s). The apps and the fold do not apply it, because a bench run has no time limit (section 3.4).
 
-`contract/bench_programs.json` is the programs file. `scriptkin contract regenerate` writes it from `scriptkin.bench`, and `./check` fails when the checked-in file differs. It holds the protocol version (`1.1`) and the protocol SHA-256, and 15 programs: 12 main programs and 3 fault programs. Each program has `id`, `task`, `scale`, `speedMMPerS`, `oscillation` (`null` or `{hz, mm}`), `fault`, `base`, and `trajectorySHA256`. A fault program changes the main program that its `base` names. Both capture apps bundle the file, and `decide` checks each bench run against it (section 5).
+`contract/bench_programs.json` is the programs file. `scriptkin contract regenerate` writes it from `scriptkin.bench`, and `./check` fails when the checked-in file differs. It holds the protocol version (`1.2`) and the protocol SHA-256, and 15 programs: 12 main programs and 3 fault programs. Each program has `id`, `task`, `scale`, `speedMMPerS`, `oscillation` (`null` or `{hz, mm}`), `fault`, `base`, and `trajectorySHA256`. A fault program changes the main program that its `base` names. Both capture apps bundle the file, and `decide` checks each bench run against it (section 5).
 
-The two digests are placeholders until the protocol lock (`docs/BENCH_PROTOCOL.md` section 14). The protocol SHA-256 is 64 zeros. Each trajectory digest is the SHA-256 of a placeholder text that names its program.
+The protocol SHA-256 is 64 zeros until the protocol lock (`docs/BENCH_PROTOCOL.md` section 14). The trajectory digest of a program is the SHA-256 of its controller file `bench/programs/<program>.ebb`. Until step 4 of the lock writes that file, the digest is the SHA-256 of a placeholder text that names the program.
 
 ## 5. Swift shape
 

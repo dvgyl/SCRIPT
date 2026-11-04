@@ -15,12 +15,13 @@ program is an error, because the lock removed the program before the main runs.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
 
 from scriptkin.bench import MAIN, Design
+from scriptkin.bench.controller import ControllerError, controller_digests
 from scriptkin.bench.features import WELCH_MIN_WINDOWS, Motion, commanded_motion
 from scriptkin.bench.inputs import (
     PLANNED_RUNS,
@@ -70,6 +71,9 @@ class Study:
     changed_code: tuple[str, ...] = ()
     """The locked code files that changed after the lock. Only a post hoc analysis allows them
     (section 13), and every output of the analysis then says so."""
+    digests: dict[str, str] = field(default_factory=dict[str, str])
+    """The SHA-256 of the controller file of each program with a move list, which every run of the
+    program must record as its trajectory digest (section 2.4)."""
 
     @property
     def post_hoc(self) -> bool:
@@ -105,7 +109,12 @@ def read_study(root: str | Path, *, locked: bool = True, post_hoc: bool = False)
     missing = sorted({r.program for r in rows} - set(move_lists))
     if missing:
         raise InputError(f"bench/programs/ has no move list for {', '.join(missing)}.")
-    return Study(root, registry, lock, rows, move_lists, read_orders(bench_dir / "order"), tuple(changed))
+    try:
+        digests = controller_digests(bench_dir / "programs")
+    except ControllerError as e:
+        raise InputError(str(e)) from e
+    orders = read_orders(bench_dir / "order")
+    return Study(root, registry, lock, rows, move_lists, orders, tuple(changed), digests)
 
 
 def design_problems(registry: Registry) -> list[str]:
@@ -277,7 +286,7 @@ def evaluate_study(
             if study.lock is not None:
                 check_build(study.lock, journal)
             journals[row.session_id] = journal
-        trial = trial_of(journal, row)
+        trial = trial_of(journal, row, study.digests[row.program])
         move_list = study.move_lists[row.program]
         if row.program not in commanded:
             commanded[row.program] = commanded_motion(move_list, settings)
