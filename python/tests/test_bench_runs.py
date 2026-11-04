@@ -147,7 +147,8 @@ def test_each_failure_cause_gives_its_outcome(move_lists: dict[str, MoveList], c
     excluded = evaluate(row("loops-s-v40"), replace(clean.trial, marks=("exclude",)), ml, None)
     assert excluded.outcome.failed and excluded.outcome.rejected == (RefusalCode.EXCLUDED,)
     assert excluded.outcome.marks == () and isinstance(excluded.qc, Rejected)
-    assert excluded.features is None and all(isinstance(c, Refusal) for c in excluded.library.values())
+    assert isinstance(excluded.features, Refusal)
+    assert all(isinstance(c, Refusal) for c in excluded.library.values())
     assert isinstance(excluded.device_value("bench.motion_s"), Refusal)
     interrupted = evaluate(
         row("loops-s-v40"), replace(clean.trial, outcome=TrialOutcome.INTERRUPTED), ml, None
@@ -165,6 +166,26 @@ def test_each_failure_cause_gives_its_outcome(move_lists: dict[str, MoveList], c
     assert invalid.outcome.camera_rules == (CameraRule.MARKER_MISSING,) and invalid.executed is None
     assert isinstance(invalid.camera_value("bench.path_length_mm"), Refusal)
     assert math.isnan(invalid.camera_difference("bench.path_length_mm"))
+
+
+def test_a_camera_record_without_an_executed_movement_check_is_invalid(
+    move_lists: dict[str, MoveList], clean: Evaluated
+) -> None:
+    # Detects a run whose camera record passes the rules of section 7.3 but has no executed movement
+    # check of section 7.6, and still enters the camera-referenced comparison with its camera values.
+    ml = move_lists["loops-s-v40"]
+    run = evaluate(
+        row("loops-s-v40"),
+        clean.trial,
+        ml,
+        camera_track(ml, noise_mm=0.005),
+        commanded=Refusal(RefusalCode.UNDEFINED, "no command"),
+    )
+    assert isinstance(run.executed, Refusal)
+    assert run.outcome.camera is CameraState.INVALID and run.outcome.motion_failure is None
+    assert not run.outcome.failed
+    assert isinstance(run.camera_value("bench.path_length_mm"), Refusal)
+    assert math.isnan(run.camera_difference("bench.path_length_mm"))
 
 
 def test_each_fault_rule_detects_its_fault_and_rejects_a_clean_run(move_lists: dict[str, MoveList]) -> None:

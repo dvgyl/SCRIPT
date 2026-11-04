@@ -67,7 +67,8 @@ class CameraState(StrEnum):
     ABSENT = "absent"
     """No track file for the run."""
     INVALID = "invalid"
-    """A track that fails a rule of section 7.3 or has no motion interval."""
+    """A track that fails a rule of section 7.3, has no motion interval, or has no executed movement
+    check of section 7.6. The run then leaves the camera-referenced comparison (section 7.7)."""
     VALID = "valid"
 
 
@@ -107,8 +108,8 @@ class Evaluated:
     trial: Trial
     move_list: MoveList
     qc: Accepted | Rejected
-    features: RunFeatures | None
-    """The bench features of the device record; None when `assess` rejects the trial."""
+    features: RunFeatures | Refusal
+    """The bench features of the device record, or the refusal of `assess` when it rejects the trial."""
     library: dict[str, Cell]
     """The library features of section 9.3; every cell a refusal when `assess` rejects the trial."""
     camera: CameraRecord | None
@@ -119,14 +120,12 @@ class Evaluated:
     outcome: Outcome
 
     def device_value(self, name: str) -> Cell:
-        if self.features is None:
-            return self.qc.refusals[0] if isinstance(self.qc, Rejected) else self.library[name]
-        return self.features.cells[name]
+        return self.features.cells[name] if isinstance(self.features, RunFeatures) else self.features
 
     def camera_value(self, name: str) -> Cell:
         if self.camera is None:
             return Refusal(RefusalCode.NOT_APPLICABLE, "The run has no camera record.")
-        if not self.camera.valid:
+        if self.outcome.camera is not CameraState.VALID:
             return Refusal(RefusalCode.NOT_APPLICABLE, "The camera record is invalid.")
         return self.camera.run.cells[name]
 
@@ -187,13 +186,14 @@ def evaluate(
     if commanded is None:
         commanded = commanded_motion(move_list, settings)
     qc = assess(trial, policy)
-    features: RunFeatures | None = None
-    library: dict[str, Cell] = (
-        {f.name: qc.refusals[0] for f in LIBRARY_CATALOG} if isinstance(qc, Rejected) else {}
-    )
+    features: RunFeatures | Refusal
+    library: dict[str, Cell]
     if isinstance(qc, Accepted):
         features, library = run_features(qc, settings), extract(qc, settings)
-    device = features.motion if features is not None and isinstance(features.motion, Motion) else None
+    else:
+        features, library = qc.refusals[0], {f.name: qc.refusals[0] for f in LIBRARY_CATALOG}
+    device = features.motion if isinstance(features, RunFeatures) else None
+    device = device if isinstance(device, Motion) else None
     camera = camera_record(track, settings) if track is not None else None
     executed = alignment = accuracy = None
     if camera is not None and camera.valid and isinstance(camera.run.motion, Motion):
@@ -203,9 +203,12 @@ def evaluate(
             if isinstance(alignment, TimeAlignment):
                 accuracy = spatial_accuracy(device, camera.run.motion, alignment)
     trace = _fit(device, move_list, commanded, settings) if device is not None else None
-    state = (
-        CameraState.ABSENT if camera is None else CameraState.VALID if camera.valid else CameraState.INVALID
-    )
+    if camera is None:
+        state = CameraState.ABSENT
+    elif isinstance(executed, ExecutedMovement):
+        state = CameraState.VALID
+    else:
+        state = CameraState.INVALID
     outcome = Outcome(
         tuple(r.code for r in qc.refusals) if isinstance(qc, Rejected) else (),
         tuple(m for m in trial.marks if m in FAILURE_MARKS),
