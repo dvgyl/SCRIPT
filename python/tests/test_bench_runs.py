@@ -12,9 +12,17 @@ import test_bench_features as features_tests
 import test_bench_moves as moves_tests
 from conftest import fixture_lines, write_export
 
-from scriptkin.bench.camera import CameraRule, ExecutedMovement, PathFit, SpatialAccuracy, TimeAlignment
+from scriptkin.bench.camera import (
+    CameraRule,
+    ExecutedMovement,
+    MotionCheck,
+    PathFit,
+    SpatialAccuracy,
+    TimeAlignment,
+)
+from scriptkin.bench.features import Motion
 from scriptkin.bench.inputs import InputError, RunRow, RunStatus, read_bench_journal
-from scriptkin.bench.moves import MoveList
+from scriptkin.bench.moves import Move, MoveList
 from scriptkin.bench.runs import (
     CameraState,
     CleanMedians,
@@ -24,7 +32,7 @@ from scriptkin.bench.runs import (
     fault_detected,
     trial_of,
 )
-from scriptkin.bench.track import Track
+from scriptkin.bench.track import FrameTimes, Track
 from scriptkin.quality import Refusal, RefusalCode, Rejected
 from scriptkin.recording import FloatArray, PenState, Stroke, Trial, TrialOutcome
 
@@ -193,19 +201,19 @@ def test_the_camera_motion_interval_does_not_depend_on_the_device_record(
         assert run.camera_difference("bench.motion_s") < -0.015
 
 
-def test_a_window_edge_fails_the_run_and_another_alignment_failure_keeps_it(
+def test_a_window_edge_or_another_program_fails_the_run_and_a_short_clip_keeps_it(
     move_lists: dict[str, MoveList],
 ) -> None:
     # Detects a run whose camera motion interval touches an edge of its window and stays valid, or
-    # fails without the reason window_edge (section 7.6), and a run whose coarse alignment fails for
-    # another reason, a short clip or a clip of another program, that fails instead of keeping an
-    # invalid camera record (section 7.7).
+    # fails without the reason window_edge (section 7.6), a run whose clean clip shows another program
+    # and stays valid, and a run whose clip is shorter than the command, a camera cause, that fails
+    # instead of keeping an invalid camera record (section 7.7).
     ml = move_lists["loops-l-v20"]
     trial = device_run(ml, noise_mm=0.005, seed=2)
     slow = evaluate(row("loops-l-v20"), trial, ml, camera_track(ml, noise_mm=0.005, speed_factor=1 / 1.02))
     assert slow.outcome.camera is CameraState.VALID and slow.outcome.camera_rules == ()
     assert slow.outcome.motion_failure is True and slow.outcome.failed
-    assert slow.outcome.reason == "window_edge" and slow.outcome.window_edge
+    assert slow.outcome.reason == "window_edge" and slow.outcome.motion_check is MotionCheck.WINDOW_EDGE
     assert isinstance(slow.executed, ExecutedMovement) and slow.executed.window_edge
     whole = camera_track(ml, noise_mm=0.005)
     n = len(whole.frame) // 2
@@ -222,18 +230,93 @@ def test_a_window_edge_fails_the_run_and_another_alignment_failure_keeps_it(
     for track, detail in ((short, "shorter"), (other, "shorter")):
         run = evaluate(row("loops-l-v20"), trial, ml, track)
         assert run.outcome.camera is CameraState.INVALID
-        assert run.outcome.camera_rules == (CameraRule.ALIGNMENT,) and not run.outcome.window_edge
+        assert run.outcome.camera_rules == (CameraRule.ALIGNMENT,) and run.outcome.motion_check is None
         assert run.outcome.motion_failure is None and not run.outcome.failed and run.executed is None
         assert run.camera is not None and isinstance(run.camera.run.motion, Refusal)
         assert detail in run.camera.run.motion.detail
     line = move_lists["line-osc8"]
     wrong = evaluate(row("line-osc8"), device_run(line, noise_mm=0.005, seed=2), line, whole)
-    assert wrong.outcome.camera is CameraState.INVALID and wrong.outcome.camera_rules == (
-        CameraRule.ALIGNMENT,
-    )
-    assert wrong.outcome.motion_failure is None and not wrong.outcome.failed
-    assert wrong.camera is not None and isinstance(wrong.camera.run.motion, Refusal)
-    assert "correlate" in wrong.camera.run.motion.detail
+    assert wrong.outcome.camera is CameraState.VALID and wrong.outcome.camera_rules == ()
+    assert wrong.outcome.motion_check is MotionCheck.ALIGNMENT and wrong.outcome.failed
+    assert wrong.outcome.reason == "alignment" and not wrong.valid
+    assert isinstance(wrong.executed, Refusal) and "correlate" in wrong.executed.detail
+    assert math.isnan(wrong.camera_difference("bench.motion_s"))
+
+
+def paused(move_lists: dict[str, MoveList], seconds: float) -> MoveList:
+    """`loops-l-v20` with a stop of `seconds` after loop 4, at the dwell move of `fault-dwell`: the movement
+    that a pause of the host computer in the stream of moves executes (section 4.3)."""
+    dwell = move_lists["fault-dwell"]
+    at = next(i for i, m in enumerate(dwell.moves) if m.duration_s > 0.4)
+    moves = list(dwell.moves)
+    moves[at] = Move(moves[at].x_mm, moves[at].y_mm, seconds)
+    return replace(dwell, moves=tuple(moves), program=move_lists["loops-l-v20"].program)
+
+
+def assert_motion_failure(run: Evaluated) -> None:
+    """The run fails the check of section 7.6 with a valid camera record. Its reason is `alignment` when
+    the clip has no motion interval, because its profile does not match the command."""
+    assert run.outcome.failed and run.outcome.motion_failure is True, run.outcome
+    assert not run.outcome.failed_without_motion_check and not run.valid
+    assert run.outcome.camera is CameraState.VALID and run.outcome.camera_rules == ()
+    assert run.camera is not None
+    aligned = isinstance(run.camera.run.motion, Motion)
+    assert run.outcome.reason in (("window_edge", "motion_failure") if aligned else ("alignment",))
+
+
+@pytest.mark.parametrize("seconds", [0.3, 0.5, 1.0, 2.0, 4.0])
+def test_a_pause_inside_the_movement_fails_the_run(move_lists: dict[str, MoveList], seconds: float) -> None:
+    # Detects a run whose movement stops for 0.5 to 4 s inside loops-l-v20 and that stays valid: the
+    # clean clip then fails the coarse alignment, and an invalid camera record kept the run with the
+    # paused speed_cv of its device record (section 7.6). Every pause must fail the run.
+    ml = move_lists["loops-l-v20"]
+    executed = paused(move_lists, seconds)
+    trial = device_run(executed, noise_mm=0.005, seed=2)
+    assert_motion_failure(evaluate(row("loops-l-v20"), trial, ml, camera_track(executed, noise_mm=0.005)))
+
+
+@pytest.mark.parametrize("pid", ["loops-l-v20", "loops-l-v80"])
+@pytest.mark.parametrize("factor", [0.95, 0.97, 0.992, 1.0, 1.008, 1.03, 1.05])
+def test_a_run_off_the_command_fails_and_a_run_within_one_percent_passes(
+    move_lists: dict[str, MoveList], pid: str, factor: float
+) -> None:
+    # Detects a run 5 percent fast or slow whose clean clip fails the coarse alignment and that stays
+    # valid with an invalid camera record, or a check that fails a run within 1 percent of the command.
+    # `factor` is the executed duration over the commanded one.
+    ml = move_lists[pid]
+    track = camera_track(ml, noise_mm=0.005, speed_factor=1 / factor)
+    run = evaluate(row(pid), device_run(ml, noise_mm=0.005, seed=2), ml, track)
+    if abs(factor - 1) > 0.01:
+        assert_motion_failure(run)
+    else:
+        assert not run.outcome.failed and run.outcome.motion_failure is False and run.valid, run.outcome
+        assert run.outcome.camera is CameraState.VALID
+
+
+@pytest.mark.parametrize(
+    ("changes", "rule"),
+    [
+        ({"duplicate_at": 20}, CameraRule.DUPLICATE_FRAME),
+        ({"frame_times": FrameTimes.CAPTURE, "stretch_at": 20}, CameraRule.FRAME_INTERVAL),
+        ({"drop_frames": (100, 110)}, CameraRule.LED_COUNT),
+        ({"missing_share": 0.03}, CameraRule.MARKER_MISSING),
+    ],
+)
+def test_a_camera_fault_keeps_an_invalid_record_when_the_alignment_fails(
+    move_lists: dict[str, MoveList], changes: dict[str, object], rule: CameraRule
+) -> None:
+    # Detects a clip that fails the coarse alignment and a rule of section 7.3, and that fails the run as
+    # a motion failure. The camera can cause the mismatch, so the record is invalid and the run stays
+    # valid for the features that the camera does not reference (section 7.7). Without a motion interval
+    # the rules apply over the whole clip: the faults lie in the still lead, before frame 144.
+    ml = move_lists["loops-l-v20"]
+    track = camera_track(ml, noise_mm=0.005, speed_factor=1 / 1.05, **changes)  # type: ignore[arg-type]
+    run = evaluate(row("loops-l-v20"), device_run(ml, noise_mm=0.005, seed=2), ml, track)
+    assert run.outcome.camera is CameraState.INVALID
+    assert run.outcome.motion_failure is None and not run.outcome.failed and run.valid, run.outcome
+    assert run.outcome.camera_rules == tuple(sorted((CameraRule.ALIGNMENT, rule)))
+    assert isinstance(run.device_value("bench.speed_cv"), float)
+    assert math.isnan(run.camera_difference("bench.motion_s"))
 
 
 def test_a_camera_record_without_an_executed_movement_check_is_invalid(

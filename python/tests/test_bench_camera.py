@@ -343,11 +343,13 @@ def test_a_clip_of_another_run_or_without_the_motion_fails_the_alignment(
     move_lists: dict[str, MoveList],
 ) -> None:
     # Detects a camera record that keeps a clip of another program, a clip that ends inside the
-    # motion, or a track without a reference record, as a valid record with a motion interval.
+    # motion, or a track without a reference record, as a valid record with a motion interval. A clean
+    # clip of another program is misaligned, without a rule; the other two fail the rule alignment.
     ml, other = move_lists["loops-s-v40"], move_lists["line-osc8"]
     device = device_motion(ml, noise_mm=0.005, seed=3)
     wrong = camera_record(camera_track(other, noise_mm=0.005), device)
-    assert wrong.failed == (CameraRule.ALIGNMENT,) and not wrong.valid
+    assert wrong.failed == () and wrong.misaligned and not wrong.valid
+    assert wrong.alignment is not None and wrong.alignment.correlation < 0.5
     assert isinstance(wrong.run.motion, Refusal) and "correlate" in wrong.run.motion.detail
     whole = camera_track(ml, noise_mm=0.005)
     n = len(whole.frame) // 2

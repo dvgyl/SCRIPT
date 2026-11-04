@@ -41,7 +41,7 @@ from scriptkin.bench.analysis import (
     program_set,
     run_arrays,
 )
-from scriptkin.bench.camera import ExecutedMovement
+from scriptkin.bench.camera import ExecutedMovement, MotionCheck
 from scriptkin.bench.features import Motion, commanded_motion, feature_cells
 from scriptkin.bench.outputs import HOLD_NOISE_FLOOR, SPIRAL_NOISE_FLOOR, Row, sampling_rows
 from scriptkin.bench.runs import CAMERA_FEATURES, FEATURE_SET, Evaluated, fault_detected
@@ -206,7 +206,11 @@ def _duration_rows(run: Evaluated, commanded: Motion | Refusal) -> list[Row]:
         )
     else:
         reason = run.executed.detail if isinstance(run.executed, Refusal) else "no valid camera record"
-        rows.append({**head, "source": "camera", "reason": reason})
+        row: Row = {**head, "source": "camera", "reason": reason}
+        if run.outcome.motion_check is MotionCheck.ALIGNMENT:
+            # The clip has no camera cause and shows a movement that does not match the command.
+            row = {**row, "command": command, "pass": False}
+        rows.append(row)
     return rows
 
 

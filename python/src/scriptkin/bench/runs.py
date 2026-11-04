@@ -9,7 +9,8 @@ The outcome. A main run fails when `assess` rejects it, when the camera check fi
 when the operator marked `disturbance` or `deviceProblem`. The analysis uses the valid runs. A run without
 a valid camera record has no motion failure and stays valid for the features that the camera does not
 reference (section 7.7). `failed_without_motion_check` is the status of the sensitivity analysis of
-section 7.6, which keeps the motion failures.
+section 7.6, which keeps the motion failures. The camera check is `MotionCheck`: one value holds the
+result and the reason of a failure.
 
 The camera record is the reference that measures the device record. Its motion window (section 7.4)
 therefore comes from the commanded motion of the program, for every run, and never from the device
@@ -17,8 +18,10 @@ record: a device record that loses part of the movement would cut the camera int
 it holds, and the loss would then leave the camera-referenced difference and could fail the run. A
 camera motion interval that touches an edge of its window extends beyond the commanded window, which
 happens only beyond the 1 percent tolerance of section 7.6, so the run is a motion failure with the
-reason `window_edge`. A coarse alignment that fails for another reason, a short clip or a profile that
-does not match, leaves an invalid camera record and the run stays valid (section 7.7).
+reason `window_edge`. A coarse alignment that fails on a clip without a camera cause makes the run a
+motion failure with the reason `alignment` (`CameraRecord.misaligned`). A coarse alignment that fails
+for a camera cause, a short clip or a clip that fails a rule of section 7.3, leaves an invalid camera
+record, and the run stays valid (section 7.7).
 
 The comparison scale of section 11.1 is a property of the feature name: `comparison_value` takes the
 natural logarithm of every feature of the feature set except `bench.speed_cv`. A refusal, and a value
@@ -39,6 +42,7 @@ from scriptkin.bench.camera import (
     CameraRecord,
     CameraRule,
     ExecutedMovement,
+    MotionCheck,
     PathFit,
     SpatialAccuracy,
     TimeAlignment,
@@ -79,6 +83,8 @@ class CameraState(StrEnum):
     """A track that fails a rule of section 7.3, has no motion interval, or has no executed movement
     check of section 7.6. The run then leaves the camera-referenced comparison (section 7.7)."""
     VALID = "valid"
+    """A track with an executed movement check of section 7.6, or a misaligned clip without a camera
+    cause, which fails the check (`CameraRecord.misaligned`)."""
 
 
 @dataclass(frozen=True)
@@ -90,14 +96,15 @@ class Outcome:
     """The `disturbance` and `deviceProblem` marks of the trial."""
     camera: CameraState
     camera_rules: tuple[CameraRule, ...]
-    motion_failure: bool | None
+    motion_check: MotionCheck | None
     """None without a valid camera record or a path fit."""
     unused_rerun: bool = False
     """Section 6.4: the rerun follows fewer failed earlier runs of its program and mounting than its
     run index needs, so the analysis does not use it (`scriptkin.bench.study.mark_unused_reruns`)."""
-    window_edge: bool = False
-    """The motion failure is a camera motion interval that touches an edge of its window
-    (`scriptkin.bench.camera.touches_window`): the movement extends beyond the commanded window."""
+
+    @property
+    def motion_failure(self) -> bool | None:
+        return None if self.motion_check is None else self.motion_check is not MotionCheck.PASSED
 
     @property
     def failed_without_motion_check(self) -> bool:
@@ -110,8 +117,8 @@ class Outcome:
     @property
     def reason(self) -> str:
         parts = [str(code) for code in self.rejected] + list(self.marks)
-        if self.motion_failure:
-            parts.append("window_edge" if self.window_edge else "motion_failure")
+        if self.motion_check is not None and self.motion_check is not MotionCheck.PASSED:
+            parts.append(str(self.motion_check))
         if self.unused_rerun:
             parts.append("unused_rerun")
         return ";".join(parts)
@@ -131,6 +138,8 @@ class Evaluated:
     """The library features of section 9.3; every cell a refusal when `assess` rejects the trial."""
     camera: CameraRecord | None
     executed: ExecutedMovement | Refusal | None
+    """Section 7.6 with a valid camera record. A misaligned record gives the refusal that names its
+    coarse correlation. None without a valid camera record."""
     alignment: TimeAlignment | Refusal | None
     accuracy: SpatialAccuracy | Refusal | None
     trace: PathFit | Refusal | None
@@ -218,7 +227,8 @@ def evaluate(
     device = device if isinstance(device, Motion) else None
     reference = commanded if isinstance(commanded, Motion) else None
     camera = camera_record(track, reference, settings) if track is not None else None
-    executed = alignment = accuracy = None
+    executed: ExecutedMovement | Refusal | None = None
+    alignment = accuracy = None
     if camera is not None and camera.valid and isinstance(camera.run.motion, Motion):
         executed = _executed(camera.run.motion, move_list, commanded, settings, camera.window_edge)
         if device is not None:
@@ -226,10 +236,13 @@ def evaluate(
             if isinstance(alignment, TimeAlignment):
                 accuracy = spatial_accuracy(device, camera.run.motion, alignment)
     trace = _fit(device, move_list, commanded, settings) if device is not None else None
+    check: MotionCheck | None = None
     if camera is None:
         state = CameraState.ABSENT
+    elif camera.misaligned and isinstance(camera.run.motion, Refusal):
+        state, check, executed = CameraState.VALID, MotionCheck.ALIGNMENT, camera.run.motion
     elif isinstance(executed, ExecutedMovement):
-        state = CameraState.VALID
+        state, check = CameraState.VALID, executed.check
     else:
         state = CameraState.INVALID
     outcome = Outcome(
@@ -237,8 +250,7 @@ def evaluate(
         tuple(m for m in trial.marks if m in FAILURE_MARKS),
         state,
         camera.failed if camera is not None else (),
-        executed.failure if isinstance(executed, ExecutedMovement) else None,
-        window_edge=isinstance(executed, ExecutedMovement) and executed.window_edge,
+        check,
     )
     return Evaluated(
         row, trial, move_list, qc, features, library, camera, executed, alignment, accuracy, trace, outcome
