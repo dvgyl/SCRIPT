@@ -12,8 +12,8 @@ from conftest import make_trial
 from scriptkin.bench import MAIN
 from scriptkin.bench.features import (
     CATALOG,
-    Interval,
     Motion,
+    MotionInterval,
     Points,
     commanded_motion,
     feature_cells,
@@ -169,13 +169,13 @@ def test_the_motion_interval_needs_six_consecutive_samples_in_one_segment() -> N
     assert isinstance(motion_interval([grid(t, five)]), Refusal)
     six = np.where((t >= 0.02) & (t < 0.05), 5.0, 0.0)
     found = motion_interval([grid(t, six)])
-    assert found == Interval(0.02, 0.045)
+    assert found == MotionInterval(0.02, 0.045)
     first, second = grid(t[:10], np.full(10, 5.0)), grid(t[10:], np.full(10, 5.0))
     assert motion_interval([grid(t[7:10], np.full(3, 5.0)), grid(t[10:13], np.full(3, 5.0))]) == Refusal(
         RefusalCode.UNDEFINED, "No run of 6 grid samples reaches 2 mm/s."
     )
     both = motion_interval([first, second])
-    assert both == Interval(0.0, 0.095)
+    assert both == MotionInterval(0.0, 0.095)
     assert motion_interval([grid(t, np.full(20, 1.99))]) == Refusal(
         RefusalCode.UNDEFINED, "No run of 6 grid samples reaches 2 mm/s."
     )
@@ -203,11 +203,11 @@ def test_the_speed_cv_uses_the_sample_standard_deviation() -> None:
     # Detects a speed CV with the divisor n instead of n - 1, or one pooled per segment.
     t = np.arange(6) / 200
     speeds = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
-    one = Motion(Interval(0.0, t[-1]), (grid(t, speeds),), (Points(t, np.zeros((6, 2))),))
+    one = Motion(MotionInterval(0.0, t[-1]), (grid(t, speeds),), (Points(t, np.zeros((6, 2))),))
     assert feature_cells(one)["bench.speed_cv"] == pytest.approx(np.std(speeds, ddof=1) / 3.5)
-    two = Motion(Interval(0.0, 1.0), (grid(t[:3], speeds[:3]), grid(t[3:] + 1, speeds[3:])), ())
+    two = Motion(MotionInterval(0.0, 1.0), (grid(t[:3], speeds[:3]), grid(t[3:] + 1, speeds[3:])), ())
     assert feature_cells(two)["bench.speed_cv"] == pytest.approx(np.std(speeds, ddof=1) / 3.5)
-    single = Motion(Interval(0.0, 0.0), (grid(t[:1], speeds[:1]),), ())
+    single = Motion(MotionInterval(0.0, 0.0), (grid(t[:1], speeds[:1]),), ())
     cell = feature_cells(single)["bench.speed_cv"]
     assert isinstance(cell, Refusal)
     assert cell.code == RefusalCode.TOO_FEW_VALUES

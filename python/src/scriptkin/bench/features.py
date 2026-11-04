@@ -94,7 +94,9 @@ _SAMPLING_NAMES = tuple(f.name for f in CATALOG if f.name.startswith("sampling."
 
 
 @dataclass(frozen=True)
-class Interval:
+class MotionInterval:
+    """The motion interval of section 7.4, in the time of its record."""
+
     start_s: float
     end_s: float
 
@@ -120,7 +122,7 @@ class Motion:
     interval is absent from both.
     """
 
-    interval: Interval
+    interval: MotionInterval
     grids: tuple[Kinematics, ...]
     samples: tuple[Points, ...]
 
@@ -131,7 +133,7 @@ class RunFeatures:
     cells: dict[str, Cell]
 
 
-def motion_interval(grids: Sequence[Kinematics]) -> Interval | Refusal:
+def motion_interval(grids: Sequence[Kinematics]) -> MotionInterval | Refusal:
     """Section 7.4. A run of 6 consecutive grid samples at 2 mm/s or more lies inside one segment.
 
     The motion start is the first sample of the first such run. The motion end is the last sample of
@@ -151,7 +153,7 @@ def motion_interval(grids: Sequence[Kinematics]) -> Interval | Refusal:
         return Refusal(
             RefusalCode.UNDEFINED, f"No run of {MOTION_RUN} grid samples reaches {MOTION_SPEED_MM_S:g} mm/s."
         )
-    return Interval(min(starts), max(ends))
+    return MotionInterval(min(starts), max(ends))
 
 
 def motion(ok: Accepted, settings: Preprocessing = DEFAULT_PREPROCESSING) -> Motion | Refusal:

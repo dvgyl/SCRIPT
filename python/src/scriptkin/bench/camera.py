@@ -30,8 +30,8 @@ import numpy as np
 from scipy.spatial import KDTree
 
 from scriptkin.bench.features import (
-    Interval,
     Motion,
+    MotionInterval,
     Points,
     RunFeatures,
     commanded_motion,
@@ -154,7 +154,7 @@ def led_count_agrees(led: BoolArray, rate_hz: float) -> bool:
     )
 
 
-def validity(track: Track, interval: Interval | None) -> tuple[CameraRule, ...]:
+def validity(track: Track, interval: MotionInterval | None) -> tuple[CameraRule, ...]:
     """Sections 7.3 and 7.7. The rules inside the motion interval need one; the clip rule applies without."""
     failed: list[CameraRule] = []
     if not len(track.frame) or float(np.mean(~track.found)) > MARKER_MISSING_SHARE:
