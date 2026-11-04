@@ -325,9 +325,155 @@ def _bench(args: argparse.Namespace) -> int:
     return 0
 
 
+def _bench_analyse(args: argparse.Namespace) -> int:
+    """`scriptkin bench analyse`: the analysis of sections 8 to 12 into bench/results/ (section 15)."""
+    from scriptkin.bench.analysis import analyse_all
+    from scriptkin.bench.outputs import write_results
+    from scriptkin.bench.study import evaluate_study, incomplete, read_study
+    from scriptkin.formats import FormatError
+
+    try:
+        study = read_study(args.root)
+        problems = incomplete(study)
+        if problems:
+            print("bench analyse: refused. The study is not complete (section 13):", file=sys.stderr)
+            for problem in problems:
+                print(f"  {problem}", file=sys.stderr)
+            return 1
+        evaluated = evaluate_study(study)
+        written = write_results(evaluated, analyse_all(evaluated.runs, study), args.results or study.results)
+    except (OSError, FormatError, ValueError) as e:
+        print(f"bench analyse: {e}", file=sys.stderr)
+        return 2
+    for path in written:
+        print(f"bench analyse: wrote {path}")
+    return 0
+
+
+def _bench_interim(args: argparse.Namespace) -> int:
+    """`scriptkin bench interim`: section 6.6 on blocks 1 to 6. Prints variance components only."""
+    import datetime
+
+    from scriptkin.bench.interim import INTERIM_BLOCKS, INTERIM_COLUMNS, deviation_row, interim, interim_text
+    from scriptkin.bench.outputs import write_csv
+    from scriptkin.bench.study import evaluate_study, incomplete, read_study
+    from scriptkin.formats import FormatError
+
+    try:
+        study = read_study(args.root)
+        problems = incomplete(study, INTERIM_BLOCKS)
+        if problems:
+            print("bench interim: refused. Blocks 1 to 6 are not complete:", file=sys.stderr)
+            for problem in problems:
+                print(f"  {problem}", file=sys.stderr)
+            return 1
+        rows = tuple(r for r in study.rows if r.block in INTERIM_BLOCKS)
+        result = interim(evaluate_study(study, rows))
+        study.results.mkdir(parents=True, exist_ok=True)
+        path = write_csv(study.results / "interim.csv", INTERIM_COLUMNS, (r.row() for r in result))
+    except (OSError, FormatError, ValueError) as e:
+        print(f"bench interim: {e}", file=sys.stderr)
+        return 2
+    print(interim_text(result))
+    print(f"bench interim: wrote {path}")
+    when = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d %H:%M UTC")
+    print("Add this row to bench/DEVIATIONS.md:")
+    print(deviation_row(getpass.getuser(), when))
+    return 0
+
+
+def _bench_pilot(args: argparse.Namespace) -> int:
+    """`scriptkin bench pilot`: section 6.5, each device against its own command, before the lock."""
+    from scriptkin.bench.interim import PILOT_COLUMNS, pilot, pilot_text
+    from scriptkin.bench.outputs import write_csv
+    from scriptkin.bench.study import evaluate_study, read_study
+    from scriptkin.formats import FormatError
+
+    try:
+        study = read_study(args.root, locked=False)
+        rows = pilot(evaluate_study(study))
+        study.results.mkdir(parents=True, exist_ok=True)
+        path = write_csv(study.results / "pilot.csv", PILOT_COLUMNS, rows)
+    except (OSError, FormatError, ValueError) as e:
+        print(f"bench pilot: {e}", file=sys.stderr)
+        return 2
+    print(pilot_text(rows))
+    print(f"bench pilot: wrote {path}")
+    return 0
+
+
+def _bench_lock(args: argparse.Namespace) -> int:
+    """`scriptkin bench lock`: section 14 step 5, the lock file of the files and the two builds."""
+    from scriptkin.bench.inputs import Build, lock_json, write_lock
+    from scriptkin.formats import FormatError
+
+    builds = {role: Build(build, revision) for role, build, revision in args.build}
+    try:
+        lock = write_lock(args.root, builds, args.commit, args.file)
+        args.out.write_bytes(lock_json(lock))
+    except (OSError, FormatError, ValueError) as e:
+        print(f"bench lock: {e}", file=sys.stderr)
+        return 2
+    print(f"bench lock: wrote {args.out} with {len(lock.files)} file digests")
+    return 0
+
+
+def _bench_start_point(args: argparse.Namespace) -> int:
+    """`scriptkin bench start-point`: the commanded start of a run in plane millimetres."""
+    from scriptkin.bench.study import read_study, start_point_mm
+    from scriptkin.formats import FormatError
+
+    try:
+        x, y = start_point_mm(read_study(args.root, locked=False), args.run_id)
+    except (OSError, FormatError, ValueError) as e:
+        print(f"bench start-point: {e}", file=sys.stderr)
+        return 2
+    print(f"{x:.4f} {y:.4f}")
+    return 0
+
+
+def _add_bench_analysis(steps: Any) -> None:
+    root_help = "the repository root that holds bench/"
+    analyse = steps.add_parser("analyse", help="run the bench analysis and write bench/results/")
+    analyse.add_argument("root", type=Path, help=root_help)
+    analyse.add_argument("--results", type=Path, help="the output folder (default: bench/results)")
+    analyse.set_defaults(run=_bench_analyse)
+    interim = steps.add_parser("interim", help="print the variance components of blocks 1 to 6, section 6.6")
+    interim.add_argument("root", type=Path, help=root_help)
+    interim.set_defaults(run=_bench_interim)
+    pilot = steps.add_parser("pilot", help="check each device against its own command, section 6.5")
+    pilot.add_argument("root", type=Path, help=root_help)
+    pilot.set_defaults(run=_bench_pilot)
+    lock = steps.add_parser("lock", help="write the lock file of section 14 step 5")
+    lock.add_argument("root", type=Path, help=root_help)
+    lock.add_argument("--commit", type=str, required=True, help="the full hash of the commit to lock")
+    lock.add_argument(
+        "--build",
+        nargs=3,
+        action="append",
+        required=True,
+        metavar=("ROLE", "BUILD", "REVISION"),
+        help="the app.build and app.sourceRevision of the capture tool of device P or W; give both",
+    )
+    lock.add_argument(
+        "--file",
+        type=Path,
+        action="append",
+        default=[],
+        help="an extra file to lock, as the translation script",
+    )
+    lock.add_argument("--out", type=Path, required=True, help="the lock file to write")
+    lock.set_defaults(run=_bench_lock)
+    start = steps.add_parser("start-point", help="print the commanded start point of a run in plane mm")
+    start.add_argument("root", type=Path, help=root_help)
+    start.add_argument("run_id", help="the run id, as P-M3-loops-s-v40-r2")
+    start.set_defaults(run=_bench_start_point)
+
+
 def _add_bench(sub: Any) -> None:
-    b = sub.add_parser("bench", help="the camera steps of the bench protocol, section 7")
+    b = sub.add_parser("bench", help="the camera steps and the analysis of the bench protocol")
     steps = b.add_subparsers(dest="action", required=True)
+    _add_bench_analysis(steps)
 
     def step(name: str, help: str, run: Any = None, frames: bool = False) -> argparse.ArgumentParser:
         p = steps.add_parser(
