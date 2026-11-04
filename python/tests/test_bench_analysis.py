@@ -693,6 +693,36 @@ def test_a_pooled_group_averages_the_per_program_mounting_means(
     assert not bool(stats.estimable(arrays.w[0]))
 
 
+def test_the_run_variance_of_a_pooled_group_counts_one_mean_per_program_and_mounting() -> None:
+    # Detects a within-mounting variance of a pooled group with N - k degrees of freedom, as the runs of
+    # one program have, although every program of the group was centred on its own mounting mean. The
+    # variance is then low by (N - kP) / (N - k), and so are the single-run limits of agreement.
+    from scriptkin.bench import stats
+    from scriptkin.bench.analysis import pooled_group
+
+    rng = np.random.default_rng(1)
+    runs = np.full((2, 14), np.nan)
+    runs[:, 0:5] = rng.normal(0.0, 0.01, (2, 5))
+    runs[:, 7:12] = 1.0 + rng.normal(0.0, 0.01, (2, 5))
+    runs[1, 11] = np.nan
+    pooled = pooled_group(runs, 2)
+    cells = [runs.reshape(2, 2, 7)[i, j] for i in range(2) for j in range(2)]
+    squares = sum(float(np.nansum((c - np.nanmean(c)) ** 2)) for c in cells)
+    freedom = sum(int(np.isfinite(c).sum()) - 1 for c in cells)
+    direct = squares / freedom
+    assert freedom == 15
+    assert stats.variance_components(pooled, 2).run == pytest.approx(direct)
+    assert stats.pooled_variance_components(pooled[None], 2).run == pytest.approx(direct)
+    assert stats.variance_components(pooled, 2).mean_count == pytest.approx(9.5)
+    assert stats.variance_components(pooled).run == pytest.approx(direct * 15 / 17)
+    groups = np.stack([pooled, pooled])
+    grouped = stats.bland_altman(groups, groups + 0.1, programs=2)
+    single = stats.bland_altman(groups, groups + 0.1)
+    assert grouped.single_run.sd**2 == pytest.approx(
+        single.single_run.sd**2 + 2 * (1 - 1 / 9.5) * direct * 2 / 17
+    )
+
+
 def _lengths(evaluated: dict[str, Evaluated], mounting: str, program: str) -> list[float]:
     values = [
         e.device_value("bench.path_length_mm")
