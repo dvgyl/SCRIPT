@@ -19,7 +19,6 @@ from pathlib import Path
 import numpy as np
 
 from scriptkin.bench import MAIN, Design
-from scriptkin.bench import program as registered_program
 from scriptkin.bench.features import WELCH_MIN_WINDOWS, Motion, commanded_motion
 from scriptkin.bench.inputs import (
     InputError,
@@ -213,10 +212,6 @@ def clean_medians(evaluated: Mapping[str, Evaluated], block: int) -> CleanMedian
         return None
     motion, path = zip(*clean, strict=True)
     return CleanMedians(float(np.median(motion)), float(np.median(path)))
-
-
-def is_fault(program_id: str) -> bool:
-    return registered_program(program_id).fault is not None
 
 
 def start_point_mm(study: Study, run_id: str) -> tuple[float, float]:

@@ -30,7 +30,6 @@ from scriptkin.bench import stats
 from scriptkin.bench.analysis import MAIN_ANALYSIS, AnalysisResult, FeatureResult
 from scriptkin.bench.camera import ExecutedMovement, PathFit, SpatialAccuracy, TimeAlignment
 from scriptkin.bench.features import CATALOG as BENCH_CATALOG
-from scriptkin.bench.inputs import RunRow
 from scriptkin.bench.runs import CleanMedians, Evaluated, fault_detected
 from scriptkin.bench.study import EvaluatedStudy, Study, clean_medians
 from scriptkin.features import FeatureRow, FeatureTable, Provenance, catalog_digest
@@ -759,7 +758,3 @@ def write_results(study: EvaluatedStudy, analyses: Sequence[AnalysisResult], fol
     )
     written.append(path)
     return written
-
-
-def status_of_rows(rows: Sequence[RunRow]) -> dict[str, RunRow]:
-    return {r.run_id: r for r in rows}
