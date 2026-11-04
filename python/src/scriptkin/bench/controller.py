@@ -300,7 +300,7 @@ def translated_digests(folder: Path, machine: Machine = NEXTDRAW_8511) -> dict[s
     digests = controller_digests(folder)
     for pid in digests:
         controller, source = folder / f"{pid}{CONTROLLER_SUFFIX}", folder / f"{pid}.json"
-        if controller.read_text(encoding="ascii") != translate(read_move_list(source), machine).text():
+        if controller.read_bytes() != translate(read_move_list(source), machine).text().encode("ascii"):
             raise ControllerError(
                 f"{controller} is not the translation of {source.name}."
                 " Run python/studies/bench_controller.py again."

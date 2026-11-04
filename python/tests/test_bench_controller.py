@@ -314,12 +314,14 @@ def test_the_trajectory_digests_refuse_a_move_list_or_a_controller_file_alone(
         controller_digests(orphan)
 
 
-def test_the_registered_digests_refuse_a_controller_file_that_is_not_the_translation_of_its_move_list(
-    tmp_path: Path, controller_folder: Path
+def test_the_programs_file_refuses_a_controller_file_that_is_not_the_translation_of_its_move_list(
+    tmp_path: Path, controller_folder: Path, monkeypatch: pytest.MonkeyPatch, registered_folder: None
 ) -> None:
     # Detects a programs file that takes the digest of a stale controller file, written before its move
-    # list changed, so that the motion system would execute another movement than the registered one.
+    # list changed, so that the motion system would execute another movement than the registered one,
+    # or of a controller file with other line ends, whose digest differs from the translation.
     shutil.copytree(controller_folder, tmp_path, dirs_exist_ok=True)
+    monkeypatch.setattr(bench, "PROGRAM_FOLDER", tmp_path)
     assert translated_digests(tmp_path) == controller_digests(tmp_path)
     changed = tmp_path / "line-osc5.json"
     raw = json.loads(changed.read_text(encoding="utf-8"))
@@ -327,4 +329,9 @@ def test_the_registered_digests_refuse_a_controller_file_that_is_not_the_transla
     changed.write_text(json.dumps(raw), encoding="utf-8")
     assert "line-osc5" in controller_digests(tmp_path)
     with pytest.raises(ControllerError, match=r"line-osc5\.ebb is not the translation of line-osc5\.json"):
-        translated_digests(tmp_path)
+        bench.programs_json()
+    shutil.copy(controller_folder / "line-osc5.json", changed)
+    crlf = tmp_path / "spiral-l-v40.ebb"
+    crlf.write_bytes(crlf.read_bytes().replace(b"\n", b"\r\n"))
+    with pytest.raises(ControllerError, match=r"spiral-l-v40\.ebb is not the translation"):
+        bench.programs_json()
