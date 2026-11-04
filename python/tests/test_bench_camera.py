@@ -14,6 +14,7 @@ from scriptkin.bench.camera import (
     camera_record,
     executed_movement,
     led_count_agrees,
+    nearest_on_path,
     spatial_accuracy,
     time_alignment,
     trace_error,
@@ -218,6 +219,14 @@ def test_the_spatial_accuracy_recovers_the_rotation_and_the_shift(move_lists: di
     wrong = spatial_accuracy(device, record.run.motion, TimeAlignment(alignment.lag_s + 0.1, 0.0))
     assert isinstance(wrong, SpatialAccuracy)
     assert wrong.rms_mm > 1.0
+
+
+def test_the_nearest_point_on_a_path_is_the_one_of_the_worked_example() -> None:
+    # Detects a nearest-point search that returns a vertex or the projection on a farther edge for the
+    # worked example of the docstring: (4, 1) against (0, 0), (10, 0), (10, 10) gives (4, 0).
+    vertices = np.array([[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]])
+    nearest = nearest_on_path(np.array([[4.0, 1.0], [12.0, 5.0]]), vertices)
+    np.testing.assert_allclose(nearest, [[4.0, 0.0], [10.0, 5.0]])
 
 
 @pytest.mark.parametrize("pid", ["spiral-s-v40", "loops-l-v20", "line-osc8"])

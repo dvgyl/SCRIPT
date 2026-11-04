@@ -387,9 +387,10 @@ def nearest_on_path(points: FloatArray, vertices: FloatArray) -> FloatArray:
 
     Example. The polyline has the vertices (0, 0), (10, 0), and (10, 10), so its edges are 0 and 1,
     and the longest edge is 10. The point (4, 1) has its nearest vertex (0, 0) at 4.12. Its ball of
-    radius 4.12 + 10 holds the vertices 0 and 1, so its candidate edges are the ones that start or
-    end there: edge 0 twice and edge 1. The projections are (4, 0) on edge 0 and (10, 1) on edge 1,
-    and (4, 0) at 1.0 is the nearest. A vertex outside the ball cannot start or end a nearer edge,
+    radius 4.12 + 10 holds all three vertices, because vertex 2 is at 10.82. Its candidate edges are
+    the ones that start or end at a vertex of the ball: edge 0 from the vertices 0 and 1, and edge 1
+    from the vertices 1 and 2. The projections are (4, 0) on edge 0 and (10, 1) on edge 1, and
+    (4, 0) at 1.0 is the nearest. A vertex outside the ball cannot start or end a nearer edge,
     because every point of such an edge is farther than the ball radius minus the edge length.
     """
     deltas = np.diff(vertices, axis=0)
