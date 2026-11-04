@@ -83,6 +83,9 @@ class Outcome:
     camera_rules: tuple[CameraRule, ...]
     motion_failure: bool | None
     """None without a valid camera record or a path fit."""
+    unused_rerun: bool = False
+    """Section 6.4: the rerun follows fewer failed earlier runs of its program and mounting than its
+    run index needs, so the analysis does not use it (`scriptkin.bench.study.mark_unused_reruns`)."""
 
     @property
     def failed_without_motion_check(self) -> bool:
@@ -97,6 +100,8 @@ class Outcome:
         parts = [str(code) for code in self.rejected] + list(self.marks)
         if self.motion_failure:
             parts.append("motion_failure")
+        if self.unused_rerun:
+            parts.append("unused_rerun")
         return ";".join(parts)
 
 
@@ -118,6 +123,11 @@ class Evaluated:
     accuracy: SpatialAccuracy | Refusal | None
     trace: PathFit | Refusal | None
     outcome: Outcome
+
+    @property
+    def valid(self) -> bool:
+        """A main run that the analysis uses: not failed, not a fault run, and not an unused rerun."""
+        return not self.row.fault and not self.outcome.failed and not self.outcome.unused_rerun
 
     def device_value(self, name: str) -> Cell:
         return self.features.cells[name] if isinstance(self.features, RunFeatures) else self.features

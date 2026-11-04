@@ -13,7 +13,7 @@ program is an error, because the lock removed the program before the main runs.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -21,6 +21,7 @@ import numpy as np
 from scriptkin.bench import MAIN, Design
 from scriptkin.bench.features import WELCH_MIN_WINDOWS, Motion, commanded_motion
 from scriptkin.bench.inputs import (
+    PLANNED_RUNS,
     InputError,
     Journal,
     Lock,
@@ -197,7 +198,35 @@ def evaluate_study(
         evaluated[row.run_id] = evaluate(
             row, trial, move_list, track, commanded=commanded[row.program], policy=policy, settings=settings
         )
-    return EvaluatedStudy(study, journals, evaluated, hold_noise(study, settings))
+    runs = mark_unused_reruns(evaluated, study.rows)
+    return EvaluatedStudy(study, journals, runs, hold_noise(study, settings))
+
+
+def mark_unused_reruns(evaluated: Mapping[str, Evaluated], rows: tuple[RunRow, ...]) -> dict[str, Evaluated]:
+    """Section 6.4: a rerun is used only when an earlier run of its program and mounting failed.
+
+    Each failed run earns one rerun, and a rerun that passed earns none. So the rerun with run index 6
+    needs one failed earlier run, and the rerun with run index 7 needs two: the failed planned run and
+    the failed first rerun, or two failed planned runs. A void row counts as a failed run, because its
+    recording left the study. A rerun that breaks the rule keeps its evaluation and gets the status
+    `unused_rerun`, so that `run_status.csv` reports it and no analysis uses it.
+    """
+    failed: dict[tuple[BenchRole, str, str], list[int]] = {}
+    for row in rows:
+        if row.status is RunStatus.VOID:
+            failed.setdefault((row.device, row.mounting, row.program), []).append(row.run_index)
+    for run in evaluated.values():
+        if run.outcome.failed:
+            key = (run.row.device, run.row.mounting, run.row.program)
+            failed.setdefault(key, []).append(run.row.run_index)
+    marked: dict[str, Evaluated] = {}
+    for run_id, run in evaluated.items():
+        row = run.row
+        earlier = [i for i in failed.get((row.device, row.mounting, row.program), []) if i < row.run_index]
+        if row.rerun and len(earlier) < row.run_index - PLANNED_RUNS:
+            run = replace(run, outcome=replace(run.outcome, unused_rerun=True))
+        marked[run_id] = run
+    return marked
 
 
 def clean_medians(evaluated: Mapping[str, Evaluated], block: int) -> CleanMedians | None:
@@ -205,7 +234,7 @@ def clean_medians(evaluated: Mapping[str, Evaluated], block: int) -> CleanMedian
     values = [
         (e.device_value("bench.motion_s"), e.device_value("bench.path_length_mm"))
         for e in evaluated.values()
-        if e.row.block == block and e.row.program == FAULT_BASE_ID and not e.outcome.failed
+        if e.row.block == block and e.row.program == FAULT_BASE_ID and e.valid
     ]
     clean = [(m, p) for m, p in values if not isinstance(m, Refusal) and not isinstance(p, Refusal)]
     if not clean:

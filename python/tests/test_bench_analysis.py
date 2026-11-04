@@ -18,6 +18,7 @@ from bench_study import BUILD, COMMIT, DEFECTS, LINE_PROGRAMS, PROGRAMS, RATE_HZ
 
 from scriptkin import bench
 from scriptkin.bench.analysis import LIMITS
+from scriptkin.bench.inputs import Registry, RunStatus, read_registry
 from scriptkin.bench.interim import INTERIM_COLUMNS, PILOT_COLUMNS
 from scriptkin.bench.moves import MoveList
 from scriptkin.bench.outputs import (
@@ -30,9 +31,11 @@ from scriptkin.bench.outputs import (
     SAMPLING_COLUMNS,
     STATUS_COLUMNS,
 )
-from scriptkin.bench.runs import FEATURE_SET
+from scriptkin.bench.runs import FEATURE_SET, Evaluated, evaluate
 from scriptkin.cli import main
 from scriptkin.features import read_feature_table
+from scriptkin.quality import Refusal
+from scriptkin.recording import Trial
 
 programs_folder = moves_tests.programs_folder
 move_lists = moves_tests.move_lists
@@ -370,21 +373,10 @@ def test_the_start_point_and_the_lock_commands_read_the_files(
     assert math.isfinite(float(LIMITS["bench.motion_s"]))
 
 
-def test_run_arrays_place_each_run_and_the_median_analysis_shifts_the_means(
-    move_lists: dict[str, MoveList], tmp_path: Path
-) -> None:
-    # Detects a run in the wrong mounting row or run slot, a failed run or a fault run that keeps a
-    # value, a camera-referenced value without a camera record, or a median analysis that changes the
-    # counts or the run spread.
-    import test_bench_features as features_tests
+def two_mounting_registry(tmp_path: Path) -> Registry:
     import test_bench_inputs as inputs_tests
-    from test_bench_runs import row, scaled
 
-    from scriptkin.bench.analysis import ANALYSES, MAIN_ANALYSIS, Group, run_arrays
-    from scriptkin.bench.inputs import read_registry
-    from scriptkin.bench.runs import Evaluated, evaluate
-
-    registry = read_registry(
+    return read_registry(
         inputs_tests.registry_json(
             tmp_path / "registry.json",
             mountings=[
@@ -396,25 +388,46 @@ def test_run_arrays_place_each_run_and_the_median_analysis_shifts_the_means(
         ),
         tmp_path,
     )
+
+
+def evaluated_run(
+    program: str, device: str, mounting: str, index: int, trial: Trial, move_lists: dict[str, MoveList]
+) -> Evaluated:
+    from test_bench_runs import row
+
+    rid = f"{device}-{mounting}-{program}-r{index}"
+    return evaluate(
+        row(program, index, 0, run_id=rid, clip=rid, device=device, mounting=mounting),
+        trial,
+        move_lists[program],
+        None,
+    )
+
+
+def test_run_arrays_place_each_run_and_the_median_analysis_shifts_the_means(
+    move_lists: dict[str, MoveList], tmp_path: Path
+) -> None:
+    # Detects a run in the wrong mounting row or run slot, a failed run or a fault run that keeps a
+    # value, a camera-referenced value without a camera record, or a median analysis that changes the
+    # counts or the run spread.
+    import test_bench_features as features_tests
+    from test_bench_runs import scaled
+
+    from scriptkin.bench.analysis import ANALYSES, MAIN_ANALYSIS, Group, run_arrays
+
+    registry = two_mounting_registry(tmp_path)
     ml = move_lists["loops-s-v40"]
     base = features_tests.device_run(ml, noise_mm=0.002, seed=9)
     factors = {1: 1.0, 2: 1.1, 3: 1.3, 4: 1.0}
     evaluated: dict[str, Evaluated] = {}
     for device, mounting in (("P", "M1"), ("P", "M2"), ("W", "M1"), ("W", "M2")):
         for index, factor in factors.items():
-            rid = f"{device}-{mounting}-loops-s-v40-r{index}"
             marks = ("deviceProblem",) if (device, mounting, index) == ("P", "M2", 4) else ()
             trial = replace(scaled(base, factor), marks=marks)
-            evaluated[rid] = evaluate(
-                row("loops-s-v40", index, 0, run_id=rid, clip=rid, device=device, mounting=mounting),
-                trial,
-                ml,
-                None,
-            )
-    fault_id = "P-M1-fault-lift-r1"
-    evaluated[fault_id] = evaluate(
-        row("fault-lift", 1, 0, run_id=fault_id, clip=fault_id), base, move_lists["fault-lift"], None
-    )
+            run = evaluated_run("loops-s-v40", device, mounting, index, trial, move_lists)
+            evaluated[run.row.run_id] = run
+    fault = evaluated_run("fault-lift", "P", "M1", 1, base, move_lists)
+    evaluated[fault.row.run_id] = fault
     group = (Group("loops-s-v40", (bench.program("loops-s-v40"),)),)
     raw = next(a for a in ANALYSES if a.name == "raw_device")
     arrays = run_arrays(evaluated, registry, "bench.path_length_mm", group, raw)
@@ -433,3 +446,92 @@ def test_run_arrays_place_each_run_and_the_median_analysis_shifts_the_means(
         assert np.array_equal(np.isfinite(a), valid)
         assert np.mean(a[valid]) == pytest.approx(np.median(b[valid]))
         assert np.std(a[valid]) == pytest.approx(np.std(b[valid]))
+
+
+def test_a_pooled_group_averages_the_per_program_mounting_means(
+    move_lists: dict[str, MoveList], tmp_path: Path
+) -> None:
+    # Detects a group mean of the by_scale analysis that is the mean of all runs of its programs, so
+    # that a program with more valid runs in a mounting weighs more, and a group that keeps a mounting
+    # in which one of its programs is not estimable.
+    import test_bench_features as features_tests
+    from test_bench_runs import scaled
+
+    from scriptkin.bench import stats
+    from scriptkin.bench.analysis import ANALYSES, Group, run_arrays
+
+    registry = two_mounting_registry(tmp_path)
+    counts = {
+        ("M1", "loops-s-v40"): 4,
+        ("M1", "spiral-s-v40"): 5,
+        ("M2", "loops-s-v40"): 3,
+        ("M2", "spiral-s-v40"): 5,
+    }
+    evaluated: dict[str, Evaluated] = {}
+    for (mounting, pid), count in counts.items():
+        factor = 1.5 if pid.startswith("spiral") else 1.0
+        for index in range(1, count + 1):
+            trial = scaled(features_tests.device_run(move_lists[pid], noise_mm=0.002, seed=index), factor)
+            run = evaluated_run(pid, "W", mounting, index, trial, move_lists)
+            evaluated[run.row.run_id] = run
+    group = (Group("scale 0.7", (bench.program("loops-s-v40"), bench.program("spiral-s-v40"))),)
+    raw = next(a for a in ANALYSES if a.name == "raw_device")
+    arrays = run_arrays(evaluated, registry, "bench.path_length_mm", group, raw)
+    assert arrays.w.shape == (1, 2, 14)
+    assert stats.valid_counts(arrays.w[0]).tolist() == [9, 0]
+    m1 = arrays.w[0, 0]
+    loops_runs = np.log(_lengths(evaluated, "M1", "loops-s-v40"))
+    spiral_runs = np.log(_lengths(evaluated, "M1", "spiral-s-v40"))
+    assert np.nanmean(m1[:7]) == pytest.approx(np.nanmean(m1[7:]), abs=1e-9)
+    unweighted = (loops_runs.mean() + spiral_runs.mean()) / 2
+    assert float(stats.mounting_means(arrays.w[0])[0]) == pytest.approx(unweighted, abs=1e-9)
+    assert np.std(m1[:4]) == pytest.approx(np.std(loops_runs), abs=1e-9)
+    assert not bool(stats.estimable(arrays.w[0]))
+
+
+def _lengths(evaluated: dict[str, Evaluated], mounting: str, program: str) -> list[float]:
+    values = [
+        e.device_value("bench.path_length_mm")
+        for e in evaluated.values()
+        if e.row.mounting == mounting and e.row.program == program
+    ]
+    return [float(v) for v in values if not isinstance(v, Refusal)]
+
+
+def test_a_rerun_is_used_only_after_a_failed_earlier_run(
+    move_lists: dict[str, MoveList], tmp_path: Path
+) -> None:
+    # Detects an analysis that uses a rerun recorded after five runs that it finds valid, or a second
+    # rerun after a first rerun that passed, and a status table that reports such a rerun as valid.
+    import test_bench_features as features_tests
+
+    from scriptkin.bench.analysis import ANALYSES, Group, run_arrays
+    from scriptkin.bench.study import mark_unused_reruns
+
+    registry = two_mounting_registry(tmp_path)
+    ml = move_lists["loops-s-v40"]
+    base = features_tests.device_run(ml, noise_mm=0.002, seed=9)
+    failed = replace(base, marks=("deviceProblem",))
+    plan = {
+        "M1": {1: base, 2: base, 3: base, 4: base, 5: base, 6: base},
+        "M2": {1: base, 2: failed, 3: base, 4: base, 5: base, 6: base, 7: base},
+    }
+    evaluated: dict[str, Evaluated] = {}
+    for mounting, runs in plan.items():
+        for index, trial in runs.items():
+            run = evaluated_run("loops-s-v40", "W", mounting, index, trial, move_lists)
+            evaluated[run.row.run_id] = run
+    marked = mark_unused_reruns(evaluated, ())
+    unused = {rid for rid, run in marked.items() if run.outcome.unused_rerun}
+    assert unused == {"W-M1-loops-s-v40-r6", "W-M2-loops-s-v40-r7"}
+    assert not marked["W-M2-loops-s-v40-r6"].outcome.failed and marked["W-M2-loops-s-v40-r6"].valid
+    assert marked["W-M1-loops-s-v40-r6"].outcome.reason == "unused_rerun"
+    assert not marked["W-M1-loops-s-v40-r6"].valid
+    group = (Group("loops-s-v40", (bench.program("loops-s-v40"),)),)
+    raw = next(a for a in ANALYSES if a.name == "raw_device")
+    arrays = run_arrays(marked, registry, "bench.path_length_mm", group, raw)
+    assert np.isfinite(arrays.w[0, 0]).tolist() == [True] * 5 + [False, False]
+    assert np.isfinite(arrays.w[0, 1]).tolist() == [True, False, True, True, True, True, False]
+    void = replace(evaluated["W-M1-loops-s-v40-r1"].row, status=RunStatus.VOID, deviation_row="3")
+    after_void = mark_unused_reruns({k: v for k, v in evaluated.items() if k != void.run_id}, (void,))
+    assert not after_void["W-M1-loops-s-v40-r6"].outcome.unused_rerun

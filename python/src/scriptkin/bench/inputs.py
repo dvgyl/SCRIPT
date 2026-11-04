@@ -77,6 +77,8 @@ RUN_COLUMNS = (
     "deviation_row",
 )
 ROLES: tuple[BenchRole, ...] = ("P", "W")
+PLANNED_RUNS = 5
+"""The run indices 1 to 5 are the planned runs; 6 and 7 are the reruns of section 6.4."""
 
 
 class InputError(FormatError):
@@ -112,7 +114,7 @@ class RunRow:
 
     @property
     def rerun(self) -> bool:
-        return self.run_index > 5
+        return self.run_index > PLANNED_RUNS
 
     @property
     def fault(self) -> bool:
