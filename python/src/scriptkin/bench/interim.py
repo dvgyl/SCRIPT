@@ -15,7 +15,10 @@ Pilot. For every recorded run the pilot reports the motion duration against the 
 interval on the device and on the camera (within 1 percent), the band power of a line program against
 the band power of its move list (0.5 to 2 times), and the detection of a fault run. Per device it
 reports the two noise floors of section 8.1. Per line program it reports the 10-times rule: the
-commanded band power against 10 times the larger noise floor of the two devices.
+commanded band power against 10 times the larger noise floor of the two devices. The pilot decides the
+constants of section 6.5, so it does not read them: it checks every line program of the main set, and
+it reports a `fault-dwell` run under both expectations of section 5.3, as `fault_gaps` (a `gaps`
+finding with two contact segments) and as `fault_no_gaps` (no `gaps` finding).
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from scriptkin import bench
 from scriptkin.bench import stats
 from scriptkin.bench.analysis import (
     ANALYSES,
@@ -51,6 +55,8 @@ DURATION_TOLERANCE = 0.01
 BAND_POWER_RANGE = (0.5, 2.0)
 NOISE_FLOOR_FACTOR = 10.0
 RAW_DEVICE = next(a for a in ANALYSES if a.name == "raw_device")
+FAULT_GAPS = "fault_gaps"
+FAULT_NO_GAPS = "fault_no_gaps"
 
 INTERIM_COLUMNS = (
     "device",
@@ -213,30 +219,36 @@ def pilot(study: EvaluatedStudy) -> list[Row]:
     rows: list[Row] = []
     commanded = {pid: commanded_motion(ml) for pid, ml in study.study.move_lists.items()}
     command_power = {
-        pid: feature_cells(commanded[pid])["bench.band_power_mm2_s2"]
-        for pid in study.study.registry.constants.band_power_programs
+        d.id: feature_cells(commanded[d.id])["bench.band_power_mm2_s2"]
+        for d in study.study.main_programs
+        if d.geometry == "line"
     }
-    gaps_on_p = study.study.registry.constants.fault_dwell_gaps_on_p
     for run in sorted(study.runs.values(), key=lambda r: r.row.run_id):
         pid = run.row.program
         if run.row.fault:
             clean = clean_medians(study.runs, run.row.block)
-            found, reason = (
-                (False, "no valid loops-l-v20 run in the block")
-                if clean is None
-                else fault_detected(run, clean, gaps_on_p=gaps_on_p)
+            expectations = (
+                ((FAULT_GAPS, True), (FAULT_NO_GAPS, False))
+                if bench.program(pid).fault == "dwell"
+                else (("fault", False),)
             )
-            rows.append(
-                {
-                    "device": run.row.device,
-                    "program": pid,
-                    "run_id": run.row.run_id,
-                    "kind": "fault",
-                    "source": "device",
-                    "pass": found,
-                    "reason": reason,
-                }
-            )
+            for kind, gaps_on_p in expectations:
+                found, reason = (
+                    (False, "no valid loops-l-v20 run in the block")
+                    if clean is None
+                    else fault_detected(run, clean, gaps_on_p=gaps_on_p)
+                )
+                rows.append(
+                    {
+                        "device": run.row.device,
+                        "program": pid,
+                        "run_id": run.row.run_id,
+                        "kind": kind,
+                        "source": "device",
+                        "pass": found,
+                        "reason": reason,
+                    }
+                )
             continue
         rows.extend(_duration_rows(run, commanded[pid]))
         if pid in command_power:

@@ -1,17 +1,20 @@
 """A synthetic bench study on disk, for the end-to-end tests of the `scriptkin bench` analysis commands.
 
 `write_study` writes a repository root with the bench folder of protocol section 15 and a study store.
-The default study is the one below. A pilot study (section 6.5) takes 2 mountings and 2 runs per program.
-The study has both devices, three mountings each in the block order of section 6.3, five main programs
-with 5 runs each, one run of each fault program per block, the reruns that the planned failures need,
-and one track for every main run. A lock file and a qualification session for one mounting complete it.
+The default study is the complete design of section 6.3: both devices, six mountings each in the block
+order W P P W P W W P W P P W, four main programs with 4 runs each, one fault run per block with the
+fault programs in turn over the mountings of a device, the reruns that the planned failures need, the
+two runs of `EXTRA_RUNS`, and one track for every main run. A lock file and a qualification session
+for one mounting complete it. A pilot study (section 6.5) takes 2 mountings and 2 runs per program. An
+interim study takes 3 mountings with the rows of the later blocks planned.
 
 The truth. The motion system executes every run at a speed factor of 1, two runs excepted, which the
 camera sees.
 Device P reports every position scaled by `scale_p`, so its path length, mean speed, and loop height
 differ from the camera by ln(scale_p), and its band power by 2 ln(scale_p). Device W reports the
 executed movement. Both devices add position noise of 0.005 mm. `DEFECTS` names the runs that fail and
-why, and the reruns that follow them.
+why, the reruns that follow them, and one run whose device record is turned by 2 degrees against the
+camera, which section 8.2 reports as a deviation.
 """
 
 from __future__ import annotations
@@ -31,6 +34,7 @@ import test_bench_inputs as inputs_tests
 from scriptkin import battery, bench
 from scriptkin.bench.inputs import RUN_COLUMNS, Build
 from scriptkin.bench.moves import MoveList, commanded_trial
+from scriptkin.bench.study import BLOCK_ORDER
 from scriptkin.bench.track import write_track
 from scriptkin.contract import (
     PRO_PEN_3_CHANNELS,
@@ -41,47 +45,56 @@ from scriptkin.contract import (
 )
 from scriptkin.recording import BenchRole
 
-PROGRAMS = ("loops-l-v20", "loops-l-v40", "loops-s-v40", "spiral-s-v40", "line-osc8")
+# Three distinct covariate points of section 11.5, so that the covariate model fits.
+PROGRAMS = ("loops-l-v20", "loops-l-v40", "spiral-s-v40", "line-osc8")
 LINE_PROGRAMS = tuple(p for p in PROGRAMS if p.startswith("line"))
-BLOCKS: tuple[tuple[BenchRole, str], ...] = (
-    ("W", "M1"),
-    ("P", "M1"),
-    ("P", "M2"),
-    ("W", "M2"),
-    ("P", "M3"),
-    ("W", "M3"),
+# The 12 blocks of section 6.3. The mounting index of a device counts its blocks in order.
+BLOCKS: tuple[tuple[BenchRole, str], ...] = tuple(
+    (device, f"M{1 + BLOCK_ORDER[:k].count(device)}")
+    for k, device in enumerate(BLOCK_ORDER)
+    if device in ("P", "W")
 )
+# Each mounting shifts the device by 10 mm in x from the previous one (section 6.1).
 ORIGINS_MM = {
-    ("P", "M1"): (30.0, 120.0),
-    ("P", "M2"): (41.0, 131.0),
-    ("P", "M3"): (52.0, 118.0),
-    ("W", "M1"): (20.0, 100.0),
-    ("W", "M2"): (31.0, 111.0),
-    ("W", "M3"): (42.0, 98.0),
+    (device, mounting): (
+        20.0 + 10.0 * int(mounting[1]) + (10.0 if device == "P" else 0.0),
+        100.0 + 7.0 * (int(mounting[1]) % 2),
+    )
+    for device, mounting in BLOCKS
 }
 # Both devices sample at 120 Hz, half the real rate, so that the test stays short.
 RATE_HZ = 120.0
-RUNS_PER_PROGRAM = 5
+RUNS_PER_PROGRAM = 4
 BUILD = Build("1", "fixture")
 COMMIT = "fedcba9876543210fedcba9876543210fedcba98"
+# The digest that the test tracks name as their calibration (`camera_track`).
+CALIBRATION_SHA256 = "c" * 64
 QUALIFICATION_SESSION = "3F2A9C1E-0000-4000-8000-0000000000Q1"
-Defect = Literal["disturbance", "deviceProblem", "backgrounded", "bump", "invalid_camera"]
+Defect = Literal["disturbance", "deviceProblem", "backgrounded", "bump", "invalid_camera", "rotated"]
 DEFECTS: dict[str, Defect] = {
-    "P-M1-loops-s-v40-r2": "disturbance",
+    "P-M1-loops-l-v40-r2": "disturbance",
     "W-M2-spiral-s-v40-r3": "backgrounded",
     "W-M2-spiral-s-v40-r6": "deviceProblem",
     "P-M2-line-osc8-r1": "bump",
-    "W-M1-loops-l-v20-r4": "invalid_camera",
-    "W-M3-loops-s-v40-r5": "deviceProblem",
+    "W-M1-loops-l-v20-r5": "invalid_camera",
+    "W-M3-loops-l-v40-r4": "deviceProblem",
+    "P-M4-spiral-s-v40-r2": "rotated",
 }
 FAILING: tuple[Defect, ...] = ("disturbance", "deviceProblem", "backgrounded", "bump")
 MARKS: dict[str, str] = {"disturbance": "disturbance", "deviceProblem": "deviceProblem"}
+# A rerun that no failed run needs, which the analysis must not use (section 6.4).
+UNUSED_RERUNS: dict[str, tuple[str, int]] = {"P-M3-loops-l-v20-r6": ("loops-l-v20", 6)}
+# The runs beyond the 4 per program of this study: the unused rerun, and a fifth planned run that
+# carries the invalid camera record, so that its mounting keeps 4 valid camera runs as the 5 runs of
+# the protocol would (section 6.4).
+EXTRA_RUNS: dict[str, tuple[str, int]] = {**UNUSED_RERUNS, "W-M1-loops-l-v20-r5": ("loops-l-v20", 5)}
+ROTATION_DEVIATION_DEG = 2.0
 NOISE_MM = 0.005
 JITTER_S = 0.0003
 # The executed speed factor of every run is 1, except these, within the 1 percent of section 7.6. A
 # factor off 1 moves the time-paired start of the path fit along the path, and the fit then needs many
 # iterations, so the test keeps them few.
-SPEED_FACTORS = {"W-M1-loops-s-v40-r1": 1.004, "P-M3-spiral-s-v40-r2": 0.996}
+SPEED_FACTORS = {"W-M1-loops-l-v40-r1": 1.004, "P-M3-spiral-s-v40-r2": 0.996}
 DWELL_BEFORE_S = 0.5
 DWELL_AFTER_S = 0.3
 
@@ -114,9 +127,10 @@ def run_id(device: BenchRole, mounting: str, program: str, run_index: int) -> st
 def block_runs(
     device: BenchRole, mounting: str, rng: np.random.Generator, runs_per_program: int = RUNS_PER_PROGRAM
 ) -> list[tuple[str, int]]:
-    """The runs of a block in a shuffled order, with the reruns of its failed runs at the end (6.4)."""
+    """The runs of a block in a shuffled order, with the reruns of its failed runs at the end (6.4).
+    The block holds one fault run; the fault programs take turns over the mountings of the device."""
     runs = [(p, k) for p in PROGRAMS for k in range(1, runs_per_program + 1)]
-    runs += [(f.id, 1) for f in bench.FAULTS]
+    runs.append((bench.FAULTS[(int(mounting[1]) - 1) % len(bench.FAULTS)].id, 1))
     ordered = [runs[i] for i in rng.permutation(len(runs))]
     for program, index in list(ordered):
         if DEFECTS.get(run_id(device, mounting, program, index)) not in FAILING:
@@ -126,6 +140,9 @@ def block_runs(
         while DEFECTS.get(run_id(device, mounting, program, rerun)) in FAILING and rerun < 7:
             rerun += 1
             ordered.append((program, rerun))
+    for rid, (program, index) in EXTRA_RUNS.items():
+        if rid.startswith(f"{device}-{mounting}-"):
+            ordered.append((program, index))
     return ordered
 
 
@@ -221,6 +238,8 @@ def _write_run(
     start = t0 + 1.0 + DWELL_BEFORE_S
     last = start
     for t_s, xy in executed_strokes(move_list, speed_factor, rng):
+        if defect == "rotated":
+            xy = camera_tests.rotated(xy, ROTATION_DEVIATION_DEG)
         points = _to_journal(b, xy * scale)
         contact = b.contact(start + float(t_s[0]))
         for i in range(len(t_s)):
@@ -250,7 +269,7 @@ def _write_track(
         move_list,
         speed_factor=speed_factor,
         noise_mm=NOISE_MM,
-        rotation_deg=0.1 * k,
+        rotation_deg=0.05 * k,
         shift_mm=(0.5 * k, -0.3 * k),
         bump=(3.0, 0.3) if defect == "bump" else None,
         missing_share=0.03 if defect == "invalid_camera" else 0.0,
@@ -298,6 +317,7 @@ def write_registry(root: Path, blocks: tuple[tuple[BenchRole, str], ...]) -> Non
             "mounting": mounting,
             "block": block_number(device, mounting),
             "originMM": {"x": ORIGINS_MM[(device, mounting)][0], "y": ORIGINS_MM[(device, mounting)][1]},
+            "calibrationSHA256": CALIBRATION_SHA256,
             "level_deg": 0.1,
             **({"qualificationSession": QUALIFICATION_SESSION} if (device, mounting) == ("P", "M1") else {}),
         }
@@ -331,10 +351,13 @@ def write_study(
     *,
     scale_p: float = 1.06,
     seed: int = 7,
-    mountings: int = 3,
+    mountings: int = 6,
     runs_per_program: int = RUNS_PER_PROGRAM,
+    planned_after: bool = False,
 ) -> list[dict[str, object]]:
-    """Write the study under the root and return the rows of `bench/runs.csv`."""
+    """Write the study under the root and return the rows of `bench/runs.csv`. With `planned_after`,
+    the main runs of the blocks after the given mountings are planned rows, as `bench/runs.csv` holds
+    them before those blocks run (section 15)."""
     rng = np.random.default_rng(seed)
     truth = Truth(scale_p)
     inputs_tests.lock_root(root)
@@ -376,6 +399,27 @@ def write_study(
             t0 += move_list.duration_s + 5.0
         b.close(t0)
         _export(store / "sessions" / b.session_id, b)
+    if planned_after:
+        for device, mounting in BLOCKS[2 * mountings :]:
+            for position, (program, index) in enumerate(
+                ((p, k) for p in PROGRAMS for k in range(1, runs_per_program + 1)), start=1
+            ):
+                rows.append(
+                    {
+                        "run_id": run_id(device, mounting, program, index),
+                        "device": device,
+                        "mounting": mounting,
+                        "block": block_number(device, mounting),
+                        "position": position,
+                        "program": program,
+                        "run_index": index,
+                        "session_id": "",
+                        "trial_index": "",
+                        "clip": "",
+                        "status": "planned",
+                        "deviation_row": "",
+                    }
+                )
     _write_qualification(store, rng)
     write_runs_csv(root / "bench" / "runs.csv", rows)
     return rows

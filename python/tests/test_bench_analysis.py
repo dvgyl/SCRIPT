@@ -14,7 +14,20 @@ from pathlib import Path
 import numpy as np
 import pytest
 import test_bench_moves as moves_tests
-from bench_study import BUILD, COMMIT, DEFECTS, LINE_PROGRAMS, PROGRAMS, RATE_HZ, Truth, write_study
+from bench_study import (
+    BLOCKS,
+    BUILD,
+    COMMIT,
+    DEFECTS,
+    LINE_PROGRAMS,
+    ORIGINS_MM,
+    PROGRAMS,
+    RATE_HZ,
+    UNUSED_RERUNS,
+    Truth,
+    write_study,
+)
+from test_bench_inputs import CODE_FILE
 
 from scriptkin import bench
 from scriptkin.bench.analysis import LIMITS
@@ -112,10 +125,18 @@ def test_every_output_of_section_15_exists_with_its_columns_and_no_nan_text(stud
     deliverables = json.loads((results(study) / "deliverables.json").read_text(encoding="utf-8"))
     assert set(deliverables["features"]) == set(FEATURE_SET)
     assert deliverables["lock"]["commit"] == COMMIT
+    assert deliverables["postHoc"] is None
     path_length = deliverables["features"]["bench.path_length_mm"]
     assert set(path_length["programs"]) == set(PROGRAMS)
     assert path_length["correction"]["model"] == "covariates"
     assert path_length["range"]["speedsMMPerS"] == [20.0, 40.0]
+    assert path_length["values"] == {"bias": "camera_referenced", "correction": "raw_device"}
+    band_power = deliverables["features"]["bench.band_power_mm2_s2"]
+    assert band_power["values"] == {"bias": "raw_device", "correction": "raw_device"}
+    beta = band_power["correction"]["coefficients"]["beta"]
+    assert beta == {"estimate": 1.0, "se": None, "fitted": False}
+    assert path_length["correction"]["coefficients"]["beta"]["fitted"] is True
+    assert all(r["post_hoc"] == "false" for r in read_csv(results(study) / "run_status.csv"))
 
 
 def test_the_analysis_recovers_the_bias_and_decides_as_the_truth_implies(study: Path) -> None:
@@ -165,7 +186,8 @@ def test_the_analysis_recovers_the_bias_and_decides_as_the_truth_implies(study: 
 
 def test_each_run_has_the_status_of_section_6_4(study: Path) -> None:
     # Detects a marked, rejected, or bumped run that stays valid, an invalid camera record that fails
-    # its run, a fault run counted as valid, or a passing rerun that is not used.
+    # its run, a fault run counted as valid, a passing rerun that is not used, a rerun used without a
+    # failed earlier run, or a device record turned by 2 degrees that is not flagged (section 8.2).
     status = {r["run_id"]: r for r in read_csv(results(study) / "run_status.csv")}
     assert len(status) == len(read_csv(study / "bench" / "runs.csv"))
     for rid, defect in DEFECTS.items():
@@ -174,6 +196,9 @@ def test_each_run_has_the_status_of_section_6_4(study: Path) -> None:
             assert row["valid"] == "true" and row["camera"] == "invalid"
             assert row["camera_rules"] == "marker_missing" and row["motion_failure"] == ""
             continue
+        if defect == "rotated":
+            assert row["valid"] == "true" and row["rotation_deviation"] == "true"
+            continue
         assert row["failed"] == "true" and row["valid"] == "false", rid
         if defect in ("disturbance", "deviceProblem"):
             assert row["marks"] == defect and row["accepted"] == "true"
@@ -181,22 +206,31 @@ def test_each_run_has_the_status_of_section_6_4(study: Path) -> None:
             assert row["rejection"] == "incomplete_trial" and row["accepted"] == "false"
         else:
             assert row["motion_failure"] == "true" and row["reason"] == "motion_failure"
-    assert status["P-M1-loops-s-v40-r6"]["valid"] == "true"
+    assert status["P-M1-loops-l-v40-r6"]["valid"] == "true"
     assert status["W-M2-spiral-s-v40-r7"]["valid"] == "true"
     assert status["W-M2-spiral-s-v40-r6"]["valid"] == "false"
+    for rid in UNUSED_RERUNS:
+        unused = status[rid]
+        assert unused["valid"] == "false" and unused["failed"] == "false"
+        assert unused["reason"] == "unused_rerun"
     faults = [r for r in status.values() if r["kind"] == "fault"]
-    assert len(faults) == 6 * len(bench.FAULTS)
+    assert len(faults) == len(BLOCKS)
     assert all(r["valid"] == "false" and r["failed"] == "false" and r["camera"] == "absent" for r in faults)
-    clean = [r for r in status.values() if r["kind"] == "main" and r["run_id"] not in DEFECTS]
+    clean = [
+        r
+        for r in status.values()
+        if r["kind"] == "main" and r["run_id"] not in DEFECTS and r["run_id"] not in UNUSED_RERUNS
+    ]
     assert all(r["valid"] == "true" and r["camera"] == "valid" for r in clean)
     assert all(float(r["correlation"]) > 0.99 and r["lag_s"] != "" for r in clean)
+    assert all(r["rotation_deviation"] == "false" for r in clean)
     gate = read_csv(results(study) / "gate.csv")
     detected = {(r["device"], r["program"]): r for r in gate if r["kind"] == "detected"}
     for fault in bench.FAULTS:
         for device in ("P", "W"):
             row = detected[(device, fault.id)]
-            assert (row["successes"], row["total"]) == ("3", "3"), (device, fault.id, row)
-            assert float(row["lower"]) == pytest.approx(0.2924, abs=0.001)
+            assert (row["successes"], row["total"]) == ("2", "2"), (device, fault.id, row)
+            assert float(row["lower"]) == pytest.approx(0.1581, abs=0.001)
     accepted = {r["device"]: r for r in gate if r["kind"] == "accepted"}
     assert accepted["W"]["successes"] == str(int(accepted["W"]["total"]) - 1)
     assert accepted["P"]["successes"] == accepted["P"]["total"]
@@ -231,8 +265,12 @@ def test_the_sampling_and_accuracy_tables_describe_the_simulated_devices(study: 
     assert len(rms) == 2 * len(PROGRAMS)
     assert all(float(r["median"]) < 0.05 for r in rms if r["device"] == "W")
     assert all(1.0 < float(r["median"]) < 3.0 for r in rms if r["device"] == "P")
-    rotation = [r for r in accuracy if r["measure"] == "camera_rotation_deg" and r["device"] == "P"]
-    assert all(0.1 < float(r["median"]) < 0.6 for r in rotation)
+    rotation = [r for r in accuracy if r["measure"] == "camera_rotation_deg"]
+    assert all(0.05 < float(r["median"]) < 0.6 for r in rotation if r["device"] == "P")
+    deviations = {(r["device"], r["program"]): r["deviations"] for r in rotation}
+    assert deviations[("P", "spiral-s-v40")] == "1"
+    assert all(v == "0" for k, v in deviations.items() if k != ("P", "spiral-s-v40"))
+    assert all(r["deviations"] == "" for r in accuracy if r["measure"] != "camera_rotation_deg")
     duration = [r for r in accuracy if r["measure"] == "executed_duration_error"]
     assert all(abs(float(r["median"])) < 0.01 for r in duration)
     assert float((study / "analyse_seconds.txt").read_text()) < 90
@@ -276,13 +314,93 @@ def test_the_analysis_refuses_an_incomplete_study_a_changed_file_and_a_foreign_b
     assert not (root / "bench" / "results" / "agreement.csv").exists()
 
 
+def test_the_qualification_session_and_the_track_calibration_are_checked(
+    study: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Detects a hold noise floor read from a qualification session whose build the lock does not list
+    # (sections 2.4 and 8.1), and a track made with the calibration of another mounting (section 7.2)
+    # that the analysis accepts.
+    from bench_study import QUALIFICATION_SESSION
+
+    from scriptkin.bench.inputs import Build, InputError
+    from scriptkin.bench.study import hold_noise, read_study
+
+    locked = read_study(study)
+    assert locked.lock is not None
+    assert set(hold_noise(locked)) == {("P", "M1")}
+    builds = {**locked.lock.builds, "P": Build("2", "other")}
+    foreign = replace(locked, lock=replace(locked.lock, builds=builds))
+    with pytest.raises(InputError, match=f"Session {QUALIFICATION_SESSION}.*which the lock does not list"):
+        hold_noise(foreign)
+    root = tmp_path / "copy"
+    shutil.copytree(study, root, ignore=shutil.ignore_patterns("analyse_seconds.txt"))
+    facts = root / "store" / "camera" / "W-M1" / "W-M1-loops-l-v20-r1.track.json"
+    facts.write_text(facts.read_text(encoding="utf-8").replace("c" * 64, "d" * 64), encoding="utf-8")
+    assert main(["bench", "analyse", str(root)]) == 2
+    err = capsys.readouterr().err
+    assert "W-M1-loops-l-v20-r1" in err and "calibration" in err and "mounting M1 of device W" in err
+
+
+@pytest.mark.slow
+def test_the_analysis_refuses_an_unlisted_file_and_runs_changed_code_post_hoc_only(
+    study: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Detects a lock check that passes a move list file added after the lock, a lock file that lost an
+    # entry, or analysis code that changed after the lock (section 14), and a post hoc analysis whose
+    # outputs do not say so or that does not name the changed files (section 13).
+    root = tmp_path / "copy"
+    shutil.copytree(study, root, ignore=shutil.ignore_patterns("analyse_seconds.txt"))
+    out_dir = root / "bench" / "results"
+    for output in out_dir.iterdir():
+        if output.name != "bench_precision.json":
+            output.unlink()
+    programs = root / "bench" / "programs"
+    added = programs / "loops-l-v20~edited.json"
+    added.write_bytes((programs / "loops-l-v20.json").read_bytes())
+    assert main(["bench", "analyse", str(root)]) == 2
+    assert "does not hold these files: bench/programs/loops-l-v20~edited.json" in capsys.readouterr().err
+    added.unlink()
+    lock_path = root / "bench" / "BENCH_LOCK.json"
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    del lock["files"]["bench/registry.json"]
+    lock_path.write_text(json.dumps(lock, indent=1) + "\n", encoding="utf-8")
+    assert main(["bench", "analyse", str(root)]) == 2
+    assert "does not hold these files: bench/registry.json" in capsys.readouterr().err
+    assert main(lock_args(root)) == 0
+    code = root / CODE_FILE
+    code.write_text(code.read_text(encoding="utf-8") + "changed\n", encoding="utf-8")
+    assert main(["bench", "analyse", str(root)]) == 2
+    assert CODE_FILE in capsys.readouterr().err
+    assert not (out_dir / "agreement.csv").exists()
+    assert main(["bench", "analyse", str(root), "--post-hoc"]) == 0
+    out = capsys.readouterr().out
+    assert "post hoc" in out and CODE_FILE in out
+    for name in (
+        "run_status.csv",
+        "bench_features.csv",
+        "agreement.csv",
+        "bland_altman.csv",
+        "correction.csv",
+        "sampling.csv",
+        "accuracy.csv",
+        "gate.csv",
+    ):
+        rows = read_csv(out_dir / name)
+        assert rows and all(r["post_hoc"] == "true" for r in rows), name
+    deliverables = json.loads((out_dir / "deliverables.json").read_text(encoding="utf-8"))
+    assert deliverables["postHoc"] == {"changedFiles": [CODE_FILE]}
+    table = read_feature_table(out_dir / "features.csv")
+    assert table.rows and all(r.site == "bench-post-hoc" for r in table.rows)
+
+
 @pytest.fixture(scope="module")
 def interim_study(
     tmp_path_factory: pytest.TempPathFactory, programs_folder: Path, move_lists: dict[str, MoveList]
 ) -> Path:
-    """A locked study with the six blocks of section 6.6 and 2 runs per program, for the interim check."""
+    """A locked study after block 6 (section 6.6): 3 mountings per device with 2 runs per program, and
+    the main runs of blocks 7 to 12 planned in `bench/runs.csv`."""
     root = tmp_path_factory.mktemp("interim")
-    write_study(root, programs_folder, move_lists, runs_per_program=2)
+    write_study(root, programs_folder, move_lists, mountings=3, runs_per_program=2, planned_after=True)
     assert main(lock_args(root)) == 0
     return root
 
@@ -291,8 +409,11 @@ def test_the_interim_holds_no_device_difference(
     interim_study: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # Detects an interim output that names both devices in one row, prints a device mean or a bias,
-    # or flags the mounting variance of a study without a mounting effect.
+    # or flags the mounting variance of a study without a mounting effect, and an interim that refuses
+    # the planned rows of the later blocks.
     study = interim_study
+    rows = read_csv(study / "bench" / "runs.csv")
+    assert {r["status"] for r in rows if int(r["block"]) > 6} == {"planned"}
     assert main(["bench", "interim", str(study)]) == 0
     out = capsys.readouterr().out
     assert "bias" not in out and "difference" not in out
@@ -313,13 +434,87 @@ def test_the_interim_holds_no_device_difference(
         assert not any(c in ("P", "W") for c in cells[1:])
 
 
+def test_the_analysis_refuses_a_registry_without_the_complete_design(
+    interim_study: Path, pilot_study: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Detects an analysis that compares the devices before the last block (section 13): after block 6
+    # with the later rows planned, and on a locked study of 4 recorded blocks without a planned row.
+    assert main(["bench", "analyse", str(interim_study)]) == 1
+    err = capsys.readouterr().err
+    assert "design of section 6.3" in err and "blocks [1, 2, 3, 4, 5, 6]" in err
+    assert not (results(interim_study) / "agreement.csv").exists()
+    root = tmp_path / "four_blocks"
+    shutil.copytree(pilot_study, root)
+    assert main(lock_args(root)) == 0
+    assert main(["bench", "analyse", str(root)]) == 1
+    assert "design of section 6.3" in capsys.readouterr().err
+    assert not (results(root) / "agreement.csv").exists()
+
+
+def test_the_design_check_knows_the_block_order_of_section_6_3(tmp_path: Path) -> None:
+    # Detects a design check that passes 12 blocks in another device order, a mounting code out of its
+    # block order, or 16 blocks whose last four are not P W W P, or that fails the two complete designs.
+    import test_bench_inputs as inputs_tests
+
+    from scriptkin.bench.study import BLOCK_ORDER, EXTRA_BLOCK_ORDER, design_problems
+
+    def registry(order: str, swap: tuple[int, int] | None = None) -> Registry:
+        mountings: list[dict[str, object]] = []
+        counts = {"P": 0, "W": 0}
+        for block, device in enumerate(order, start=1):
+            counts[device] += 1
+            mountings.append(
+                {
+                    "device": device,
+                    "mounting": f"M{counts[device]}",
+                    "block": block,
+                    "originMM": {"x": 0, "y": 0},
+                    "calibrationSHA256": "c" * 64,
+                }
+            )
+        if swap is not None:
+            a, b = swap
+            mountings[a]["mounting"], mountings[b]["mounting"] = (
+                mountings[b]["mounting"],
+                mountings[a]["mounting"],
+            )
+        return read_registry(inputs_tests.registry_json(tmp_path / "r.json", mountings=mountings), tmp_path)
+
+    assert design_problems(registry(BLOCK_ORDER)) == []
+    assert design_problems(registry(BLOCK_ORDER + EXTRA_BLOCK_ORDER)) == []
+    assert design_problems(registry(BLOCK_ORDER[:6])) == [
+        "The registry lists blocks [1, 2, 3, 4, 5, 6]; the design of section 6.3 needs blocks 1 to 12,"
+        " or 1 to 16 after the interim check added mountings."
+    ]
+    wrong_device = design_problems(registry("PWPWPWWPWPPW"))
+    assert wrong_device[:2] == [
+        "Block 1 is device P; section 6.3 puts device W there.",
+        "Block 2 is device W; section 6.3 puts device P there.",
+    ]
+    assert (
+        design_problems(registry(BLOCK_ORDER + "WPPW"))[0]
+        == "Block 13 is device W; section 6.3 puts device P there."
+    )
+    swapped = design_problems(registry(BLOCK_ORDER, swap=(1, 2)))
+    assert swapped == [
+        "Block 2 is mounting M2 of device P; its block order makes it M1.",
+        "Block 3 is mounting M1 of device P; its block order makes it M2.",
+    ]
+
+
 @pytest.fixture(scope="module")
 def pilot_study(
     tmp_path_factory: pytest.TempPathFactory, programs_folder: Path, move_lists: dict[str, MoveList]
 ) -> Path:
-    """A pilot study of section 6.5: 2 mountings per device, 2 runs per main program, and no lock."""
+    """A pilot study of section 6.5: 2 mountings per device, 2 runs per main program, no lock, and the
+    constants of the registry not yet decided: no band-power program and the dwell expectation unset."""
     root = tmp_path_factory.mktemp("pilot")
     write_study(root, programs_folder, move_lists, mountings=2, runs_per_program=2)
+    registry = root / "bench" / "registry.json"
+    document = json.loads(registry.read_text(encoding="utf-8"))
+    document["constants"]["bandPowerPrograms"] = []
+    document["constants"]["faultDwellGapsOnP"] = True
+    registry.write_text(json.dumps(document, indent=1) + "\n", encoding="utf-8")
     return root
 
 
@@ -327,7 +522,8 @@ def test_the_pilot_compares_each_device_with_its_own_command_only(
     pilot_study: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # Detects a pilot that needs a lock file, names both devices in one row, prints a bias, fails a
-    # clean run against its command, or misses the band power, the noise floor, or the 10-times rule.
+    # clean run against its command, misses the band power, the noise floor, or the 10-times rule, or
+    # reads the constants that it must decide: the band-power programs and the dwell expectation.
     study = pilot_study
     assert not (study / "bench" / "BENCH_LOCK.json").exists()
     assert main(["bench", "pilot", str(study)]) == 0
@@ -347,7 +543,13 @@ def test_the_pilot_compares_each_device_with_its_own_command_only(
     ten = [r for r in pilot if r["kind"] == "ten_times"]
     assert [r["program"] for r in ten] == list(LINE_PROGRAMS) and all(r["pass"] == "true" for r in ten)
     faults = [r for r in pilot if r["kind"] == "fault"]
-    assert len(faults) == 4 * len(bench.FAULTS) and all(r["pass"] == "true" for r in faults)
+    assert {r["program"] for r in faults} == {"fault-lift"} and all(r["pass"] == "true" for r in faults)
+    dwell = {(r["run_id"], r["kind"]): r["pass"] for r in pilot if r["program"] == "fault-dwell"}
+    assert {k[1] for k in dwell} == {"fault_gaps", "fault_no_gaps"}
+    assert all(v == "true" for k, v in dwell.items() if k[1] == "fault_no_gaps")
+    assert all(
+        v == ("false" if k[0].startswith("P") else "true") for k, v in dwell.items() if k[1] == "fault_gaps"
+    )
     floors = [r for r in pilot if r["kind"].startswith("noise_floor")]
     assert {(r["device"], r["kind"]) for r in floors if r["value"]} == {
         ("P", "noise_floor_spiral"),
@@ -361,12 +563,13 @@ def test_the_start_point_and_the_lock_commands_read_the_files(
 ) -> None:
     # Detects a start point that ignores the mounting origin, keeps y down, or names a run outside the
     # registry, and a lock file that misses a program file.
-    assert main(["bench", "start-point", str(study), "W-M2-loops-s-v40-r1"]) == 0
+    assert main(["bench", "start-point", str(study), "W-M2-loops-l-v40-r1"]) == 0
     x, y = (float(v) for v in capsys.readouterr().out.split())
-    sx, sy = move_lists["loops-s-v40"].start_mm
-    assert (x, y) == pytest.approx((31.0 + sx, 111.0 - sy), abs=1e-4)
-    assert main(["bench", "start-point", str(study), "W-M4-loops-s-v40-r1"]) == 2
-    assert "no mounting M4" in capsys.readouterr().err
+    sx, sy = move_lists["loops-l-v40"].start_mm
+    ox, oy = ORIGINS_MM[("W", "M2")]
+    assert (x, y) == pytest.approx((ox + sx, oy - sy), abs=1e-4)
+    assert main(["bench", "start-point", str(study), "W-M7-loops-l-v40-r1"]) == 2
+    assert "no mounting M7" in capsys.readouterr().err
     assert main(["bench", "start-point", str(study), "nonsense"]) == 2
     lock = json.loads((study / "bench" / "BENCH_LOCK.json").read_text(encoding="utf-8"))
     assert "bench/programs/fault-dwell.json" in lock["files"] and lock["builds"]["W"]["build"] == BUILD.build
@@ -376,14 +579,19 @@ def test_the_start_point_and_the_lock_commands_read_the_files(
 def two_mounting_registry(tmp_path: Path) -> Registry:
     import test_bench_inputs as inputs_tests
 
+    blocks = (("W", "M1"), ("P", "M1"), ("P", "M2"), ("W", "M2"))
     return read_registry(
         inputs_tests.registry_json(
             tmp_path / "registry.json",
             mountings=[
-                {"device": "W", "mounting": "M1", "block": 1, "originMM": {"x": 0, "y": 0}},
-                {"device": "P", "mounting": "M1", "block": 2, "originMM": {"x": 0, "y": 0}},
-                {"device": "P", "mounting": "M2", "block": 3, "originMM": {"x": 0, "y": 0}},
-                {"device": "W", "mounting": "M2", "block": 4, "originMM": {"x": 0, "y": 0}},
+                {
+                    "device": device,
+                    "mounting": mounting,
+                    "block": block,
+                    "originMM": {"x": 0, "y": 0},
+                    "calibrationSHA256": "c" * 64,
+                }
+                for block, (device, mounting) in enumerate(blocks, start=1)
             ],
         ),
         tmp_path,

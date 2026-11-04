@@ -12,6 +12,11 @@ table and go into `bench_features.csv` with the run id. `run_status.csv` gives t
 of every run. The statistics go into `agreement.csv`, `bland_altman.csv`, and `correction.csv`, one row
 set per analysis with the `analysis` column naming it, and `deliverables.json` holds section 12 for the
 main analysis. `sampling.csv`, `accuracy.csv`, and `gate.csv` hold sections 8.1, 8.2, and 11.7.
+
+Post hoc. An analysis with code that changed after the lock is a deviation (section 13). Every table of
+the analysis then has `true` in its first column, `post_hoc`, `deliverables.json` names the changed
+files under `postHoc`, and the `site` of `features.csv` is `bench-post-hoc`, because the library format
+of that table has no free column.
 """
 
 from __future__ import annotations
@@ -41,6 +46,9 @@ Row = dict[str, Any]
 DEVICES: tuple[BenchRole, ...] = ("P", "W")
 SPIRAL_NOISE_FLOOR = "noise_floor_spiral"
 HOLD_NOISE_FLOOR = "noise_floor_hold"
+POST_HOC = "post_hoc"
+SITE = "bench"
+POST_HOC_SITE = "bench-post-hoc"
 
 
 def number(value: float | None) -> str:
@@ -57,12 +65,13 @@ def _finite(value: float) -> float | None:
     return float(value) if math.isfinite(value) else None
 
 
-def write_csv(path: Path, columns: Sequence[str], rows: Iterable[Row]) -> Path:
+def write_csv(path: Path, columns: Sequence[str], rows: Iterable[Row], *, post_hoc: bool = False) -> Path:
+    """Write the rows with the columns. A `post_hoc` column that the rows do not fill holds the flag."""
     with path.open("w", encoding="utf-8", newline="") as stream:
         writer = csv.writer(stream, lineterminator="\n")
         writer.writerow(columns)
         for row in rows:
-            writer.writerow([_text(row.get(c, "")) for c in columns])
+            writer.writerow([_text(row.get(c, post_hoc if c == POST_HOC else "")) for c in columns])
     return path
 
 
@@ -77,6 +86,7 @@ def _text(value: Any) -> str:
 
 
 STATUS_COLUMNS = (
+    POST_HOC,
     "run_id",
     "device",
     "mounting",
@@ -155,7 +165,7 @@ def features_table(study: EvaluatedStudy) -> FeatureTable:
             FeatureRow(
                 run.row.run_id,
                 run.row.session_id,
-                "bench",
+                POST_HOC_SITE if study.study.post_hoc else SITE,
                 "unknown",
                 "unknown",
                 None,
@@ -182,6 +192,7 @@ def features_table(study: EvaluatedStudy) -> FeatureTable:
 
 
 BENCH_COLUMNS = (
+    POST_HOC,
     "run_id",
     "device",
     "mounting",
@@ -224,6 +235,7 @@ def bench_feature_rows(evaluated: Mapping[str, Evaluated]) -> list[Row]:
 
 
 AGREEMENT_COLUMNS = (
+    POST_HOC,
     "analysis",
     "feature",
     "level",
@@ -295,6 +307,7 @@ def agreement_rows(analyses: Sequence[AnalysisResult]) -> list[Row]:
 
 
 BLAND_ALTMAN_COLUMNS = (
+    POST_HOC,
     "analysis",
     "feature",
     "kind",
@@ -356,6 +369,7 @@ def bland_altman_rows(analyses: Sequence[AnalysisResult]) -> list[Row]:
 
 
 CORRECTION_COLUMNS = (
+    POST_HOC,
     "analysis",
     "feature",
     "model",
@@ -417,6 +431,7 @@ def correction_rows(analyses: Sequence[AnalysisResult]) -> list[Row]:
 
 
 SAMPLING_COLUMNS = (
+    POST_HOC,
     "device",
     "program",
     "mounting",
@@ -531,7 +546,18 @@ def sampling_rows(
     return rows
 
 
-ACCURACY_COLUMNS = ("device", "program", "measure", "runs", "median", "low", "high", "deviations", "reason")
+ACCURACY_COLUMNS = (
+    POST_HOC,
+    "device",
+    "program",
+    "measure",
+    "runs",
+    "median",
+    "low",
+    "high",
+    "deviations",
+    "reason",
+)
 MEASURES = (
     "camera_rotation_deg",
     "camera_rms_mm",
@@ -594,6 +620,7 @@ def accuracy_rows(study: Study, evaluated: Mapping[str, Evaluated]) -> list[Row]
 
 
 GATE_COLUMNS = (
+    POST_HOC,
     "device",
     "program",
     "kind",
@@ -753,6 +780,7 @@ def deliverables(study: Study, result: AnalysisResult) -> dict[str, Any]:
     return {
         "protocol": {"version": bench.PROTOCOL_VERSION},
         "lock": {"commit": study.lock.commit if study.lock else None},
+        "postHoc": {"changedFiles": list(study.changed_code)} if study.post_hoc else None,
         "library": f"scriptkin {__version__}",
         "analysis": result.analysis.name,
         "features": features,
@@ -767,16 +795,18 @@ def write_results(study: EvaluatedStudy, analyses: Sequence[AnalysisResult], fol
     table = features_table(study)
     table.to_csv(folder / "features.csv")
     written = [folder / "features.csv", folder / "features.csv.provenance.json"]
-    written.append(write_csv(folder / "bench_features.csv", BENCH_COLUMNS, bench_feature_rows(runs)))
-    written.append(write_csv(folder / "run_status.csv", STATUS_COLUMNS, status_rows(study.study, runs)))
-    written.append(write_csv(folder / "agreement.csv", AGREEMENT_COLUMNS, agreement_rows(analyses)))
-    written.append(write_csv(folder / "bland_altman.csv", BLAND_ALTMAN_COLUMNS, bland_altman_rows(analyses)))
-    written.append(write_csv(folder / "correction.csv", CORRECTION_COLUMNS, correction_rows(analyses)))
-    written.append(
-        write_csv(folder / "sampling.csv", SAMPLING_COLUMNS, sampling_rows(study.study, runs, study.hold))
-    )
-    written.append(write_csv(folder / "accuracy.csv", ACCURACY_COLUMNS, accuracy_rows(study.study, runs)))
-    written.append(write_csv(folder / "gate.csv", GATE_COLUMNS, gate_rows(study.study, runs)))
+    tables: list[tuple[str, Sequence[str], list[Row]]] = [
+        ("bench_features.csv", BENCH_COLUMNS, bench_feature_rows(runs)),
+        ("run_status.csv", STATUS_COLUMNS, status_rows(study.study, runs)),
+        ("agreement.csv", AGREEMENT_COLUMNS, agreement_rows(analyses)),
+        ("bland_altman.csv", BLAND_ALTMAN_COLUMNS, bland_altman_rows(analyses)),
+        ("correction.csv", CORRECTION_COLUMNS, correction_rows(analyses)),
+        ("sampling.csv", SAMPLING_COLUMNS, sampling_rows(study.study, runs, study.hold)),
+        ("accuracy.csv", ACCURACY_COLUMNS, accuracy_rows(study.study, runs)),
+        ("gate.csv", GATE_COLUMNS, gate_rows(study.study, runs)),
+    ]
+    for name, columns, rows in tables:
+        written.append(write_csv(folder / name, columns, rows, post_hoc=study.study.post_hoc))
     path = folder / "deliverables.json"
     path.write_text(
         json.dumps(deliverables(study.study, main), indent=1, allow_nan=False) + "\n", encoding="utf-8"
