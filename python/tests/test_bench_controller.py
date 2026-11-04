@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import importlib.util
 import json
 import math
 import shutil
 import subprocess
 import sys
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -266,3 +268,50 @@ def test_a_refused_program_stops_the_script_before_it_writes_a_file(
     done = subprocess.run([sys.executable, "-I", str(STUDY), str(tmp_path)], capture_output=True, text=True)
     assert done.returncode == 1 and "line-osc5: move 101 needs" in done.stderr
     assert not list(tmp_path.glob("*.ebb*"))
+
+
+@pytest.fixture
+def registered_folder(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Clears the cached digests and programs file around a test that moves `bench.PROGRAM_FOLDER`."""
+
+    def clear() -> None:
+        bench.registered_digests.cache_clear()
+        bench.programs_json.cache_clear()
+        bench.programs_sha256.cache_clear()
+
+    clear()
+    yield
+    monkeypatch.undo()
+    clear()
+
+
+def test_the_programs_file_takes_each_trajectory_digest_from_its_controller_file(
+    controller_folder: Path, monkeypatch: pytest.MonkeyPatch, registered_folder: None
+) -> None:
+    # Detects a programs file that keeps a placeholder digest beside a controller file, or that hashes
+    # another file than the controller file of the program.
+    monkeypatch.setattr(bench, "PROGRAM_FOLDER", controller_folder)
+    table = {p["id"]: p["trajectorySHA256"] for p in json.loads(bench.programs_json())["programs"]}
+    files = {p.id: controller_folder / f"{p.id}.ebb" for p in bench.PROGRAMS}
+    assert table == {pid: hashlib.sha256(path.read_bytes()).hexdigest() for pid, path in files.items()}
+
+
+def test_the_trajectory_digests_refuse_a_move_list_or_a_controller_file_alone(
+    tmp_path: Path, controller_folder: Path
+) -> None:
+    # Detects digests that silently keep the placeholder for a move list without its controller file, or
+    # that accept a controller file whose move list is gone, such as a program excluded after translation.
+    assert bench.trajectory_digests(tmp_path) == {}
+    excluded = tmp_path / "excluded"
+    shutil.copytree(controller_folder, excluded)
+    for name in ("loops-l-v80.json", "loops-l-v80.ebb", "loops-l-v80.ebb.csv"):
+        (excluded / name).unlink()
+    assert set(bench.trajectory_digests(excluded)) == {p.id for p in bench.PROGRAMS} - {"loops-l-v80"}
+    (excluded / "spiral-s-v20.ebb").unlink()
+    with pytest.raises(ValueError, match=r"spiral-s-v20\.json without spiral-s-v20\.ebb"):
+        bench.trajectory_digests(excluded)
+    stale = tmp_path / "stale"
+    shutil.copytree(controller_folder, stale)
+    (stale / "line-osc8.json").unlink()
+    with pytest.raises(ValueError, match=r"line-osc8\.ebb without line-osc8\.json"):
+        bench.trajectory_digests(stale)
