@@ -85,13 +85,14 @@ def lock_args(root: Path) -> list[str]:
 def study(
     tmp_path_factory: pytest.TempPathFactory, programs_folder: Path, move_lists: dict[str, MoveList]
 ) -> Path:
-    """The synthetic study, locked, and analysed once. The tests read its outputs."""
+    """The synthetic study, locked, and analysed once. The tests read its outputs. The CPU time of the
+    analysis, which the load of the machine does not change, guards its cost."""
     root = tmp_path_factory.mktemp("study")
     write_study(root, programs_folder, move_lists)
     assert main(lock_args(root)) == 0
-    started = time.perf_counter()
+    started = time.process_time()
     assert main(["bench", "analyse", str(root)]) == 0
-    (root / "analyse_seconds.txt").write_text(f"{time.perf_counter() - started:.1f}")
+    (root / "analyse_seconds.txt").write_text(f"{time.process_time() - started:.1f}")
     return root
 
 
