@@ -45,7 +45,11 @@ Height = Callable[[FloatArray], FloatArray]
 RATE_HZ = 239.987
 ROW_TIME_S = 3.5e-6
 DOT_RADIUS_MM = 1.5
-FIELD_RADIUS_MM = 6.0
+FIELD_RADIUS_MM = 4.0
+"""The black field of the marker is 8 mm across: the ring of the tracker reaches 3 mm from the dot
+centre (`scriptkin.bench.tracker`), and the field leaves a margin of 1 mm."""
+FIXTURE_FIELD_RADIUS_MM = 6.0
+"""The fixture clip has a black field of 12 mm across."""
 MARKER_OFFSET_MM = (-8.3, 0.6)
 LED = Region(26, 26, 28, 28)
 FIXTURE_LED = Region(168, 118, 24, 24)
@@ -267,6 +271,7 @@ class Scene:
     figure: Figure | None = None
     """A shape on the background, such as a stimulus figure or a UI line on the lit screen: the grey
     level that it adds at plane points."""
+    field_radius_mm: float = FIELD_RADIUS_MM
 
     def _row_times(self, t0: float, rows: FloatArray) -> FloatArray:
         first = rows if self.readout is ReadoutDirection.TOP_FIRST else self.camera.size[1] - 1 - rows
@@ -288,7 +293,7 @@ class Scene:
         w, h = self.camera.size
         first, scale = self._seen(motion, height, np.array([t0]))
         centre = self.camera.project(first)[0]
-        half = int(FIELD_RADIUS_MM * scale[0] / 0.1 + 8)
+        half = int(self.field_radius_mm * scale[0] / 0.1 + 8)
         c0, c1 = max(int(centre[0]) - half, 0), min(int(centre[0]) + half, w)
         r0, r1 = max(int(centre[1]) - half, 0), min(int(centre[1]) + half, h)
         if c1 <= c0 or r1 <= r0:
@@ -298,7 +303,7 @@ class Scene:
         rows = np.arange(r0, r1, dtype=np.float64)
         marker, scale = self._seen(motion, height, self._row_times(t0, rows))
         d = np.linalg.norm(q - marker[:, None, :], axis=2)
-        field_cover = np.clip(0.5 - (d - FIELD_RADIUS_MM * scale[:, None]) / pixel, 0.0, 1.0)
+        field_cover = np.clip(0.5 - (d - self.field_radius_mm * scale[:, None]) / pixel, 0.0, 1.0)
         dot_cover = np.clip(0.5 - (d - DOT_RADIUS_MM * scale[:, None]) / pixel, 0.0, 1.0) if dot else 0.0
         level = _level(self.background, self.figure, q) * (1 - field_cover) + _FIELD * field_cover
         level = level * (1 - dot_cover) + _DOT * dot_cover
@@ -466,6 +471,7 @@ def fixture_frames() -> list[Frame]:
         offset_mm=(0.0, 0.0),
         noise=0.0,
         led=FIXTURE_LED,
+        field_radius_mm=FIXTURE_FIELD_RADIUS_MM,
     )
     frames: list[Frame] = []
     for k, frame in enumerate(
