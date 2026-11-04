@@ -7,11 +7,14 @@ import test_bench_moves as moves_tests
 
 from scriptkin.bench.camera import (
     CameraRule,
+    CoarseAlignment,
     ExecutedMovement,
     PathFit,
     SpatialAccuracy,
     TimeAlignment,
     camera_record,
+    camera_trial,
+    coarse_alignment,
     executed_movement,
     led_count_agrees,
     nearest_on_path,
@@ -268,25 +271,48 @@ def test_the_executed_movement_check_fails_a_bump_and_a_slow_run(move_lists: dic
     assert slow_check.motion_s == pytest.approx(clean.commanded_s * 1.015, abs=0.02)
 
 
-def test_a_motion_interval_that_touches_the_window_makes_the_record_invalid(
+def test_a_motion_interval_that_touches_the_window_is_a_motion_failure(
     move_lists: dict[str, MoveList],
 ) -> None:
     # Detects a camera motion interval that the window of the commanded motion cuts and that passes as
-    # the executed movement: spiral-l-v20 run 1.5 percent slow then shows 0.7 percent and passes the
-    # duration check of section 7.6. Also detects margins that cut a run inside the 1 percent tolerance
-    # of the longest program, loops-l-v20, which must keep its duration and fail at 1.2 percent.
+    # the executed movement: spiral-l-v20 run 2 percent slow shows a shorter interval than it executed.
+    # The record stays valid, and the check of section 7.6 fails the run with the window edge.
+    # Also detects margins that cut a run inside the 1 percent tolerance of the longest program,
+    # loops-l-v20, which must keep its duration and fail at 1.2 percent.
     loops = move_lists["loops-l-v20"]
     for slow, failure in ((1.008, False), (1.012, True)):
         record = camera_record(camera_track(loops, noise_mm=0.005, speed_factor=1 / slow), command(loops))
-        assert record.valid and record.failed == (), slow
+        assert record.valid and record.failed == () and not record.window_edge, slow
         executed = executed_movement(record, loops)
         assert isinstance(executed, ExecutedMovement) and executed.failure is failure, slow
+        assert not executed.window_edge
         assert executed.motion_s == pytest.approx(executed.commanded_s * slow, abs=0.02)
     spiral = move_lists["spiral-l-v20"]
-    cut = camera_record(camera_track(spiral, noise_mm=0.005, speed_factor=1 / 1.015), command(spiral))
-    assert CameraRule.ALIGNMENT in cut.failed and not cut.valid
+    cut = camera_record(camera_track(spiral, noise_mm=0.005, speed_factor=1 / 1.02), command(spiral))
+    assert cut.valid and cut.failed == () and cut.window_edge
     assert isinstance(cut.run.motion, Motion)
-    assert cut.run.motion.interval.duration_s < command(spiral).interval.duration_s * 1.01
+    assert cut.run.motion.interval.duration_s < command(spiral).interval.duration_s * 1.02
+    executed = executed_movement(cut, spiral)
+    assert isinstance(executed, ExecutedMovement) and executed.window_edge and executed.failure
+
+
+@pytest.mark.parametrize("pid", ["line-osc11", "line-osc8", "line-osc5"])
+def test_the_coarse_alignment_holds_a_line_program_two_percent_off_the_command(
+    move_lists: dict[str, MoveList], pid: str
+) -> None:
+    # Detects a coarse correlation on the raw speed profiles, which the 5 to 11 Hz oscillation of the
+    # line programs pulls below 0.5 when the run is 1 to 2 percent off the command (line-osc11 gave
+    # 0.46 one percent slow), so that a run inside the tolerance of section 7.6 lost its camera record.
+    ml = move_lists[pid]
+    for slow in (0.98, 0.99, 1.0, 1.01, 1.02):
+        for lift in (0.0, 10.0):
+            track = camera_track(ml, noise_mm=0.005, speed_factor=1 / slow, lift_mm=lift, lead_s=0.8)
+            qc = assess(camera_trial(track))
+            assert isinstance(qc, Accepted)
+            found = coarse_alignment(command(ml), qc)
+            assert isinstance(found, CoarseAlignment) and found.correlation > 0.5, (slow, lift, found)
+            record = camera_record(track, command(ml))
+            assert record.failed == () and record.valid, (slow, lift)
 
 
 @pytest.mark.parametrize("pid", ["loops-s-v40", "spiral-s-v40", "line-osc8"])

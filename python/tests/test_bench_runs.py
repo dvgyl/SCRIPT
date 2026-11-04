@@ -24,6 +24,7 @@ from scriptkin.bench.runs import (
     fault_detected,
     trial_of,
 )
+from scriptkin.bench.track import Track
 from scriptkin.quality import Refusal, RefusalCode, Rejected
 from scriptkin.recording import FloatArray, PenState, Stroke, Trial, TrialOutcome
 
@@ -190,6 +191,49 @@ def test_the_camera_motion_interval_does_not_depend_on_the_device_record(
         assert run.outcome.motion_failure is False and not run.outcome.failed
         assert run.camera_value("bench.motion_s") == camera_s
         assert run.camera_difference("bench.motion_s") < -0.015
+
+
+def test_a_window_edge_fails_the_run_and_another_alignment_failure_keeps_it(
+    move_lists: dict[str, MoveList],
+) -> None:
+    # Detects a run whose camera motion interval touches an edge of its window and stays valid, or
+    # fails without the reason window_edge (section 7.6), and a run whose coarse alignment fails for
+    # another reason, a short clip or a clip of another program, that fails instead of keeping an
+    # invalid camera record (section 7.7).
+    ml = move_lists["loops-l-v20"]
+    trial = device_run(ml, noise_mm=0.005, seed=2)
+    slow = evaluate(row("loops-l-v20"), trial, ml, camera_track(ml, noise_mm=0.005, speed_factor=1 / 1.02))
+    assert slow.outcome.camera is CameraState.VALID and slow.outcome.camera_rules == ()
+    assert slow.outcome.motion_failure is True and slow.outcome.failed
+    assert slow.outcome.reason == "window_edge" and slow.outcome.window_edge
+    assert isinstance(slow.executed, ExecutedMovement) and slow.executed.window_edge
+    whole = camera_track(ml, noise_mm=0.005)
+    n = len(whole.frame) // 2
+    short = Track(
+        whole.facts,
+        whole.frame[:n],
+        whole.t_frame[:n],
+        whole.t[:n],
+        whole.xy[:n],
+        whole.duplicate[:n],
+        whole.led[:n],
+    )
+    other = camera_track(move_lists["line-osc8"], noise_mm=0.005)
+    for track, detail in ((short, "shorter"), (other, "shorter")):
+        run = evaluate(row("loops-l-v20"), trial, ml, track)
+        assert run.outcome.camera is CameraState.INVALID
+        assert run.outcome.camera_rules == (CameraRule.ALIGNMENT,) and not run.outcome.window_edge
+        assert run.outcome.motion_failure is None and not run.outcome.failed and run.executed is None
+        assert run.camera is not None and isinstance(run.camera.run.motion, Refusal)
+        assert detail in run.camera.run.motion.detail
+    line = move_lists["line-osc8"]
+    wrong = evaluate(row("line-osc8"), device_run(line, noise_mm=0.005, seed=2), line, whole)
+    assert wrong.outcome.camera is CameraState.INVALID and wrong.outcome.camera_rules == (
+        CameraRule.ALIGNMENT,
+    )
+    assert wrong.outcome.motion_failure is None and not wrong.outcome.failed
+    assert wrong.camera is not None and isinstance(wrong.camera.run.motion, Refusal)
+    assert "correlate" in wrong.camera.run.motion.detail
 
 
 def test_a_camera_record_without_an_executed_movement_check_is_invalid(
