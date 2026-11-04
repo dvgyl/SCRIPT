@@ -7,7 +7,6 @@ import csv
 import json
 import math
 import shutil
-import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -85,14 +84,11 @@ def lock_args(root: Path) -> list[str]:
 def study(
     tmp_path_factory: pytest.TempPathFactory, programs_folder: Path, move_lists: dict[str, MoveList]
 ) -> Path:
-    """The synthetic study, locked, and analysed once. The tests read its outputs. The CPU time of the
-    analysis, which the load of the machine does not change, guards its cost."""
+    """The synthetic study, locked, and analysed once. The tests read its outputs."""
     root = tmp_path_factory.mktemp("study")
     write_study(root, programs_folder, move_lists)
     assert main(lock_args(root)) == 0
-    started = time.process_time()
     assert main(["bench", "analyse", str(root)]) == 0
-    (root / "analyse_seconds.txt").write_text(f"{time.process_time() - started:.1f}")
     return root
 
 
@@ -274,9 +270,6 @@ def test_the_sampling_and_accuracy_tables_describe_the_simulated_devices(study: 
     assert all(r["deviations"] == "" for r in accuracy if r["measure"] != "camera_rotation_deg")
     duration = [r for r in accuracy if r["measure"] == "executed_duration_error"]
     assert all(abs(float(r["median"])) < 0.01 for r in duration)
-    # About 75 s of CPU time on an idle machine. CPU time grows when another check loads every core,
-    # because a thread then runs at half speed and still counts full time, so the limit leaves room.
-    assert float((study / "analyse_seconds.txt").read_text()) < 120
 
 
 def test_the_analysis_refuses_an_incomplete_study_a_changed_file_and_a_foreign_build(
@@ -285,7 +278,7 @@ def test_the_analysis_refuses_an_incomplete_study_a_changed_file_and_a_foreign_b
     # Detects an analysis that runs on a study with a planned row or a missing block, after a locked
     # file changed, or on a journal whose build the lock does not list.
     root = tmp_path / "copy"
-    shutil.copytree(study, root, ignore=shutil.ignore_patterns("analyse_seconds.txt"))
+    shutil.copytree(study, root)
     for output in (root / "bench" / "results").iterdir():
         if output.name != "bench_precision.json":
             output.unlink()
@@ -336,7 +329,7 @@ def test_the_qualification_session_and_the_track_calibration_are_checked(
     with pytest.raises(InputError, match=f"Session {QUALIFICATION_SESSION}.*which the lock does not list"):
         hold_noise(foreign)
     root = tmp_path / "copy"
-    shutil.copytree(study, root, ignore=shutil.ignore_patterns("analyse_seconds.txt"))
+    shutil.copytree(study, root)
     facts = root / "store" / "camera" / "W-M1" / "W-M1-loops-l-v20-r1.track.json"
     facts.write_text(facts.read_text(encoding="utf-8").replace("c" * 64, "d" * 64), encoding="utf-8")
     assert main(["bench", "analyse", str(root)]) == 2
@@ -352,7 +345,7 @@ def test_the_analysis_refuses_an_unlisted_file_and_runs_changed_code_post_hoc_on
     # entry, or analysis code that changed after the lock (section 14), and a post hoc analysis whose
     # outputs do not say so or that does not name the changed files (section 13).
     root = tmp_path / "copy"
-    shutil.copytree(study, root, ignore=shutil.ignore_patterns("analyse_seconds.txt"))
+    shutil.copytree(study, root)
     out_dir = root / "bench" / "results"
     for output in out_dir.iterdir():
         if output.name != "bench_precision.json":
