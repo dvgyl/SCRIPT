@@ -28,7 +28,14 @@ from scriptkin.bench.camerafiles import (
 )
 from scriptkin.bench.clock import led_levels, measure_clock, measure_readout
 from scriptkin.bench.track import FrameTimes, ReadoutDirection, Track, TrackFacts, read_track
-from scriptkin.bench.tracker import TRACKER_VERSION, find_marker, read_video, track_frames
+from scriptkin.bench.tracker import (
+    FIRST_SEARCH_MM,
+    TRACKER_VERSION,
+    find_marker,
+    read_video,
+    search_outline,
+    track_frames,
+)
 from scriptkin.cli import main
 from scriptkin.quality import Refusal, RefusalCode
 from scriptkin.recording import FloatArray
@@ -167,6 +174,31 @@ def test_marker_is_followed_from_the_lift_height_through_the_run(
     offset = np.array(render.MARKER_OFFSET_MM)
     seen = render.main_camera().seen(tip(track.t) + offset, height(track.t))[0] - offset
     assert np.linalg.norm(track.xy - seen, axis=1).max() <= 0.1
+
+
+def test_a_larger_bright_shape_inside_the_first_square_is_not_the_marker() -> None:
+    # Detects a first-frame search that takes a bright region of the lit screen larger than the marker
+    # dot, such as a shape enclosed by a dark line, which the 24 mm square reaches beyond the black
+    # field. The tracker then follows a still shape and the record has no motion.
+    camera = render.main_camera()
+    plane = camera.plane()
+    start = np.array([-8.0, 20.0])
+    centre = start + np.array(render.MARKER_OFFSET_MM)
+    ring_centre = centre + np.array([-8.5, -6.0])
+
+    def ring(xy: FloatArray) -> FloatArray:
+        # A dark ring, 0.6 mm wide, around a bright disc of 2.5 mm radius: 2.8 times the dot area.
+        distance = np.linalg.norm(xy - ring_centre, axis=-1)
+        return np.where((distance > 2.5) & (distance < 3.1), -160.0, 0.0)
+
+    for dx in (0.0, 5.7):
+        shift = np.array([dx, 0.0])
+        scene = render.Scene(camera, "ipad", figure=ring)
+        frame = next(scene.frames(render.still((float(start[0] + dx), float(start[1]))), 1))
+        found = find_marker(frame, search_outline(centre, plane, FIRST_SEARCH_MM), FIRST_SEARCH_MM)
+        assert found is not None, dx
+        marker_px = camera.project(np.array([centre + shift]))[0]
+        assert np.linalg.norm(np.array(found) - marker_px) < 1.0, (dx, found, marker_px)
 
 
 @pytest.mark.parametrize("readout", list(ReadoutDirection))
