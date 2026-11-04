@@ -6,7 +6,10 @@ from __future__ import annotations
 import csv
 import json
 import math
+import os
 import shutil
+import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -30,7 +33,7 @@ from test_bench_inputs import CODE_FILE
 
 from scriptkin import bench
 from scriptkin.bench.analysis import LIMITS
-from scriptkin.bench.inputs import Registry, RunRow, RunStatus, read_registry
+from scriptkin.bench.inputs import LOCK_CODE, Registry, RunRow, RunStatus, read_registry
 from scriptkin.bench.interim import INTERIM_COLUMNS, PILOT_COLUMNS
 from scriptkin.bench.moves import MoveList
 from scriptkin.bench.outputs import (
@@ -278,7 +281,7 @@ def test_the_analysis_refuses_an_incomplete_study_a_changed_file_and_a_foreign_b
     # Detects an analysis that runs on a study with a planned row or a missing block, after a locked
     # file changed, or on a journal whose build the lock does not list.
     root = tmp_path / "copy"
-    shutil.copytree(study, root)
+    shutil.copytree(study, root, symlinks=True)
     for output in (root / "bench" / "results").iterdir():
         if output.name != "bench_precision.json":
             output.unlink()
@@ -335,7 +338,7 @@ def test_the_qualification_session_and_the_track_calibration_are_checked(
     with pytest.raises(InputError, match=f"Session {QUALIFICATION_SESSION}.*which the lock does not list"):
         hold_noise(foreign)
     root = tmp_path / "copy"
-    shutil.copytree(study, root)
+    shutil.copytree(study, root, symlinks=True)
     facts = root / "store" / "camera" / "W-M1" / "W-M1-loops-l-v20-r1.track.json"
     facts.write_text(facts.read_text(encoding="utf-8").replace("c" * 64, "d" * 64), encoding="utf-8")
     assert main(["bench", "analyse", str(root)]) == 2
@@ -343,15 +346,30 @@ def test_the_qualification_session_and_the_track_calibration_are_checked(
     assert "W-M1-loops-l-v20-r1" in err and "calibration" in err and "mounting M1 of device W" in err
 
 
+def analyse_with(package_src: Path, *args: str) -> tuple[int, str, str]:
+    """`scriptkin bench analyse` in a process that imports `scriptkin` from `package_src`: the exit
+    code, the standard output, and the standard error."""
+    code = "import sys\nfrom scriptkin.cli import main\nsys.exit(main(sys.argv[1:]))"
+    done = subprocess.run(
+        [sys.executable, "-c", code, "bench", "analyse", *args],
+        env={**os.environ, "PYTHONPATH": str(package_src)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return done.returncode, done.stdout, done.stderr
+
+
 @pytest.mark.slow
 def test_the_analysis_refuses_an_unlisted_file_and_runs_changed_code_post_hoc_only(
     study: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # Detects a lock check that passes a move list file added after the lock, a lock file that lost an
-    # entry, or analysis code that changed after the lock (section 14), and a post hoc analysis whose
-    # outputs do not say so or that does not name the changed files (section 13).
+    # entry, analysis code that runs from another place than the locked code, or code that changed
+    # after the lock (section 14), and a post hoc analysis whose outputs do not say so or that does
+    # not name the changed and the added code files (section 13).
     root = tmp_path / "copy"
-    shutil.copytree(study, root)
+    shutil.copytree(study, root, symlinks=True)
     out_dir = root / "bench" / "results"
     for output in out_dir.iterdir():
         if output.name != "bench_precision.json":
@@ -369,14 +387,27 @@ def test_the_analysis_refuses_an_unlisted_file_and_runs_changed_code_post_hoc_on
     assert main(["bench", "analyse", str(root)]) == 2
     assert "does not hold these files: bench/registry.json" in capsys.readouterr().err
     assert main(lock_args(root)) == 0
-    code = root / CODE_FILE
-    code.write_text(code.read_text(encoding="utf-8") + "changed\n", encoding="utf-8")
+    # A copy of the package under the root is the code of another place for this process, whose
+    # scriptkin is the package of the check environment. It is the code that runs for a process whose
+    # import path names the copy.
+    package = root / "python" / "src" / "scriptkin"
+    running = package.resolve()
+    package.unlink()
+    shutil.copytree(running, package, ignore=shutil.ignore_patterns("__pycache__"))
     assert main(["bench", "analyse", str(root)]) == 2
-    assert CODE_FILE in capsys.readouterr().err
+    assert f"runs scriptkin from {running}, not from the locked code" in capsys.readouterr().err
+    code = root / CODE_FILE
+    code.write_text(code.read_text(encoding="utf-8") + "\n# Changed after the lock.\n", encoding="utf-8")
+    status, out, err = analyse_with(package.parent, str(root))
+    assert status == 2 and f"changed or are missing: {CODE_FILE}" in err, (status, out, err)
     assert not (out_dir / "agreement.csv").exists()
-    assert main(["bench", "analyse", str(root), "--post-hoc"]) == 0
-    out = capsys.readouterr().out
-    assert "post hoc" in out and CODE_FILE in out
+    new_module = f"{LOCK_CODE}/bench/new_module.py"
+    (root / new_module).write_text("x = 1\n", encoding="utf-8")
+    status, out, err = analyse_with(package.parent, str(root))
+    assert status == 2 and f"does not hold these files: {new_module}" in err, (status, out, err)
+    status, out, err = analyse_with(package.parent, str(root), "--post-hoc")
+    assert status == 0, (status, out, err)
+    assert "post hoc" in out and CODE_FILE in out and new_module in out
     for name in (
         "run_status.csv",
         "bench_features.csv",
@@ -390,7 +421,7 @@ def test_the_analysis_refuses_an_unlisted_file_and_runs_changed_code_post_hoc_on
         rows = read_csv(out_dir / name)
         assert rows and all(r["post_hoc"] == "true" for r in rows), name
     deliverables = json.loads((out_dir / "deliverables.json").read_text(encoding="utf-8"))
-    assert deliverables["postHoc"] == {"changedFiles": [CODE_FILE]}
+    assert deliverables["postHoc"] == {"changedFiles": [new_module, CODE_FILE]}
     table = read_feature_table(out_dir / "features.csv")
     assert table.rows and all(r.site == "bench-post-hoc" for r in table.rows)
 
