@@ -35,6 +35,7 @@ import csv
 import hashlib
 import json
 import math
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -442,3 +443,16 @@ def read_bench_journal(folder: str | Path) -> Journal:
         context.subject.mounting,
         Build(str(app["build"]), str(app["sourceRevision"])),
     )
+
+
+def parse_run_id(run_id: str) -> tuple[BenchRole, str, str, int]:
+    """The device, mounting, program, and run index of a run id of section 15."""
+    match = re.fullmatch(r"(P|W)-(M[1-8])-(.+)-r([1-7])", run_id)
+    if match is None:
+        raise InputError(f"{run_id} is not a run id of the form <device>-<mounting>-<program>-r<run index>.")
+    device, mounting, program, run_index = match.groups()
+    try:
+        bench.program(program)
+    except KeyError as e:
+        raise InputError(f"{run_id}: {program} is not a registered program.") from e
+    return _role(device), mounting, program, int(run_index)

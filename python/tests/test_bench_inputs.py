@@ -18,6 +18,7 @@ from scriptkin.bench.inputs import (
     check_build,
     check_lock,
     lock_json,
+    parse_run_id,
     read_bench_journal,
     read_lock,
     read_registry,
@@ -262,3 +263,19 @@ def test_a_bench_journal_gives_its_role_mounting_and_build(tmp_path: Path) -> No
         read_bench_journal(tmp_path / "study")
     with pytest.raises(InputError):
         read_bench_journal(tmp_path / "absent")
+
+
+def test_a_run_id_parses_into_its_parts_and_a_malformed_one_is_an_error() -> None:
+    # Detects a parser that accepts another shape, a run index outside 1 to 7, or an unregistered
+    # program, or that returns the parts in another order.
+    assert parse_run_id("W-M3-loops-s-v40-r2") == ("W", "M3", "loops-s-v40", 2)
+    assert parse_run_id("P-M8-fault-lift-r7") == ("P", "M8", "fault-lift", 7)
+    for bad in (
+        "X-M3-loops-s-v40-r2",
+        "W-M9-loops-s-v40-r2",
+        "W-M3-loops-s-v40-r8",
+        "W-M3-loops-x-r2",
+        "nonsense",
+    ):
+        with pytest.raises(InputError):
+            parse_run_id(bad)
