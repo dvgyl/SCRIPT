@@ -30,7 +30,7 @@ from test_bench_inputs import CODE_FILE
 
 from scriptkin import bench
 from scriptkin.bench.analysis import LIMITS
-from scriptkin.bench.inputs import Registry, RunStatus, read_registry
+from scriptkin.bench.inputs import Registry, RunRow, RunStatus, read_registry
 from scriptkin.bench.interim import INTERIM_COLUMNS, PILOT_COLUMNS
 from scriptkin.bench.moves import MoveList
 from scriptkin.bench.outputs import (
@@ -47,7 +47,7 @@ from scriptkin.bench.runs import FEATURE_SET, Evaluated, evaluate
 from scriptkin.cli import main
 from scriptkin.features import read_feature_table
 from scriptkin.quality import Refusal
-from scriptkin.recording import Trial
+from scriptkin.recording import BenchRole, Trial
 
 programs_folder = moves_tests.programs_folder
 move_lists = moves_tests.move_lists
@@ -296,6 +296,12 @@ def test_the_analysis_refuses_an_incomplete_study_a_changed_file_and_a_foreign_b
     runs.write_text("\n".join(kept) + "\n", encoding="utf-8")
     assert main(["bench", "analyse", str(root)]) == 1
     assert "Block 6 has no row" in capsys.readouterr().err
+    first = next(line for line in original.splitlines() if line.split(",")[3] == "6")
+    runs.write_text(original.replace(first + "\n", ""), encoding="utf-8")
+    assert main(["bench", "analyse", str(root)]) == 1
+    assert (
+        f"Block 6 has no row for {first.split(',')[0]}, position 1 of its order." in capsys.readouterr().err
+    )
     runs.write_text(original, encoding="utf-8")
     protocol = root / "docs" / "BENCH_PROTOCOL.md"
     protocol.write_text(protocol.read_text(encoding="utf-8") + "changed\n", encoding="utf-8")
@@ -440,41 +446,47 @@ def test_the_analysis_refuses_a_registry_without_the_complete_design(
     assert "design of section 6.3" in err and "blocks [1, 2, 3, 4, 5, 6]" in err
     assert not (results(interim_study) / "agreement.csv").exists()
     root = tmp_path / "four_blocks"
-    shutil.copytree(pilot_study, root)
+    shutil.copytree(pilot_study, root, symlinks=True)
     assert main(lock_args(root)) == 0
     assert main(["bench", "analyse", str(root)]) == 1
     assert "design of section 6.3" in capsys.readouterr().err
     assert not (results(root) / "agreement.csv").exists()
 
 
+def block_registry(tmp_path: Path, order: str, swap: tuple[int, int] | None = None) -> Registry:
+    """A registry with one mounting per block in the device order `order`, with the mounting codes of
+    two blocks exchanged when `swap` names them."""
+    import test_bench_inputs as inputs_tests
+
+    mountings: list[dict[str, object]] = []
+    counts = {"P": 0, "W": 0}
+    for block, device in enumerate(order, start=1):
+        counts[device] += 1
+        mountings.append(
+            {
+                "device": device,
+                "mounting": f"M{counts[device]}",
+                "block": block,
+                "originMM": {"x": 0, "y": 0},
+                "calibrationSHA256": "c" * 64,
+            }
+        )
+    if swap is not None:
+        a, b = swap
+        mountings[a]["mounting"], mountings[b]["mounting"] = (
+            mountings[b]["mounting"],
+            mountings[a]["mounting"],
+        )
+    return read_registry(inputs_tests.registry_json(tmp_path / "r.json", mountings=mountings), tmp_path)
+
+
 def test_the_design_check_knows_the_block_order_of_section_6_3(tmp_path: Path) -> None:
     # Detects a design check that passes 12 blocks in another device order, a mounting code out of its
     # block order, or 16 blocks whose last four are not P W W P, or that fails the two complete designs.
-    import test_bench_inputs as inputs_tests
-
     from scriptkin.bench.study import BLOCK_ORDER, EXTRA_BLOCK_ORDER, design_problems
 
     def registry(order: str, swap: tuple[int, int] | None = None) -> Registry:
-        mountings: list[dict[str, object]] = []
-        counts = {"P": 0, "W": 0}
-        for block, device in enumerate(order, start=1):
-            counts[device] += 1
-            mountings.append(
-                {
-                    "device": device,
-                    "mounting": f"M{counts[device]}",
-                    "block": block,
-                    "originMM": {"x": 0, "y": 0},
-                    "calibrationSHA256": "c" * 64,
-                }
-            )
-        if swap is not None:
-            a, b = swap
-            mountings[a]["mounting"], mountings[b]["mounting"] = (
-                mountings[b]["mounting"],
-                mountings[a]["mounting"],
-            )
-        return read_registry(inputs_tests.registry_json(tmp_path / "r.json", mountings=mountings), tmp_path)
+        return block_registry(tmp_path, order, swap)
 
     assert design_problems(registry(BLOCK_ORDER)) == []
     assert design_problems(registry(BLOCK_ORDER + EXTRA_BLOCK_ORDER)) == []
@@ -496,6 +508,66 @@ def test_the_design_check_knows_the_block_order_of_section_6_3(tmp_path: Path) -
         "Block 2 is mounting M2 of device P; its block order makes it M1.",
         "Block 3 is mounting M1 of device P; its block order makes it M2.",
     ]
+
+
+def test_a_block_is_complete_only_with_every_run_of_its_order_file(tmp_path: Path) -> None:
+    # Detects an analysis that runs during the last block (section 13): a registry of 12 blocks with
+    # one recorded row per block passes the design check, and bench/runs.csv gets a row only when a run
+    # is recorded. Also detects a block check that passes a row at another position than its order or
+    # a planned-index row outside the order, that refuses a rerun, or that passes a block without an
+    # order file.
+    from test_bench_runs import row as run_row
+
+    from scriptkin.bench.inputs import RunLabel
+    from scriptkin.bench.study import BLOCK_ORDER, Study, incomplete
+
+    registry = block_registry(tmp_path, BLOCK_ORDER)
+    labels = (RunLabel(1, "loops-l-v20", 1), RunLabel(2, "fault-lift", 1), RunLabel(3, "loops-l-v20", 2))
+    orders = {block: labels for block in range(1, 13)}
+
+    def row(device: BenchRole, mounting: str, program: str, index: int, position: int) -> RunRow:
+        rid = f"{device}-{mounting}-{program}-r{index}"
+        block = registry.mounting(device, mounting).block
+        return run_row(
+            program,
+            index,
+            0,
+            run_id=rid,
+            clip=rid,
+            device=device,
+            mounting=mounting,
+            block=block,
+            position=position,
+        )
+
+    def study(rows: list[RunRow], orders: dict[int, tuple[RunLabel, ...]] = orders) -> Study:
+        return Study(tmp_path, registry, None, tuple(rows), {}, orders)
+
+    one_each = [row(m.device, m.mounting, "loops-l-v20", 1, 1) for m in registry.mountings]
+    problems = incomplete(study(one_each))
+    assert len(problems) == 24
+    assert problems[0] == "Block 1 has no row for W-M1-fault-lift-r1, position 2 of its order."
+    assert problems[1] == "Block 1 has no row for W-M1-loops-l-v20-r2, position 3 of its order."
+    complete = [
+        row(m.device, m.mounting, label.program, label.repeat, label.position)
+        for m in registry.mountings
+        for label in labels
+    ]
+    assert incomplete(study(complete)) == []
+    rerun = row("W", "M1", "loops-l-v20", 6, 4)
+    assert incomplete(study([*complete, rerun])) == []
+    extra = row("W", "M1", "loops-l-v20", 3, 4)
+    assert incomplete(study([*complete, extra])) == ["W-M1-loops-l-v20-r3 is not in the order of block 1."]
+    moved = [replace(r, position=4 - r.position) if r.block == 2 else r for r in complete]
+    assert incomplete(study(moved)) == [
+        "P-M1-loops-l-v20-r1 is at position 3; the order puts it at 1.",
+        "P-M1-loops-l-v20-r2 is at position 1; the order puts it at 3.",
+    ]
+    without_last = {block: order for block, order in orders.items() if block != 12}
+    assert incomplete(study(complete, without_last)) == [
+        "Block 12 has no order file bench/order/block-12.csv."
+    ]
+    assert incomplete(study(complete, without_last), frozenset(range(1, 7))) == []
 
 
 @pytest.fixture(scope="module")

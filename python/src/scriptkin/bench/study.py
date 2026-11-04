@@ -1,9 +1,10 @@
 """The bench study as the analysis reads it: the files of section 15 once, and every run evaluated once.
 
-`read_study` reads the registry, the lock, the run rows, and the move lists under a root, and checks the
-lock (section 14). `incomplete` lists what keeps the study from the analysis of section 13: a registry
-without the complete design of section 6.3, a block of the registry without a row, a planned row, or a
-row of a block or program outside the study. `evaluate_study`
+`read_study` reads the registry, the lock, the run rows, the move lists, and the block orders under a
+root, and checks the lock (section 14). `incomplete` lists what keeps the study from the analysis of
+section 13: a registry without the complete design of section 6.3, a block without a row, a planned
+row, a row of a block or program outside the study, or a block whose rows do not hold every run of
+its order file. `evaluate_study`
 reads each journal once, checks its build against the lock (section 2.4), finds the trial of every
 recorded row, reads the track when its file exists, and evaluates the run. A void row is not evaluated.
 
@@ -28,6 +29,7 @@ from scriptkin.bench.inputs import (
     Lock,
     MountingRecord,
     Registry,
+    RunLabel,
     RunRow,
     RunStatus,
     check_build,
@@ -35,6 +37,7 @@ from scriptkin.bench.inputs import (
     parse_run_id,
     read_bench_journal,
     read_lock,
+    read_orders,
     read_qualification_journal,
     read_registry,
     read_runs,
@@ -62,6 +65,8 @@ class Study:
     """None before the lock, which only the pilot of section 6.5 allows."""
     rows: tuple[RunRow, ...]
     move_lists: dict[str, MoveList]
+    orders: dict[int, tuple[RunLabel, ...]]
+    """The run order of each block from `bench/order/` (section 6.3), by block number."""
     changed_code: tuple[str, ...] = ()
     """The locked code files that changed after the lock. Only a post hoc analysis allows them
     (section 13), and every output of the analysis then says so."""
@@ -100,7 +105,7 @@ def read_study(root: str | Path, *, locked: bool = True, post_hoc: bool = False)
     missing = sorted({r.program for r in rows} - set(move_lists))
     if missing:
         raise InputError(f"bench/programs/ has no move list for {', '.join(missing)}.")
-    return Study(root, registry, lock, rows, move_lists, tuple(changed))
+    return Study(root, registry, lock, rows, move_lists, read_orders(bench_dir / "order"), tuple(changed))
 
 
 def design_problems(registry: Registry) -> list[str]:
@@ -143,9 +148,14 @@ def incomplete(study: Study, blocks: frozenset[int] | None = None) -> list[str]:
     """Section 13: what keeps the given blocks from the analysis.
 
     Without `blocks`, the whole study: the registry must hold the complete design of section 6.3
-    (`design_problems`), every block must have its rows, and every row must be recorded. With `blocks`,
+    (`design_problems`), every block must be complete, and every row must be recorded. With `blocks`,
     as the interim check gives, the rows of other blocks are skipped before the registry check, so that
     the planned rows of later blocks do not refuse the interim.
+
+    A block is complete when its rows hold every run label of its order file `bench/order/block-<bb>.csv`
+    (section 6.3), each at its position. `bench/runs.csv` can get a row only when a run is recorded, so
+    without this rule the analysis would run during the last block, after its first run. A rerun of
+    section 6.4 is an extra row, and any other row outside the order is a problem.
     """
     wanted = study.registry.blocks if blocks is None else blocks
     problems = design_problems(study.registry) if blocks is None else []
@@ -167,8 +177,32 @@ def incomplete(study: Study, blocks: frozenset[int] | None = None) -> list[str]:
         seen.add(row.block)
         if row.status is RunStatus.PLANNED:
             problems.append(f"{row.run_id} is planned and not recorded.")
-    for block in sorted(wanted - seen):
-        problems.append(f"Block {block} has no row.")
+    for block in sorted(wanted):
+        if block not in seen:
+            problems.append(f"Block {block} has no row.")
+        elif block in study.registry.blocks:
+            problems.extend(missing_runs(study, block))
+    return problems
+
+
+def missing_runs(study: Study, block: int) -> list[str]:
+    """Section 6.3: what keeps a block of the registry with rows from completeness (`incomplete`)."""
+    order = study.orders.get(block)
+    if order is None:
+        return [f"Block {block} has no order file bench/order/block-{block:02d}.csv."]
+    record = next(m for m in study.registry.mountings if m.block == block)
+    rows = {(r.program, r.run_index): r for r in study.rows if r.block == block}
+    problems: list[str] = []
+    for label in order:
+        run_id = f"{record.device}-{record.mounting}-{label.program}-r{label.repeat}"
+        row = rows.pop((label.program, label.repeat), None)
+        if row is None:
+            problems.append(f"Block {block} has no row for {run_id}, position {label.position} of its order.")
+        elif row.position != label.position:
+            problems.append(f"{run_id} is at position {row.position}; the order puts it at {label.position}.")
+    for row in rows.values():
+        if not row.rerun:
+            problems.append(f"{row.run_id} is not in the order of block {block}.")
     return problems
 
 

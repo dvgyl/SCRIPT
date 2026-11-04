@@ -11,10 +11,12 @@ from conftest import fixture_lines, write_export
 from scriptkin import bench
 from scriptkin.bench.inputs import (
     LOCK_FILES,
+    ORDER_COLUMNS,
     RUN_COLUMNS,
     Build,
     InputError,
     Lock,
+    RunLabel,
     RunStatus,
     check_build,
     check_lock,
@@ -22,6 +24,7 @@ from scriptkin.bench.inputs import (
     parse_run_id,
     read_bench_journal,
     read_lock,
+    read_orders,
     read_registry,
     read_runs,
     write_lock,
@@ -285,6 +288,44 @@ def test_the_lock_check_needs_every_file_and_allows_changed_code_post_hoc_only(t
     (root / "bench" / "registry.json").write_text("changed\n", encoding="utf-8")
     with pytest.raises(InputError, match=r"changed or are missing: bench/registry\.json\."):
         check_lock(lock, root, post_hoc=True)
+
+
+def test_the_order_files_read_their_labels_and_reject_each_damaged_file(tmp_path: Path) -> None:
+    # Detects a reader that misses a block file or reads a `._` file, accepts a position out of file
+    # order, a repeat above 5, an unknown program, or a repeated run label, or that fails without the
+    # folder, which the pilot runs before.
+    folder = tmp_path / "order"
+    folder.mkdir()
+
+    def write(name: str, rows: list[str], header: str = ",".join(ORDER_COLUMNS)) -> Path:
+        path = folder / name
+        path.write_text("\n".join([header, *rows]) + "\n", encoding="utf-8")
+        return path
+
+    write("block-01.csv", ["1,loops-l-v20,1", "2,fault-lift,1", "3,loops-l-v20,2"])
+    write("block-12.csv", ["1,line-osc8,5"])
+    write("._block-01.csv", ["garbage"], header="\0\5\x16\7")
+    write("notes.txt", ["1,loops-l-v20,1"])
+    orders = read_orders(folder)
+    assert set(orders) == {1, 12}
+    assert orders[1] == (
+        RunLabel(1, "loops-l-v20", 1),
+        RunLabel(2, "fault-lift", 1),
+        RunLabel(3, "loops-l-v20", 2),
+    )
+    assert orders[12] == (RunLabel(1, "line-osc8", 5),)
+    assert read_orders(tmp_path / "absent") == {}
+    for message, rows, header in [
+        ("position must be 2", ["1,loops-l-v20,1", "3,loops-l-v20,2"], None),
+        ("repeat must be 1 to 5", ["1,loops-l-v20,6"], None),
+        ("'loops-x'", ["1,loops-x,1"], None),
+        ("loops-l-v20 repeat 1 appears more than once", ["1,loops-l-v20,1", "2,loops-l-v20,1"], None),
+        ("header must be", ["1,loops-l-v20"], "position,program"),
+        ("wrong number of fields", ["1,loops-l-v20"], None),
+    ]:
+        write("block-02.csv", rows, *([] if header is None else [header]))
+        with pytest.raises(InputError, match=message):
+            read_orders(folder)
 
 
 def test_a_bench_journal_gives_its_role_mounting_and_build(tmp_path: Path) -> None:

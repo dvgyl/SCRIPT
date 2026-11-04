@@ -13,6 +13,10 @@ deviation removes from the study. A void row names its row of `bench/DEVIATIONS.
 A planned row has an empty session id, trial index, and clip. The analysis decides whether a recorded
 run passes (section 6.4); the operator does not.
 
+`bench/order/block-<bb>.csv` is the run order of block bb (section 6.3), with the columns `position`,
+`program`, and `repeat`: one row per planned run of the block. The reruns of section 6.4 are not in
+it. A block is complete when `bench/runs.csv` holds a row for every run label of its order file.
+
 `bench/registry.json` holds much more than the analysis reads (section 2). The analysis reads three
 keys and ignores the rest. `studyStore` is the store path, absolute or relative to the root. `mountings`
 is one record per mounting: `device`, `mounting`, `block`, `originMM` with `x` and `y`,
@@ -85,6 +89,8 @@ RUN_COLUMNS = (
 ROLES: tuple[BenchRole, ...] = ("P", "W")
 PLANNED_RUNS = 5
 """The run indices 1 to 5 are the planned runs; 6 and 7 are the reruns of section 6.4."""
+ORDER_COLUMNS = ("position", "program", "repeat")
+_ORDER_FILE = re.compile(r"block-(\d{2})\.csv")
 
 
 class InputError(FormatError):
@@ -125,6 +131,16 @@ class RunRow:
     @property
     def fault(self) -> bool:
         return bench.program(self.program).fault is not None
+
+
+@dataclass(frozen=True)
+class RunLabel:
+    """One planned run of a block order file: its position in the block, its program, and its repeat,
+    which is the run index of its row."""
+
+    position: int
+    program: str
+    repeat: int
 
 
 @dataclass(frozen=True)
@@ -278,6 +294,56 @@ def read_runs(path: str | Path) -> tuple[RunRow, ...]:
         duplicate = next(i for i in ids if ids.count(i) > 1)
         raise InputError(f"{path.name}: the run id {duplicate} appears more than once.")
     return tuple(rows)
+
+
+def _order(path: Path) -> tuple[RunLabel, ...]:
+    labels: list[RunLabel] = []
+    try:
+        with path.open(encoding="utf-8", newline="") as stream:
+            reader = csv.DictReader(stream)
+            if tuple(reader.fieldnames or ()) != ORDER_COLUMNS:
+                raise InputError(f"{path.name}: the header must be {','.join(ORDER_COLUMNS)}.")
+            for line, record in enumerate(reader, start=2):
+                if None in record or any(v is None for v in record.values()):
+                    raise InputError(f"{path.name}, line {line}: the row has the wrong number of fields.")
+                try:
+                    repeat = _int(record["repeat"], "repeat", minimum=1)
+                    if repeat > PLANNED_RUNS:
+                        raise ValueError(f"repeat must be 1 to {PLANNED_RUNS}")
+                    label = RunLabel(
+                        _int(record["position"], "position", minimum=1),
+                        bench.program(record["program"]).id,
+                        repeat,
+                    )
+                except (KeyError, ValueError) as e:
+                    raise InputError(f"{path.name}, line {line}: {e}") from e
+                if label.position != line - 1:
+                    raise InputError(f"{path.name}, line {line}: the position must be {line - 1}.")
+                labels.append(label)
+    except OSError as e:
+        raise InputError(f"{path.name}: {e}") from e
+    runs = [(label.program, label.repeat) for label in labels]
+    if len(set(runs)) != len(runs):
+        program, repeat = next(r for r in runs if runs.count(r) > 1)
+        raise InputError(f"{path.name}: {program} repeat {repeat} appears more than once.")
+    return tuple(labels)
+
+
+def read_orders(folder: str | Path) -> dict[int, tuple[RunLabel, ...]]:
+    """Read every `block-<bb>.csv` of `bench/order/` (section 6.3), by block number.
+
+    The positions of a file run from 1 in file order, and no run label repeats. Without the folder,
+    which step 4 of section 14 writes, there is no order, and no block can be complete."""
+    folder = Path(folder)
+    orders: dict[int, tuple[RunLabel, ...]] = {}
+    if not folder.is_dir():
+        return orders
+    for path in sorted(folder.iterdir()):
+        match = _ORDER_FILE.fullmatch(path.name)
+        if match is None or not _lockable(path):
+            continue
+        orders[int(match.group(1))] = _order(path)
+    return orders
 
 
 def _finite(value: Any, name: str) -> float:
