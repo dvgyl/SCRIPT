@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 from scriptkin.bench import program
-from scriptkin.bench.camera import (
+from scriptkin.bench.camerafiles import (
     Calibration,
     CameraFileError,
     Clock,

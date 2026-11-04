@@ -27,7 +27,7 @@ import cv2
 import numpy as np
 
 from scriptkin.bench.calibration import grey, to_image, to_plane
-from scriptkin.bench.camera import (
+from scriptkin.bench.camerafiles import (
     Calibration,
     CameraFileError,
     Clock,

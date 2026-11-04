@@ -24,7 +24,7 @@ import cv2
 import numpy as np
 
 from scriptkin.bench.calibration import calibrate_lens, calibrate_plane
-from scriptkin.bench.camera import MIN_LENS_VIEWS, Calibration, Frame, Lens, Plane, Region
+from scriptkin.bench.camerafiles import MIN_LENS_VIEWS, Calibration, Frame, Lens, Plane, Region
 from scriptkin.bench.tracker import measure_marker_offset
 from scriptkin.quality import Refusal
 from scriptkin.recording import FloatArray

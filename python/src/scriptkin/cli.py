@@ -258,7 +258,7 @@ def _bench_lens(args: argparse.Namespace) -> tuple[Any, list[Path]]:
 
 def _bench_plane(args: argparse.Namespace) -> tuple[Any, list[Path]]:
     from scriptkin.bench.calibration import calibrate_plane, read_image
-    from scriptkin.bench.camera import Lens, read_camera_file
+    from scriptkin.bench.camerafiles import Lens, read_camera_file
 
     lens = read_camera_file(Lens, args.lens)
     plane = calibrate_plane(read_image(args.board), lens, args.pattern, args.pitch_mm, args.x_direction)
@@ -267,7 +267,7 @@ def _bench_plane(args: argparse.Namespace) -> tuple[Any, list[Path]]:
 
 def _bench_marker_offset(args: argparse.Namespace) -> tuple[Any, list[Path]]:
     from scriptkin.bench.calibration import read_image
-    from scriptkin.bench.camera import Plane, Region, read_camera_file
+    from scriptkin.bench.camerafiles import Plane, Region, read_camera_file
     from scriptkin.bench.tracker import measure_marker_offset
 
     plane = read_camera_file(Plane, args.plane)
@@ -276,7 +276,7 @@ def _bench_marker_offset(args: argparse.Namespace) -> tuple[Any, list[Path]]:
 
 
 def _bench_clock(args: argparse.Namespace) -> tuple[Any, list[Path]]:
-    from scriptkin.bench.camera import Region, frames_path, read_frame_times
+    from scriptkin.bench.camerafiles import Region, frames_path, read_frame_times
     from scriptkin.bench.clock import led_levels, measure_clock
     from scriptkin.bench.tracker import read_video
 
@@ -287,7 +287,7 @@ def _bench_clock(args: argparse.Namespace) -> tuple[Any, list[Path]]:
 
 
 def _bench_readout(args: argparse.Namespace) -> tuple[Any, list[Path]]:
-    from scriptkin.bench.camera import Region
+    from scriptkin.bench.camerafiles import Region
     from scriptkin.bench.clock import measure_readout
     from scriptkin.bench.tracker import read_video
 
@@ -295,7 +295,7 @@ def _bench_readout(args: argparse.Namespace) -> tuple[Any, list[Path]]:
 
 
 def _bench(args: argparse.Namespace) -> int:
-    from scriptkin.bench.camera import write_camera_file
+    from scriptkin.bench.camerafiles import write_camera_file
     from scriptkin.formats import FormatError
     from scriptkin.quality import Refusal
 

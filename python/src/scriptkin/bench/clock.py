@@ -13,7 +13,7 @@ from collections.abc import Iterable
 
 import numpy as np
 
-from scriptkin.bench.camera import CLOCK_TOLERANCE, MIN_CLOCK_PERIODS, Clock, Frame, Readout, Region
+from scriptkin.bench.camerafiles import CLOCK_TOLERANCE, MIN_CLOCK_PERIODS, Clock, Frame, Readout, Region
 from scriptkin.bench.track import BoolArray, FrameTimes
 from scriptkin.quality import Refusal, RefusalCode
 from scriptkin.recording import FloatArray

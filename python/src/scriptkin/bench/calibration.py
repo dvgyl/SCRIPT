@@ -22,7 +22,7 @@ from typing import Literal
 import cv2
 import numpy as np
 
-from scriptkin.bench.camera import (
+from scriptkin.bench.camerafiles import (
     MAX_PLANE_RESIDUAL_MM,
     MIN_LENS_VIEWS,
     CameraFileError,

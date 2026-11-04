@@ -15,7 +15,7 @@ from scriptkin.bench.calibration import (
     to_plane,
     undistort,
 )
-from scriptkin.bench.camera import (
+from scriptkin.bench.camerafiles import (
     Calibration,
     CameraFileError,
     Clock,
