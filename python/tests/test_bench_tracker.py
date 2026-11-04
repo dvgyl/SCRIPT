@@ -176,29 +176,51 @@ def test_marker_is_followed_from_the_lift_height_through_the_run(
     assert np.linalg.norm(track.xy - seen, axis=1).max() <= 0.1
 
 
-def test_a_larger_bright_shape_inside_the_first_square_is_not_the_marker() -> None:
-    # Detects a first-frame search that takes a bright region of the lit screen larger than the marker
-    # dot, such as a shape enclosed by a dark line, which the 24 mm square reaches beyond the black
-    # field. The tracker then follows a still shape and the record has no motion.
+def _screen_disc(centre_mm: FloatArray, radius_mm: float) -> render.Figure:
+    """A bright disc of the lit screen enclosed by a dark line 0.6 mm wide, such as a closed stimulus
+    figure or a UI shape."""
+
+    def figure(xy: FloatArray) -> FloatArray:
+        distance = np.linalg.norm(xy - centre_mm, axis=-1)
+        return np.where((distance > radius_mm) & (distance < radius_mm + 0.6), -160.0, 0.0)
+
+    return figure
+
+
+@pytest.mark.parametrize("radius_mm", [1.55, 1.9, 2.5])
+def test_a_screen_shape_inside_the_first_square_is_not_the_marker(radius_mm: float) -> None:
+    # Detects a first-frame search that takes a bright region of the lit screen, which the 24 mm square
+    # reaches beyond the black field, instead of the marker: a disc of 1.07, 1.60, or 2.78 times the dot
+    # area enclosed by a dark line. The area band keeps the largest disc out; only the black field of
+    # the marker tells the two others apart. The tracker then followed a still shape.
     camera = render.main_camera()
     plane = camera.plane()
     start = np.array([-8.0, 20.0])
     centre = start + np.array(render.MARKER_OFFSET_MM)
-    ring_centre = centre + np.array([-8.5, -6.0])
-
-    def ring(xy: FloatArray) -> FloatArray:
-        # A dark ring, 0.6 mm wide, around a bright disc of 2.5 mm radius: 2.8 times the dot area.
-        distance = np.linalg.norm(xy - ring_centre, axis=-1)
-        return np.where((distance > 2.5) & (distance < 3.1), -160.0, 0.0)
-
+    disc = _screen_disc(centre + np.array([-8.5, -6.0]), radius_mm)
     for dx in (0.0, 5.7):
         shift = np.array([dx, 0.0])
-        scene = render.Scene(camera, "ipad", figure=ring)
+        scene = render.Scene(camera, "ipad", figure=disc)
         frame = next(scene.frames(render.still((float(start[0] + dx), float(start[1]))), 1))
         found = find_marker(frame, search_outline(centre, plane, FIRST_SEARCH_MM), FIRST_SEARCH_MM)
         assert found is not None, dx
         marker_px = camera.project(np.array([centre + shift]))[0]
         assert np.linalg.norm(np.array(found) - marker_px) < 1.0, (dx, found, marker_px)
+
+
+def test_a_screen_shape_inside_the_tracking_square_is_not_the_marker() -> None:
+    # Detects a 10 mm square, which the marker offset and every frame after the first search, that takes
+    # a bright disc of the lit screen of 1.07 times the dot area, enclosed by a dark line, as the marker.
+    camera = render.main_camera()
+    plane = camera.plane()
+    marker = np.array([30.0, 30.0]) + np.array(render.MARKER_OFFSET_MM)
+    disc_mm = np.array([0.0, 30.0])
+    scene = render.Scene(camera, "ipad", figure=_screen_disc(disc_mm, 1.55))
+    frame = next(scene.frames(render.still((30.0, 30.0)), 1))
+    assert find_marker(frame, search_outline(disc_mm, plane)) is None
+    found = find_marker(frame, search_outline(marker, plane))
+    assert found is not None
+    assert np.linalg.norm(np.array(found) - camera.project(np.array([marker]))[0]) < 1.0
 
 
 @pytest.mark.parametrize("readout", list(ReadoutDirection))
@@ -207,6 +229,7 @@ def test_row_correction_reduces_the_error_on_the_fast_program(readout: ReadoutDi
     # ignores the readout direction, which doubles the error of a bottom-first sensor (protocol 7.3).
     motion, duration = _program("loops-l-v80")
     track = _track("wacom", motion, duration, readout)
+    assert track.found.all()
     corrected = _rms(_errors(track, motion, track.t))
     assert corrected <= 0.01
     assert _rms(_errors(track, motion, track.t_frame)) > 5 * corrected

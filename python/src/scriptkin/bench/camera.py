@@ -16,6 +16,18 @@ run, so the window never depends on the device record that the camera measures. 
 touches an edge of the window is cut, because the movement extends beyond the commanded window, and
 the run is then a motion failure of section 7.6 (`touches_window`, `ExecutedMovement.window_edge`).
 
+A failed coarse alignment. A clip without a window has no motion interval, so the rules of section 7.3
+apply over the whole clip. The record is invalid (section 7.7) only for a camera cause: the clip is
+shorter than the commanded motion, or it fails a rule of section 7.3 over the whole clip. A clip without
+a camera cause whose profile correlates below `COARSE_CORRELATION` shows a movement that does not match
+the command, so the record is valid and `misaligned`, and the run is a motion failure of section 7.6
+with the reason `alignment`. With the commanded motion as the only reference, a pause of 0.5, 2, or
+4 s inside `loops-l-v20`, or a run 5 percent off the command on `loops-l-v20` or `loops-l-v80`,
+correlates at 0.18 to 0.48; as an invalid record it kept the run for the features that the camera
+does not reference. A clip that starts 0.2 to 1 s after the movement starts, but is still as long as
+the command, also fails the run, with `window_edge` or `alignment`: the camera cannot tell it from a
+movement that does not match the command.
+
 The QC policy. The camera record has no policy of its own, so `DEFAULT_QC` applies. Its `max_gap_s` of
 0.05 s is twelve frame intervals at 240 frames per second: a marker lost for twelve or more consecutive
 frames splits the track into two segments, as the same loss would split a device record. `min_rate_hz`
@@ -78,8 +90,9 @@ _MIRROR = np.array([1.0, -1.0])
 
 class CameraRule(StrEnum):
     ALIGNMENT = "alignment"
-    """The run has no commanded motion, the clip does not hold the whole commanded motion, or the speed
-    profile of the clip does not match the commanded profile (`coarse_alignment`)."""
+    """The record has no window (`coarse_alignment`), and the cause is not the movement: the run has no
+    commanded motion, the clip does not hold the whole commanded motion, or the clip fails another rule
+    over the whole clip."""
     DUPLICATE_FRAME = "duplicate_frame"
     """A duplicate frame inside the motion interval."""
     FRAME_INTERVAL = "frame_interval"
@@ -100,10 +113,19 @@ class CameraRecord:
     window_edge: bool = False
     """The motion interval touches an edge of its window (`touches_window`). The record is valid, and
     the executed movement check of section 7.6 fails the run."""
+    alignment: CoarseAlignment | None = None
+    """The coarse alignment of the clip, or None when it cannot be computed."""
 
     @property
     def valid(self) -> bool:
+        """The record passes every rule and has a motion interval, so it can measure the movement."""
         return not self.failed and isinstance(self.run.motion, Motion)
+
+    @property
+    def misaligned(self) -> bool:
+        """The clip passes every rule over the whole clip, but its profile does not match the command. The
+        record has no motion interval, and the run is a motion failure of section 7.6."""
+        return not self.failed and self.alignment is not None and not self.alignment.matches
 
 
 @dataclass(frozen=True)
@@ -140,6 +162,21 @@ class PathFit:
     iterations: int
 
 
+class MotionCheck(StrEnum):
+    """The executed movement check of section 7.6 for one run. A failure value is its reason in
+    `run_status.csv`."""
+
+    PASSED = "passed"
+    MOTION_FAILURE = "motion_failure"
+    """The largest path distance is above 0.2 mm, or the motion duration is off the command by more than
+    1 percent."""
+    WINDOW_EDGE = "window_edge"
+    """The camera motion interval touches an edge of its window (`CameraRecord.window_edge`)."""
+    ALIGNMENT = "alignment"
+    """The clip has no camera cause, but its profile does not match the command
+    (`CameraRecord.misaligned`)."""
+
+
 @dataclass(frozen=True)
 class ExecutedMovement:
     """Section 7.6 for one run with a valid camera record."""
@@ -152,12 +189,19 @@ class ExecutedMovement:
     commanded window and `motion_s` holds only a part of it (`CameraRecord.window_edge`)."""
 
     @property
-    def failure(self) -> bool:
-        return (
-            self.window_edge
-            or self.fit.max_mm > MAX_PATH_DISTANCE_MM
+    def check(self) -> MotionCheck:
+        if self.window_edge:
+            return MotionCheck.WINDOW_EDGE
+        if (
+            self.fit.max_mm > MAX_PATH_DISTANCE_MM
             or abs(self.motion_s - self.commanded_s) > MAX_DURATION_ERROR * self.commanded_s
-        )
+        ):
+            return MotionCheck.MOTION_FAILURE
+        return MotionCheck.PASSED
+
+    @property
+    def failure(self) -> bool:
+        return self.check is not MotionCheck.PASSED
 
 
 def camera_trial(track: Track) -> Trial:
@@ -188,6 +232,11 @@ def led_count_agrees(led: BoolArray, rate_hz: float) -> bool:
     return bool(np.all(np.abs(counts - rate_hz) < 1 + LED_RATE_TOLERANCE * rate_hz)) and (
         abs(total - periods * rate_hz) < 1 + LED_RATE_TOLERANCE * periods * rate_hz
     )
+
+
+def whole_clip(track: Track) -> MotionInterval | None:
+    """The interval from the first frame to the last, for the rules of section 7.3 without a window."""
+    return MotionInterval(float(track.t_frame[0]), float(track.t_frame[-1])) if len(track.t_frame) else None
 
 
 def validity(track: Track, interval: MotionInterval | None) -> tuple[CameraRule, ...]:
@@ -234,6 +283,11 @@ class CoarseAlignment:
     lag_s: float
     correlation: float
 
+    @property
+    def matches(self) -> bool:
+        """Section 7.4: the profile of the clip matches the commanded profile, so the lag places a window."""
+        return self.correlation >= COARSE_CORRELATION
+
 
 def _smoothed(profile: FloatArray, grid_hz: float) -> FloatArray:
     """The moving average of a speed profile over `COARSE_SMOOTHING_S`, with zeros beyond its ends."""
@@ -265,10 +319,10 @@ def coarse_alignment(
     `line-osc11`, 0.94 on `line-osc5`, and at least 0.79 on the loops and spiral programs. The fine
     alignment reads the raw profiles as before.
 
-    The alignment fails when the clip does not hold the whole reference interval, and when the
-    largest coefficient is below `COARSE_CORRELATION`. The two records of one run correlate above
-    0.9. A clip of another program correlates below 0.5, because its profile has another length and
-    another shape.
+    The alignment refuses when the clip has no grid or does not hold the whole reference interval.
+    The caller compares the largest coefficient with `COARSE_CORRELATION` (`CoarseAlignment.matches`).
+    The two records of one run correlate above 0.9. A clip of another program correlates below 0.5,
+    because its profile has another length and another shape.
     """
     grids = [k for _, k in contact_grids(ok, settings)]
     if not grids:
@@ -281,18 +335,10 @@ def coarse_alignment(
         return Refusal(RefusalCode.TOO_FEW_VALUES, "The clip is shorter than the motion of the reference.")
     coefficients = _sliding_correlation(_smoothed(profile, hz), _smoothed(clip, hz))
     peak = int(np.argmax(coefficients))
-    if coefficients[peak] < COARSE_CORRELATION:
-        return Refusal(
-            RefusalCode.UNDEFINED,
-            f"The speed profiles of the clip and the reference correlate at {coefficients[peak]:.2f} at"
-            f" best, below {COARSE_CORRELATION:g}.",
-        )
     return CoarseAlignment(first + peak / hz - reference.interval.start_s, float(coefficients[peak]))
 
 
-def motion_window(
-    reference: Motion | None, ok: Accepted, settings: Preprocessing = DEFAULT_PREPROCESSING
-) -> MotionInterval | Refusal:
+def motion_window(reference: Motion, found: CoarseAlignment) -> MotionInterval:
     """Where the motion interval rule of section 7.4 applies on a camera record.
 
     The window is the commanded interval at the lag of `coarse_alignment`, wider by `WINDOW_BEFORE_S`
@@ -304,11 +350,6 @@ def motion_window(
     is at 2 percent slow on `loops-l-v20` and `spiral-l-v20`, and `loops-l-v20` 1.2 percent slow
     keeps its interval and fails the duration check.
     """
-    if reference is None:
-        return Refusal(RefusalCode.NOT_APPLICABLE, "The run has no reference record for the alignment.")
-    found = coarse_alignment(reference, ok, settings)
-    if isinstance(found, Refusal):
-        return found
     return MotionInterval(
         reference.interval.start_s + found.lag_s - WINDOW_BEFORE_S,
         reference.interval.end_s + found.lag_s + WINDOW_AFTER_S,
@@ -331,26 +372,48 @@ def touches_window(
 def camera_record(
     track: Track, reference: Motion | None, settings: Preprocessing = DEFAULT_PREPROCESSING
 ) -> CameraRecord:
-    """The record of a track, with its motion interval inside the window of the commanded motion."""
+    """The record of a track, with its motion interval inside the window of the commanded motion.
+
+    Without a window, the record is invalid for a camera cause and `misaligned` without one (module
+    docstring)."""
     trial = camera_trial(track)
     qc = assess(trial, DEFAULT_QC)
-    failed: tuple[CameraRule, ...] = ()
-    if isinstance(qc, Accepted):
-        window = motion_window(reference, qc, settings)
-        if isinstance(window, Refusal):
-            refusal, failed = window, (CameraRule.ALIGNMENT,)
-        else:
+    if not isinstance(qc, Accepted):
+        return _without_motion(track, trial, qc.refusals[0], validity(track, None), None, settings)
+    found: CoarseAlignment | Refusal
+    if reference is None:
+        found = Refusal(RefusalCode.NOT_APPLICABLE, "The run has no commanded motion for the alignment.")
+    else:
+        found = coarse_alignment(reference, qc, settings)
+        if isinstance(found, CoarseAlignment) and found.matches:
+            window = motion_window(reference, found)
             run = run_features(qc, settings, window=window)
             motion = run.motion if isinstance(run.motion, Motion) else None
             failed = validity(track, motion.interval if motion is not None else None)
             edge = motion is not None and touches_window(motion, window, qc, settings)
-            return CameraRecord(track, run, failed, edge)
-    else:
-        refusal = qc.refusals[0]
-    run = RunFeatures(
-        refusal, {**feature_cells(refusal, settings), **sampling_cells(trial, DEFAULT_QC.max_gap_s)}
+            return CameraRecord(track, run, failed, edge, found)
+    whole = validity(track, whole_clip(track))
+    if isinstance(found, Refusal):
+        return _without_motion(track, trial, found, (CameraRule.ALIGNMENT, *whole), None, settings)
+    mismatch = Refusal(
+        RefusalCode.UNDEFINED,
+        f"The speed profiles of the clip and the command correlate at {found.correlation:.2f} at best,"
+        f" below {COARSE_CORRELATION:g}.",
     )
-    return CameraRecord(track, run, tuple(sorted((*failed, *validity(track, None)))))
+    failed = (CameraRule.ALIGNMENT, *whole) if whole else ()
+    return _without_motion(track, trial, mismatch, failed, found, settings)
+
+
+def _without_motion(
+    track: Track,
+    trial: Trial,
+    refusal: Refusal,
+    failed: tuple[CameraRule, ...],
+    alignment: CoarseAlignment | None,
+    settings: Preprocessing,
+) -> CameraRecord:
+    cells = {**feature_cells(refusal, settings), **sampling_cells(trial, DEFAULT_QC.max_gap_s)}
+    return CameraRecord(track, RunFeatures(refusal, cells), tuple(sorted(failed)), alignment=alignment)
 
 
 def _profile_between(grids: Sequence[Kinematics], start_s: float, end_s: float, grid_hz: float) -> FloatArray:
