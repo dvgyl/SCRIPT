@@ -16,4 +16,10 @@ ffprobe -v error -select_streams v:0 -show_frames -of json synthetic-r1.avi > sy
 
 The Homebrew ffprobe ran with `DYLD_LIBRARY_PATH=/opt/homebrew/Cellar/x265/4.2/lib`, because its link to the x265 library was broken on that machine.
 
-The tests never run ffprobe. If you write the clip again, run the command again and keep both files together.
+`synthetic-r1-turned.mov` holds the first 3 frames of `synthetic-r1.avi`, copied without a new encoding into a QuickTime file with a display matrix of a half turn. A phone can write this matrix for a clip that it records upside down. The ffmpeg 8.1.2 of the same machine made it on 4 November 2026, with the same library path, with this command:
+
+```sh
+ffmpeg -display_rotation 180 -i synthetic-r1.avi -frames:v 3 -c copy synthetic-r1-turned.mov
+```
+
+The tests never run ffmpeg or ffprobe. If you write the clip again, run the commands again and keep the files together.

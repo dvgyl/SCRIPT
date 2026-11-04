@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import struct
 from dataclasses import replace
 from pathlib import Path
 
@@ -12,6 +13,7 @@ import pytest
 from scriptkin.bench.calibration import (
     calibrate_lens,
     calibrate_plane,
+    read_image,
     to_plane,
     undistort,
 )
@@ -209,3 +211,26 @@ def test_lens_command_refuses_a_bad_board_before_it_reads_an_image(
         )
     assert stop.value.code == 2
     assert option in capsys.readouterr().err
+
+
+def _with_orientation(jpeg: bytes, orientation: int) -> bytes:
+    """The JPEG with an Exif segment that holds only the orientation tag."""
+    entry = struct.pack(">HHHIHH", 1, 0x0112, 3, 1, orientation, 0)
+    exif = b"Exif\x00\x00" + b"MM\x00\x2a\x00\x00\x00\x08" + entry + b"\x00\x00\x00\x00"
+    return jpeg[:2] + b"\xff\xe1" + struct.pack(">H", len(exif) + 2) + exif + jpeg[2:]
+
+
+def test_image_boundary_does_not_turn_a_still_with_an_exif_orientation(tmp_path: Path) -> None:
+    # Detects an image boundary that turns a still by its Exif orientation, so that the still leaves the
+    # pixel frame of the clips of its mounting.
+    image = np.full((40, 60), 30, np.uint8)
+    image[:10, :20] = 220
+    ok, encoded = cv2.imencode(".jpg", image)
+    assert ok
+    plain, turned = tmp_path / "plain.jpg", tmp_path / "turned.jpg"
+    plain.write_bytes(encoded.tobytes())
+    turned.write_bytes(_with_orientation(encoded.tobytes(), 6))
+    default = cv2.imread(str(turned), cv2.IMREAD_GRAYSCALE)
+    assert default is not None and default.shape == (60, 40)
+    assert read_image(turned).shape == (40, 60)
+    assert np.array_equal(read_image(turned), read_image(plain))

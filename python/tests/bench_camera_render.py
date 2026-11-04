@@ -434,6 +434,8 @@ FIXTURE_DUPLICATE = 9
 FIXTURE_MISSING = 15
 FIXTURE_LED_FRAMES = 12
 """The LED is on in the first 12 frames of the fixture clip and off in the rest."""
+FIXTURE_TURNED_FRAMES = 3
+"""The turned fixture clip holds the first 3 frames of the fixture clip, with a half-turn display matrix."""
 
 
 def fixture_motion(t: FloatArray) -> FloatArray:

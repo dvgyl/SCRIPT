@@ -374,6 +374,18 @@ def test_video_boundary_decodes_every_frame_of_the_real_clip_unchanged() -> None
     assert all(np.array_equal(a, b) for a, b in zip(decoded, expected, strict=True))
 
 
+def test_video_boundary_does_not_turn_a_clip_with_rotation_metadata() -> None:
+    # Detects a video boundary that turns the frames by the rotation metadata of the clip, so that they
+    # leave the pixel frame of the plane calibration and the readout direction.
+    clip = FIXTURES / f"{render.FIXTURE_RUN}-turned.mov"
+    capture = cv2.VideoCapture(str(clip), cv2.CAP_FFMPEG)
+    assert capture.get(cv2.CAP_PROP_ORIENTATION_META) == 180
+    capture.release()
+    stored = render.fixture_frames()[: render.FIXTURE_TURNED_FRAMES]
+    decoded = list(read_video(clip))
+    assert [np.array_equal(a, b) for a, b in zip(decoded, stored, strict=True)] == [True] * len(stored)
+
+
 def test_track_command_tracks_the_real_clip(tmp_path: Path) -> None:
     # Detects a track command that loses a frame observation of a real clip or names the wrong input files.
     camera = render.fixture_camera()

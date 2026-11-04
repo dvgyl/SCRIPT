@@ -198,11 +198,18 @@ def track_frames(
 
 
 def read_video(path: str | Path) -> Iterator[Frame]:
-    """The decoded frames of a clip, in order, through the FFmpeg backend of OpenCV."""
+    """The decoded frames of a clip, in order, through the FFmpeg backend of OpenCV.
+
+    The frames are the frames that the file stores. The rotation metadata of the clip does not turn
+    them, so that every clip and still of a mounting keeps one pixel frame (`read_image`).
+    """
     capture = cv2.VideoCapture(str(path), cv2.CAP_FFMPEG)
     if not capture.isOpened():
         raise CameraFileError(f"{Path(path).name}: OpenCV cannot open the clip.")
     try:
+        # The FFmpeg backend refuses this property as a parameter of the open call.
+        if not capture.set(cv2.CAP_PROP_ORIENTATION_AUTO, 0):
+            raise CameraFileError(f"{Path(path).name}: OpenCV cannot turn off the automatic orientation.")
         while True:
             ok, frame = capture.read()
             if not ok:
