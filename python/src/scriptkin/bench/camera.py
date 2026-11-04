@@ -23,6 +23,7 @@ catches one lost frame; with playback times nothing does.
 
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -284,7 +285,7 @@ def spatial_accuracy(device: Motion, camera: Motion, alignment: TimeAlignment) -
     )
 
 
-def _nearest_on_path(points: FloatArray, vertices: FloatArray) -> FloatArray:
+def nearest_on_path(points: FloatArray, vertices: FloatArray) -> FloatArray:
     """The nearest point of a polyline to each point. Exact: it checks every edge that can be nearer."""
     deltas = np.diff(vertices, axis=0)
     lengths = np.linalg.norm(deltas, axis=1)
@@ -292,23 +293,23 @@ def _nearest_on_path(points: FloatArray, vertices: FloatArray) -> FloatArray:
     tree = KDTree(vertices)
     bound = np.asarray(tree.query(points)[0])
     # A nearer point lies on an edge with an endpoint within the nearest-vertex distance plus one edge.
-    groups = tree.query_ball_point(points, bound + lengths.max() + 1e-9)
-    nearest = np.empty_like(points)
-    for block in np.array_split(np.arange(len(points)), max(1, (len(points) + 255) // 256)):
-        edges = [
-            np.unique(np.clip(np.concatenate((v - 1, v)), 0, last_edge))
-            for v in (np.asarray(groups[i], dtype=np.int64) for i in block)
-        ]
-        rows: IntArray = np.repeat(block, [len(e) for e in edges])
-        candidates = np.concatenate(edges)
-        offsets = points[rows] - vertices[candidates]
-        divisors = np.where(lengths[candidates] > 0, lengths[candidates] ** 2, 1.0)
-        fractions = np.clip(np.sum(offsets * deltas[candidates], axis=1) / divisors, 0, 1)
-        projected = vertices[candidates] + deltas[candidates] * fractions[:, None]
-        squared = np.sum((points[rows] - projected) ** 2, axis=1)
-        first = np.lexsort((squared, rows))[np.searchsorted(rows, block)]
-        nearest[block] = projected[first]
-    return nearest
+    groups = tree.query_ball_point(points, bound + lengths.max() + 1e-9, return_sorted=False)
+    counts = np.fromiter((len(g) for g in groups), dtype=np.int64, count=len(points))
+    near = np.fromiter(itertools.chain.from_iterable(groups), dtype=np.int64, count=int(counts.sum()))
+    # The candidates of a point are the edges that end or start at a vertex of its ball. They stay
+    # grouped by point, so the nearest candidate of each point is a minimum over its group.
+    candidates = np.clip(np.column_stack((near - 1, near)).ravel(), 0, last_edge)
+    rows: IntArray = np.repeat(np.arange(len(points)), 2 * counts)
+    starts = np.concatenate(([0], np.cumsum(2 * counts)[:-1]))
+    origins = points[rows]
+    ends, steps = vertices[candidates], deltas[candidates]
+    divisors = np.where(lengths[candidates] > 0, lengths[candidates] ** 2, 1.0)
+    fractions = np.clip(np.sum((origins - ends) * steps, axis=1) / divisors, 0, 1)
+    projected = ends + steps * fractions[:, None]
+    squared = np.sum((origins - projected) ** 2, axis=1)
+    smallest = np.minimum.reduceat(squared, starts)
+    first = np.flatnonzero(squared == np.repeat(smallest, 2 * counts))
+    return projected[first[np.searchsorted(rows[first], np.arange(len(points)))]]
 
 
 def _rms(aligned: FloatArray, target: FloatArray) -> float:
@@ -341,13 +342,13 @@ def path_fit(
     target = command.position(samples.t + alignment.lag_s) * _MIRROR
     rotation, shift = rigid_fit(samples.xy, target)
     aligned = samples.xy @ rotation + shift
-    target = _nearest_on_path(aligned, vertices)
+    target = nearest_on_path(aligned, vertices)
     rms = _rms(aligned, target)
     iterations = 0
     while iterations < _ICP_MAX_ITERATIONS:
         rotation, shift = rigid_fit(samples.xy, target)
         aligned = samples.xy @ rotation + shift
-        target = _nearest_on_path(aligned, vertices)
+        target = nearest_on_path(aligned, vertices)
         previous, rms = rms, _rms(aligned, target)
         iterations += 1
         if previous - rms < _ICP_TOLERANCE_MM:
