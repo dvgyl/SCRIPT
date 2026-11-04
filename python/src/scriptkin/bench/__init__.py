@@ -5,7 +5,7 @@ a motion of one bench task at one speed, with or without a fault. It goes into `
 Both captures bundle the programs file, and the decider checks each run against it. The study script
 `python/studies/bench_programs.py` imports the designs from here and computes their move lists.
 
-The programs and the tasks are final for the build (protocol 1.1, section 5). The digests are
+The programs and the tasks are final for the build (protocol 1.2, section 5). The digests are
 provisional: `PROTOCOL_SHA256` and each trajectory digest are placeholders until the protocol lock.
 To add a program, add a row to `MAIN`. Its task follows from its geometry and scale. A new geometry
 needs one row in `_TASK_OF_GEOMETRY` here and one figure function in `battery.FIGURES`.
@@ -19,7 +19,7 @@ import json
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
-PROTOCOL_VERSION = "1.1"
+PROTOCOL_VERSION = "1.2"
 # Provisional. At the protocol lock, this becomes the SHA-256 of docs/BENCH_PROTOCOL.md.
 PROTOCOL_SHA256 = "0" * 64
 

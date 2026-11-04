@@ -154,7 +154,7 @@ func theSubjectShapeFollowsThePurposeAndTheBenchKey(name: String, original: Stri
 func aBenchValueOutsideTheProtocolIsRefused(name: String, original: String, replacement: String,
                                             expected: DecodeError) throws {
     // Detects a decoder that accepts a run index outside 1 to 7, a mounting outside M1 to M8, or the cameraSync mark,
-    // which bench protocol 1.1 and the Python reader refuse.
+    // which the bench protocol and the Python reader refuse.
     let line = try fixtureLine(name, replacing: original, with: replacement)
     #expect(throws: expected) { try LineCodec.decode(line) }
 }

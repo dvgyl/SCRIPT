@@ -67,7 +67,7 @@ private func withProbeBlock(_ config: StudyConfiguration) -> StudyConfiguration 
     // bench task, which the purpose gate could never start, or a fault program whose base is not a main program.
     let programs = try Contract.benchPrograms()
     #expect(programs.programs.count == 15)
-    #expect(programs.protocol.version == "1.1")
+    #expect(programs.protocol.version == "1.2")
     #expect(programs.program("fault-dwell")?.fault == "dwell" && programs.program("loops-s-v40")?.fault == nil)
     #expect(programs.program("loops-s-v40")?.speedMMPerS == 40 && programs.program("loops-s-v40")?.scale == 0.7)
     #expect(programs.program("fault-lift")?.base == "loops-l-v20" && programs.program("loops-l-v20")?.base == nil)

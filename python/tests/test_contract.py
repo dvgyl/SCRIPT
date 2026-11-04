@@ -233,7 +233,7 @@ def test_bench_programs_match_the_generator_and_the_battery() -> None:
     # geometry or the line of the protocol.
     programs = json.loads((CONTRACT / "bench_programs.json").read_text())
     assert programs == json.loads(bench.programs_json())
-    assert programs["protocol"] == {"version": "1.1", "sha256": bench.PROTOCOL_SHA256}
+    assert programs["protocol"] == {"version": "1.2", "sha256": bench.PROTOCOL_SHA256}
     table = {p["id"]: p for p in programs["programs"]}
     assert list(table) == [
         "loops-l-v20", "loops-l-v40", "loops-l-v80", "loops-s-v20", "loops-s-v40",
