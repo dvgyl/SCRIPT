@@ -44,6 +44,7 @@ import numpy as np
 
 from scriptkin import battery
 from scriptkin.bench import FAULT_BASE, FAULTS, LINE_FRAME_MM, LINE_START_MM, MAIN, Design
+from scriptkin.bench.moves import Move
 from scriptkin.quality import Refusal
 from scriptkin.recording import FloatArray
 from scriptkin.signal import DEFAULT_PREPROCESSING, derivatives, welch_band_power
@@ -64,16 +65,6 @@ PLANNED_BLOCKS = 12
 BLOCKS = 16
 ORDER_SEED = 20261103
 WELCH_MIN_WINDOWS = 3
-
-
-@dataclass(frozen=True)
-class Move:
-    """One timed move to an end point. `lift_mm` above 0 is a lift to that height and back."""
-
-    x_mm: float
-    y_mm: float
-    duration_s: float
-    lift_mm: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -283,6 +274,14 @@ def program(design: Design) -> tuple[Program, list[Move]]:
     return summary, move_list
 
 
+def start_point(design: Design) -> tuple[float, float]:
+    """The first point of the path of a program, in the stimulus frame."""
+    if design.geometry == "line":
+        return LINE_START_MM
+    xy = (loops_curve if design.geometry == "loops" else spiral_curve)(design.scale)[1]
+    return (float(xy[0, 0]), float(xy[0, 1]))
+
+
 def registered(program: Any) -> dict[str, Any]:
     """The program fields of a move list without `Design.base`, so the files keep the bytes that protocol 1.1
     registered. A fault file names its base at the top level."""
@@ -312,13 +311,19 @@ def main() -> None:
     rows: list[Program] = []
     for design in designs:
         summary, move_list = program(design)
+        start = start_point(design)
         rows.append(summary)
         if args.write:
-            payload = {"program": registered(summary), "moves": [asdict(m) for m in move_list]}
+            payload = {
+                "program": registered(summary),
+                "start": {"x_mm": start[0], "y_mm": start[1]},
+                "moves": [asdict(m) for m in move_list],
+            }
             write_program(args.write, payload, design.id)
     fault_rows: list[tuple[Design, float, float, int]] = []
     for design in FAULTS:
         move_list, length, duration = fault_program(design)
+        start = start_point(FAULT_BASE)
         fault_rows.append((design, length, duration, len(move_list)))
         if args.write:
             payload = {
@@ -326,6 +331,7 @@ def main() -> None:
                 "base": FAULT_BASE.id,
                 "path_length_mm": length,
                 "duration_s": duration,
+                "start": {"x_mm": start[0], "y_mm": start[1]},
                 "moves": [asdict(m) for m in move_list],
             }
             write_program(args.write, payload, design.id)
