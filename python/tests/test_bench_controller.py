@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import csv
 import hashlib
-import importlib.util
 import json
 import math
 import shutil
@@ -11,12 +10,19 @@ import sys
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
 
 import pytest
 import test_bench_moves as moves_tests
 
 from scriptkin import bench
+from scriptkin.bench.controller import (
+    NEXTDRAW_8511,
+    ControllerError,
+    Machine,
+    controller_digests,
+    translate,
+    translated_digests,
+)
 from scriptkin.bench.moves import Move, MoveList
 
 programs_folder = moves_tests.programs_folder
@@ -32,18 +38,7 @@ END_TIME_BOUND_MS = 0.5
 LIFT_SPEED_MM_S = 10.0
 
 
-def _load_script() -> Any:
-    spec = importlib.util.spec_from_file_location("bench_controller_study", STUDY)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    # The script's dataclasses resolve their string annotations through sys.modules.
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-script = _load_script()
-MACHINE = script.NEXTDRAW_8511
+MACHINE = NEXTDRAW_8511
 
 
 @pytest.fixture(scope="module")
@@ -151,7 +146,8 @@ def test_the_replayed_controller_file_keeps_the_end_points_durations_and_lifts(
     # Detects a translation that drifts, rounds the start point, drops, splits, or adds a move, shifts a move
     # in time, changes a move of whole milliseconds, moves in x or y during a lift, lifts to the wrong height,
     # moves the stylus up or down faster than 10 mm/s, moves on the surface while the stylus is in the air,
-    # leaves out the waits of 0.5 s and 0.3 s, or exceeds the step rate or the travel.
+    # leaves out the waits of 0.5 s and 0.3 s, ends before the last lift arrives, or exceeds the step rate
+    # or the travel.
     move_list = move_lists[pid]
     events, record = _translated(controller_folder, pid)
     path = move_list.path()
@@ -164,6 +160,7 @@ def test_the_replayed_controller_file_keeps_the_end_points_durations_and_lifts(
     assert (before.kind, before.end_ms - before.start_ms, before.steps) == ("SM", 500, (0, 0))
     assert (after.kind, after.end_ms - after.start_ms, after.steps) == ("SM", 300, (0, 0))
     assert lift.kind == "S2" and height_mm(lift.pulse_to) >= 10 and lift.speed_mm_s() <= LIFT_SPEED_MM_S
+    assert lift.slew_ms <= lift.end_ms - lift.start_ms
 
     t0 = before.end_ms
     found = knots(events)
@@ -242,17 +239,17 @@ def _line(*moves: Move, start: tuple[float, float] = (4.0, 8.0)) -> MoveList:
     ],
 )
 def test_the_translation_refuses_a_move_that_the_machine_cannot_execute_as_registered(
-    move_list: MoveList, machine: Any, message: str
+    move_list: MoveList, machine: Machine, message: str
 ) -> None:
     # Detects a translation that clips a fast move, a point outside the travel, a lift that moves or that
     # is too short for 10 mm/s, a move that rounds to 0 ms, a wait above the cap of SM, or a lift below 10 mm.
-    with pytest.raises(script.ControllerError, match=message):
-        script.translate(move_list, machine)
+    with pytest.raises(ControllerError, match=message):
+        translate(move_list, machine)
 
 
 def test_the_translation_accepts_a_move_at_the_step_rate_limit() -> None:
     # Detects a step-rate check that refuses 250 steps in 10 ms, which is the 25,000 steps/s of the EBB.
-    assert script.translate(_line(Move(7.125, 8.0, 0.01))).commands[2] == "SM,10,250,250,3"
+    assert translate(_line(Move(7.125, 8.0, 0.01))).commands[2] == "SM,10,250,250,3"
 
 
 def test_a_refused_program_stops_the_script_before_it_writes_a_file(
@@ -301,17 +298,33 @@ def test_the_trajectory_digests_refuse_a_move_list_or_a_controller_file_alone(
 ) -> None:
     # Detects digests that silently keep the placeholder for a move list without its controller file, or
     # that accept a controller file whose move list is gone, such as a program excluded after translation.
-    assert bench.trajectory_digests(tmp_path) == {}
+    assert controller_digests(tmp_path) == {}
     excluded = tmp_path / "excluded"
     shutil.copytree(controller_folder, excluded)
     for name in ("loops-l-v80.json", "loops-l-v80.ebb", "loops-l-v80.ebb.csv"):
         (excluded / name).unlink()
-    assert set(bench.trajectory_digests(excluded)) == {p.id for p in bench.PROGRAMS} - {"loops-l-v80"}
+    assert set(controller_digests(excluded)) == {p.id for p in bench.PROGRAMS} - {"loops-l-v80"}
     (excluded / "spiral-s-v20.ebb").unlink()
-    with pytest.raises(ValueError, match=r"spiral-s-v20\.json without spiral-s-v20\.ebb"):
-        bench.trajectory_digests(excluded)
-    stale = tmp_path / "stale"
-    shutil.copytree(controller_folder, stale)
-    (stale / "line-osc8.json").unlink()
-    with pytest.raises(ValueError, match=r"line-osc8\.ebb without line-osc8\.json"):
-        bench.trajectory_digests(stale)
+    with pytest.raises(ControllerError, match=r"spiral-s-v20\.json without spiral-s-v20\.ebb"):
+        controller_digests(excluded)
+    orphan = tmp_path / "orphan"
+    shutil.copytree(controller_folder, orphan)
+    (orphan / "line-osc8.json").unlink()
+    with pytest.raises(ControllerError, match=r"line-osc8\.ebb without line-osc8\.json"):
+        controller_digests(orphan)
+
+
+def test_the_registered_digests_refuse_a_controller_file_that_is_not_the_translation_of_its_move_list(
+    tmp_path: Path, controller_folder: Path
+) -> None:
+    # Detects a programs file that takes the digest of a stale controller file, written before its move
+    # list changed, so that the motion system would execute another movement than the registered one.
+    shutil.copytree(controller_folder, tmp_path, dirs_exist_ok=True)
+    assert translated_digests(tmp_path) == controller_digests(tmp_path)
+    changed = tmp_path / "line-osc5.json"
+    raw = json.loads(changed.read_text(encoding="utf-8"))
+    raw["moves"][100]["x_mm"] += 0.05
+    changed.write_text(json.dumps(raw), encoding="utf-8")
+    assert "line-osc5" in controller_digests(tmp_path)
+    with pytest.raises(ControllerError, match=r"line-osc5\.ebb is not the translation of line-osc5\.json"):
+        translated_digests(tmp_path)

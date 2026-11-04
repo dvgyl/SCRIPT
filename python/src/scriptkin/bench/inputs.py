@@ -31,7 +31,8 @@ pass section 6.5, `excludedPrograms`, the main programs that section 4.2 step 7 
 `bench/BENCH_LOCK.json` holds the protocol version, the lock commit, the `app.build` and
 `app.sourceRevision` of each capture tool by device role, and the SHA-256 of each locked file by its path
 relative to the root. `write_lock` hashes the files of section 14 step 5, with the translation script of
-section 4.1, every file of the analysis code under `LOCK_CODE`, and any extra file. The analysis code is the
+section 4.1, every file of the analysis code under `LOCK_CODE`, and any extra file. It refuses a programs
+file that does not record the digest of each controller file (`check_programs_file`). The analysis code is the
 `scriptkin` package that runs, which must be the one under the root (`code_folder`). `check_lock` refuses
 a lock that does not hold every file that it must hold, and a changed or missing file. `check_build`
 refuses a journal whose build is not the build of its device. The lock skips the `._` files that macOS
@@ -54,6 +55,7 @@ from typing import Any, cast
 import scriptkin
 from scriptkin import bench
 from scriptkin.bench import MOUNTINGS, RUNS
+from scriptkin.bench.controller import ControllerError, controller_digests
 from scriptkin.formats import FormatError
 from scriptkin.formats.export import verify_export
 from scriptkin.formats.journal import JournalError
@@ -486,7 +488,27 @@ def write_lock(
     if len(commit) != 40 or any(c not in "0123456789abcdef" for c in commit):
         raise InputError("The commit must be a full lower-case Git hash.")
     files = {p: _sha256(root / p) for p in lock_files(root, extra)}
+    check_programs_file(root)
     return Lock(bench.PROTOCOL_VERSION, commit, dict(builds), files)
+
+
+def check_programs_file(root: Path) -> None:
+    """Section 14 step 4: `contract/bench_programs.json` records the SHA-256 of the controller file of each
+    program with a move list under `bench/programs/`, so that the capture tools never lock a placeholder."""
+    try:
+        digests = controller_digests(root / "bench" / "programs")
+        raw: Any = json.loads((root / "contract" / "bench_programs.json").read_text(encoding="utf-8"))
+        recorded = {str(p["id"]): str(p["trajectorySHA256"]) for p in raw["programs"]}
+    except ControllerError as e:
+        raise InputError(str(e)) from e
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as e:
+        raise InputError(f"contract/bench_programs.json: {e}") from e
+    stale = sorted(pid for pid, digest in digests.items() if recorded.get(pid) != digest)
+    if stale:
+        raise InputError(
+            "contract/bench_programs.json does not record the controller file digest of"
+            f" {', '.join(stale)}. Run scriptkin contract regenerate."
+        )
 
 
 def lock_json(lock: Lock) -> bytes:

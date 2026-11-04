@@ -12,6 +12,7 @@ import test_bench_features as features_tests
 import test_bench_moves as moves_tests
 from conftest import fixture_lines, write_export
 
+from scriptkin import bench
 from scriptkin.bench.camera import (
     CameraRule,
     ExecutedMovement,
@@ -83,12 +84,19 @@ def dwell_gap_s(dwell: MoveList) -> float:
 
 def test_the_trial_of_a_row_is_found_and_every_disagreement_is_an_error(tmp_path: Path) -> None:
     # Detects a lookup that returns a trial of another program, run, or session, or that passes a
-    # row whose clip, run index, or program differs from the trial.
+    # row whose clip, run index, or program differs from the trial, or a trial whose trajectory digest
+    # is not the digest of the controller file of its program.
     write_export(tmp_path / "ipad", fixture_lines("bench_ipad"))
     journal = read_bench_journal(tmp_path / "ipad")
-    trial = trial_of(journal, row())
+
+    def trial_of_row(r: RunRow) -> Trial:
+        return trial_of(journal, r, bench.trajectory_sha256(r.program))
+
+    trial = trial_of_row(row())
     assert trial.index == 0 and trial.task.id == "bench-loops-l"
-    assert trial_of(journal, row("fault-lift", 1, 2)).index == 2
+    assert trial_of_row(row("fault-lift", 1, 2)).index == 2
+    with pytest.raises(InputError, match="records"):
+        trial_of(journal, row(), "0" * 64)
     cases: list[tuple[str, dict[str, Any]]] = [
         ("records", {"trial_index": 1}),
         ("no trial 9", {"trial_index": 9}),
@@ -98,7 +106,7 @@ def test_the_trial_of_a_row_is_found_and_every_disagreement_is_an_error(tmp_path
     ]
     for message, changes in cases:
         with pytest.raises(InputError, match=message):
-            trial_of(journal, row(**changes))
+            trial_of_row(row(**changes))
 
 
 def test_comparison_values_follow_the_scale_of_each_feature() -> None:

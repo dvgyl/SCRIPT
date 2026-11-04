@@ -104,19 +104,44 @@ CODE_FILE = "python/src/scriptkin/bench/stats.py"
 
 
 def lock_root(root: Path, extra: tuple[str, ...] = ()) -> Path:
-    """A root with every file of protocol section 14 step 5 with short content, and the analysis code.
+    """A root with every file of protocol section 14 step 5 with short content, a programs file that
+    records the digest of the one controller file, and the analysis code.
 
     The lock covers the package that runs, so the code folder of the root is a symbolic link to it.
     The tests never change a file of the package; they change the lock entries instead."""
-    folders = ("bench/programs/loops-s-v40.json", "bench/order/block-01.csv")
+    folders = (
+        "bench/programs/loops-s-v40.json",
+        "bench/programs/loops-s-v40.ebb",
+        "bench/order/block-01.csv",
+    )
     for rel in (*LOCK_FILES, *folders, *extra):
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f"content of {rel}\n", encoding="utf-8")
+    digest = hashlib.sha256((root / "bench/programs/loops-s-v40.ebb").read_bytes()).hexdigest()
+    programs = {"programs": [{"id": "loops-s-v40", "trajectorySHA256": digest}]}
+    (root / "contract/bench_programs.json").write_text(json.dumps(programs), encoding="utf-8")
     code = root / LOCK_CODE
     code.parent.mkdir(parents=True, exist_ok=True)
     code.symlink_to(Path(scriptkin.__file__).resolve().parent, target_is_directory=True)
     return root
+
+
+def test_the_lock_refuses_a_programs_file_without_the_controller_file_digests(tmp_path: Path) -> None:
+    # Detects a lock that registers a programs file with a placeholder digest, so that both capture tools
+    # record a digest that no controller file has, or a lock of a move list without its controller file.
+    root = lock_root(tmp_path)
+    programs = root / "contract" / "bench_programs.json"
+    good = programs.read_text(encoding="utf-8")
+    placeholder = [{"id": "loops-s-v40", "trajectorySHA256": bench.trajectory_sha256("loops-s-v40")}]
+    programs.write_text(json.dumps({"programs": placeholder}), encoding="utf-8")
+    with pytest.raises(InputError, match="does not record the controller file digest of loops-s-v40"):
+        write_lock(root, BUILDS, COMMIT)
+    programs.write_text(good, encoding="utf-8")
+    assert "bench/programs/loops-s-v40.ebb" in write_lock(root, BUILDS, COMMIT).files
+    (root / "bench" / "programs" / "loops-s-v40.ebb").unlink()
+    with pytest.raises(InputError, match=r"loops-s-v40\.json without loops-s-v40\.ebb"):
+        write_lock(root, BUILDS, COMMIT)
 
 
 def test_the_runs_file_reads_its_rows_and_rejects_each_damaged_row(tmp_path: Path) -> None:
@@ -246,6 +271,7 @@ def test_the_lock_hashes_every_file_and_the_check_finds_a_change(tmp_path: Path)
     expected = {
         *LOCK_FILES,
         "bench/programs/loops-s-v40.json",
+        "bench/programs/loops-s-v40.ebb",
         "bench/order/block-01.csv",
         "tools/translate.py",
     }

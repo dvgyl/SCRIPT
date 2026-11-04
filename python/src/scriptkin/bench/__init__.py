@@ -27,8 +27,6 @@ PROTOCOL_VERSION = "1.2"
 PROTOCOL_SHA256 = "0" * 64
 PROGRAM_FOLDER = Path(__file__).resolve().parents[4] / "bench" / "programs"
 """The move lists and the controller files of the repository (section 15)."""
-CONTROLLER_SUFFIX = ".ebb"
-"""The controller file of a program is `<program>.ebb` beside its move list `<program>.json`."""
 
 Geometry = Literal["loops", "spiral", "line"]
 SCALES = {"l": 1.0, "s": 0.7}
@@ -130,26 +128,14 @@ def program(program_id: str) -> Design:
     raise KeyError(program_id)
 
 
-def trajectory_digests(folder: Path) -> dict[str, str]:
-    """The SHA-256 of the controller file of each program that has a move list in the folder.
-
-    A move list without its controller file is an error, and so is a controller file without its move
-    list, so that the programs file never mixes a digest with a stale or a missing translation."""
-    digests: dict[str, str] = {}
-    for p in PROGRAMS:
-        move_list, controller = folder / f"{p.id}.json", folder / f"{p.id}{CONTROLLER_SUFFIX}"
-        if move_list.is_file() and controller.is_file():
-            digests[p.id] = hashlib.sha256(controller.read_bytes()).hexdigest()
-        elif move_list.is_file() or controller.is_file():
-            found, missing = (move_list, controller) if move_list.is_file() else (controller, move_list)
-            raise ValueError(f"{folder} holds {found.name} without {missing.name}.")
-    return digests
-
-
 @functools.cache
 def registered_digests() -> dict[str, str]:
-    """The trajectory digests of the controller files of the repository, read once."""
-    return trajectory_digests(PROGRAM_FOLDER)
+    """The trajectory digests of the controller files of the repository, read once. Each controller file
+    must be the translation of its move list (`scriptkin.bench.controller.translated_digests`)."""
+    # The controller module imports this module, so it is imported here and not at the top.
+    from scriptkin.bench.controller import translated_digests
+
+    return translated_digests(PROGRAM_FOLDER)
 
 
 def trajectory_sha256(program_id: str) -> str:
