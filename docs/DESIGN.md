@@ -360,14 +360,29 @@ SCRIPT Bench keeps all its data in one folder of the Mac user, `~/Library/Applic
 
 ## 6. Python shape
 
-Package `scriptkin`. Runtime dependencies: numpy, scipy, scikit-learn, cryptography, jsonschema. Python 3.12 or later.
+Package `scriptkin`. Runtime dependencies: numpy, scipy, scikit-learn, cryptography, jsonschema. The optional `camera` extra adds OpenCV for the camera steps of the bench. Python 3.12 or later.
 
 ```
 python/src/scriptkin/
   __init__.py        public surface
   recording.py       Recording, Trial, Stroke, Channel, Device, TaskRef, session and trial context, questionnaire blocks
   battery.py         stimulus geometry and battery.json
-  bench.py           the bench tasks, the bench programs, and bench_programs.json
+  bench/__init__.py  the bench tasks, the bench programs, and bench_programs.json
+  bench/moves.py     the move lists and the commanded path
+  bench/features.py  the motion interval and the bench features of one run
+  bench/camera.py    the camera record checks and the spatial comparisons
+  bench/track.py     the camera track format
+  bench/stats.py     the statistics of the bench protocol, on arrays
+  bench/camerafiles.py  the camera files: lens, plane, calibration, clock, readout, frames
+  bench/calibration.py  the lens and plane calibration, with OpenCV
+  bench/clock.py     the frame clock and the row readout
+  bench/tracker.py   the marker offset and the tracker, with OpenCV
+  bench/inputs.py    the files of the bench study: runs, registry, lock, journals
+  bench/runs.py      one run from its trial, its move list, and its track
+  bench/study.py     the study read and evaluated once
+  bench/analysis.py  the statistics over the evaluated runs
+  bench/outputs.py   the result files
+  bench/interim.py   the interim check and the pilot
   instruments.py     questionnaire text and scoring rules, instruments.json
   studyconfig.py     the demo configuration and the configuration rules
   formats/journal.py fold, summarize: line checks and the session state machine
@@ -387,7 +402,7 @@ python/src/scriptkin/
   synthetic.py       participants with latent traits and scores, device models, sites, scenarios, cohorts
   evaluate/          plan (digests), screening, participants, metrics, report, reliability, norms, planning
   contract.py        regenerate and verify the shared contract
-  cli.py             contract, evaluate, plan-digest, plan-size, intake, qc-report, config
+  cli.py             contract, evaluate, plan-digest, plan-size, intake, qc-report, config, bench
 ```
 
 Key decisions:
@@ -397,6 +412,9 @@ Key decisions:
 - **Context union.** `SessionContext.subject` is a `ParticipantContext` for a study or qualification session, and a `BenchContext` for a bench session. `SessionContext.tablet` is a `TabletContext` when `input` is `tablet`, else `None`. `Trial.context` is a `TrialContext` or a `BenchRunContext`. Each consumer matches on the type.
 - **Bench and tablet recordings.** `Recording.participant` is `None` for a bench session. When `input` is `tablet`, `Device.model` is the tablet model. A `tablet` scale reads as a `TabletScale`. A planned `hover` channel is observed when an in-air stroke exists, with or without `z`.
 - **Bench registry.** `scriptkin.bench` holds the bench tasks and the programs in one table module. `python/studies/bench_programs.py` imports them, so the study script and the programs file share one registry.
+- **Bench analysis.** The package `scriptkin.bench` holds the analysis of `docs/BENCH_PROTOCOL.md`. The protocol defines every rule, and each module docstring names its sections. The inputs are parsed once at the boundary (`bench/inputs.py`). `scriptkin bench analyse` evaluates every run once and writes the outputs of protocol section 15.
+- **Bench statistics.** `scriptkin.bench.stats` holds the statistics of protocol sections 11 and 12. `python/studies/bench_precision.py` imports them, so the precision study simulates the statistics of the analysis. The module works on whole arrays, so it returns NaN where the rest of the library returns a `Refusal`. The output writer turns each NaN into an empty value with a reason.
+- **Camera steps.** The tracker reports what it observes in each frame. The analysis decides the validity of a camera record inside the motion interval, which only the analysis finds. Only `bench/calibration.py` and `bench/tracker.py` import OpenCV, so a reader of the track files does not need the `camera` extra.
 - **QC.** `assess` is the only function that builds a `Segment`. A segment is a run inside one stroke with strictly increasing time, no step longer than `max_gap_s`, finite positions, and at least `min_segment_s` duration. A gap splits a stroke. Nothing bridges a gap. `Accepted` has a private constructor.
 - **Timing QC for each pen state.** Duplicate times, decreasing times, or a low rate in a contact stroke reject the trial. The same defects in an in-air stroke refuse only the in-air features, for example `timing.in_air_s`. The contact features stay.
 - **Refusals.** A failed requirement returns `Refusal(code, detail)`, never a silent number. Structural errors in a file raise `JournalError` or `FormatError`.
@@ -542,7 +560,7 @@ SCRIPT/
     pyproject.toml  uv.lock  src/scriptkin/  tests/  studies/
 ```
 
-`./check` stops at the first failure. Its default order is `contract core bench app python`. It runs the contract check, the `ScriptCore` tests on the Mac, and the `ScriptBench` tests on the Mac. Then it runs the app tests on the "iPad Pro 11-inch (M5)" simulator and the Python checks. The Python checks are the lint, the type check, and the tests. The tests read the exports of the Swift, bench, and app tests. The `core`, `bench`, and `app` sections first delete the exports of an earlier run. The `bench` and `app` sections also check that the String Catalog of their app matches the strings in the source. When the `bench` or `app` section ran, the Python tests fail if its exports are absent. Build output goes to `~/Library/Caches/SCRIPT/<checkout>-<hash>/`, outside the repository, so that the repository can sit on an exFAT drive.
+`./check` stops at the first failure. Its default order is `contract core bench app python`. It runs the contract check, the `ScriptCore` tests on the Mac, and the `ScriptBench` tests on the Mac. Then it runs the app tests on the "iPad Pro 11-inch (M5)" simulator and the Python checks. The Python checks are the lint, the type check, and the tests. The tests read the exports of the Swift, bench, and app tests. The `core`, `bench`, and `app` sections first delete the exports of an earlier run. The `bench` and `app` sections also check that the String Catalog of their app matches the strings in the source. When the `bench` or `app` section ran, the Python tests fail if its exports are absent. `./check` installs the `camera` extra, so the tracker tests run in every check. Build output goes to `~/Library/Caches/SCRIPT/<checkout>-<hash>/`, outside the repository, so that the repository can sit on an exFAT drive.
 
 The fixtures tie the two languages in three directions:
 

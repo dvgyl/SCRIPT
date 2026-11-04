@@ -2,7 +2,7 @@
 
 Version 1.2. The status is draft until the lock (section 14). After the lock, every change is a deviation (section 13). Version 1.1 revised version 1.0 after its independent review. Then sections 2.4 and 5.2 were corrected to match the capture tools: the clip wording, the rotation channel, and the time of a mark.
 
-Version 1.2 revises version 1.1 after the build of the analysis software, before the lock. It adds the start point to the move list (sections 5.1 and 15). It changes the ramp tolerance (section 7.4), the LED rule and the readout clip (section 7.3), and the path fits (sections 7.6 and 8.2). It gives each program set its own correction model (sections 11.5, 11.8, and 12). Section 4.3 now holds the checked facts of the NextDraw 8511.
+Version 1.2 revises version 1.1 after the build of the analysis software, before the lock. It adds the start point to the move list (sections 5.1 and 15). It changes the ramp tolerance (section 7.4), the LED rule and the readout clip (section 7.3), and the path fits (sections 7.6 and 8.2). It gives each program set its own correction model, fitted on the raw device values (sections 11.5, 11.8, and 12). Section 15 names the analysis commands and their files. Section 4.3 now holds the checked facts of the NextDraw 8511.
 
 This protocol defines the robotic bench study of `docs/PAPER_PLAN.md`. A motion system moves a stylus along registered programs on two devices. A camera records the executed movement of every run. The study has no participants and uses no data from people. It makes no mental health claim and no claim about people.
 
@@ -344,7 +344,7 @@ Before the lock, with 2 mountings per device:
 - The camera validation of section 7.5 once.
 - On device P, 10 s with the loaded stylus still on the glass. Record the sample count and the sample times.
 
-The pilot checks the equipment, the software, the run sequence, the executed duration, the fault results, the camera, and the noise floor. It compares each device with its own command, never with the other device. These checks pass before the lock:
+The pilot checks the equipment, the software, the run sequence, the executed duration, the fault results, the camera, and the noise floor. It compares each device with its own command, never with the other device. `scriptkin bench pilot` prints these checks and writes `pilot.csv`. These checks pass before the lock:
 
 - The motion duration of every run is within 1 percent of the command on the camera and on the device.
 - On each device, the band power of every line program is between 0.5 and 2 times the command of the move list (section 5.1). Otherwise the motion system does not execute the oscillation, and the line programs leave the study before the lock.
@@ -355,7 +355,7 @@ The pilot gives the measured sample interval, the noise floor, and the hold jitt
 
 ### 6.6 Interim check of the mounting variance
 
-After block 6 and before block 7, a locked script reads the journals of blocks 1 to 6. For each device and each feature of the feature set, it estimates σ_mount from the 3 mountings of the device. It uses the one-way analysis of variance of section 11.2 per program, pooled over the program set of the feature. It prints the variance components only. It prints no device mean and no device difference. The person who runs it records the access in `bench/DEVIATIONS.md`.
+After block 6 and before block 7, a locked script reads the journals of blocks 1 to 6. For each device and each feature of the feature set, it estimates σ_mount from the 3 mountings of the device. It uses the one-way analysis of variance of section 11.2 per program, pooled over the program set of the feature. It prints the variance components only. It prints no device mean and no device difference. The script is `scriptkin bench interim`. It reports the components of the raw device values of every feature, and of the camera-referenced differences of the four camera features, because the main analysis compares the differences. It writes `interim.csv` and prints the row that the person who runs it adds to `bench/DEVIATIONS.md`.
 
 If the pooled σ_mount of any feature is above 0.25 L on either device, the study adds two mountings per device. These are `M7` and `M8`, blocks 13 to 16. Rerun `bench_precision.py --sigma-mount <estimate>` with the largest estimate, and record the result. The rule is locked before the first main run. Nobody looks at a device difference before the last block (section 13).
 
@@ -498,7 +498,7 @@ Noise floor. The noise floor of a device is its 4 to 12 Hz band power of the gri
 
 ### 8.2 Spatial accuracy
 
-For every main run with a valid camera record, align the camera track to the device record in time (section 7.4). Then align the device samples to the camera track by a least-squares translation and rotation over the matched grid times. Report the fitted rotation. A rotation above 1 degree is a deviation. Then compute the distance between the device position and the camera position at each matched grid time. Report the root mean square and the 95th percentile per device and program.
+For every main run with a valid camera record, align the camera track to the device record in time (section 7.4). Then align the device samples to the camera track by a least-squares translation and rotation over the matched grid times. Report the fitted rotation. A rotation above 1 degree is a deviation. Then compute the distance between the device position and the camera position at each matched grid time. Report the root mean square and the 95th percentile per device and program. A scale error of the device is not a rigid transform, so it shows as a distance. A scale error of 6 percent gave 1.2 to 2.2 mm in the synthetic study.
 
 For every main run, compute the trace error in the bench module. Align the raw device samples of the motion interval to the commanded path of the program by the path fit of section 7.6. Then take the root mean square of the nearest distances. The library features `spatial.trace_rmse` and `spatial.copy_rmse` depend on the stimulus origin and are descriptive only.
 
@@ -615,7 +615,7 @@ The limits of agreement for a single run add the run variances. s²_single = s_d
 
 ### 11.5 Correction with covariates and the lack-of-fit check
 
-Fit a correction for every feature. For a feature that is not bench-equivalent, the fit is the correction. For every other feature, the fit is a report. The model maps a device W value to a device P value. The points are the mounting-mean pairs of section 11.4 over the program set, 72 pairs for 12 programs and 6 mountings.
+Fit a correction for every feature. For a feature that is not bench-equivalent, the fit is the correction. For every other feature, the fit is a report. The model maps a device W value to a device P value. The points are the mounting means of the raw device values of section 11.2, paired by mounting index as in section 11.4. There are 72 pairs for 12 programs and 6 mountings. For the four camera features, the correction does not use the camera-referenced differences. A difference holds no spread between the programs, so it leaves β unidentified. In the synthetic study of the analysis tests, the jackknife SE of β was 1.1 to 5.0 on the differences. A recording without a camera has the raw device value, and the correction maps that value.
 
 Each program set has its own model, because the covariates identify the slope only on the 12 programs:
 
@@ -774,7 +774,7 @@ The bench delivers `bench/results/deliverables.json` with, for each feature and 
 - The bias on the comparison scale, its standard error, and its 90 percent interval.
 - For a logarithmic feature, the bias factor exp(bias) with its interval. The factor applies to the feature in any unit. For `bench.speed_cv`, the bias itself.
 - The variance components σ²_run and σ²_mount for each device.
-- The correction model of the program set and the coefficients α, β, γ_u, and γ_v with their jackknife standard errors. A term outside the model of section 11.5 is marked as not fitted. The β of the loops programs contains any speed dependence of the device difference over the bench speeds.
+- The correction model of the program set and the coefficients α, β, γ_u, and γ_v with their jackknife standard errors, fitted on the raw device values. A term outside the model of section 11.5 is marked as not fitted. The β of the loops programs contains any speed dependence of the device difference over the bench speeds.
 - The held-out residual bias with its interval.
 
 The deliverables give each difference per program, because the bench shows whether the difference depends on the task, the scale, and the speed. For each feature, the deliverables state the range in which the factors hold. The scales are 0.7 and 1.0. The speeds are 20 to 80 mm/s for the loops, or 20 to 40 mm/s without `loops-l-v80`. They are 20 to 40 mm/s for the spiral, and 20 mm/s with a 5 to 11 Hz oscillation for the line. The consequence experiment and the ParkinsonHW example of the plan apply the factor of the program closest to their data in task, scale, and speed. They state the choice.
@@ -812,7 +812,7 @@ The lock registers everything that the main runs depend on. Do it after the pilo
 2. Write the pilot results into the protocol: the `fault-dwell` expectation of device P, the band-power program set, and the `loops-l-v80` decision. Run `./check` at the lock commit. It must pass.
 3. Put the pilot measurements and the chosen constants into `bench/registry.json`. Run the three scripts of section 11.8. Copy the precision report to `bench/results/bench_precision.json`.
 4. Generate the run orders (section 6.3), the program files (section 5.1), the controller files (section 4.1), and `contract/bench_programs.json` (section 2.4).
-5. Write `bench/BENCH_LOCK.json`. It holds the protocol version and the repository commit hash. It holds `app.build` and `app.sourceRevision` of SCRIPT Capture and of SCRIPT Bench. It holds the SHA-256 of each file in this list:
+5. Write `bench/BENCH_LOCK.json` with `scriptkin bench lock`. It holds the protocol version and the repository commit hash. It holds `app.build` and `app.sourceRevision` of SCRIPT Capture and of SCRIPT Bench. It holds the SHA-256 of each file in this list:
    - `docs/BENCH_PROTOCOL.md`
    - `bench/registry.json`
    - every file under `bench/programs/` and `bench/order/`
@@ -839,10 +839,10 @@ All bench files live under `bench/` in the repository. The recordings and the vi
 | `bench/programs/<program>.json` | The move list of each program, from `bench_programs.py --write`: the program, the start point, and the moves. |
 | `bench/programs/<program>.<controller>` | The controller file generated from the move list by the translation script. Its SHA-256 is the trajectory digest. |
 | `bench/order/block-<bb>.csv` | The run order of block bb (01 to 16), with position, program, and repeat, from `bench_programs.py --orders`. |
-| `bench/runs.csv` | One row per run, with run id, device, mounting, block, position, program, run index, session id, trial index, clip, status, and deviation row. |
+| `bench/runs.csv` | One row per run, with the columns `run_id`, `device`, `mounting`, `block`, `position`, `program`, `run_index`, `session_id`, `trial_index`, `clip`, `status`, and `deviation_row`. The status is `planned`, `recorded`, or `void`. A void row names its deviation row. The clip equals the run id. |
 | `bench/DEVIATIONS.md` | The deviation log and the data access log. |
 | `bench/BENCH_LOCK.json` | The lock file. |
-| `bench/results/` | The analysis outputs: `features.csv` in the `FeatureTable` format with its provenance file, `agreement.csv`, `bland_altman.csv`, `correction.csv`, `sampling.csv`, `accuracy.csv`, `gate.csv`, `interim.csv`, `bench_precision.json`, and `deliverables.json`. |
+| `bench/results/` | The analysis outputs: `run_status.csv`, `features.csv` in the `FeatureTable` format with its provenance file, `bench_features.csv`, `agreement.csv`, `bland_altman.csv`, `correction.csv`, `sampling.csv`, `accuracy.csv`, `gate.csv`, `interim.csv`, `pilot.csv`, `bench_precision.json`, and `deliverables.json`. |
 
 Run ids are `<device>-<mounting>-<program>-r<run index>`, for example `P-M3-loops-s-v40-r2`. A rerun has the run index 6 or 7.
 
@@ -850,7 +850,19 @@ Each block is one journal session. The capture tool exports it as `SCRIPT_BENCH_
 
 The camera files are `<run id>.mov`, `<run id>.frames.json` from `ffprobe`, and `<run id>.track.csv` with `<run id>.track.json` from the tracker. The frames file comes from `ffprobe -v error -select_streams v:0 -show_frames -of json <run id>.mov`. The track rows hold one row per frame, and the track facts name the clip, the frames file, and the calibration by their SHA-256. They live under `camera/<device>-<mounting>/` in the study store. The camera steps write one JSON file each: the lens, the plane, the calibration of each mounting, the frame clock, and the row readout.
 
-The analysis reads `bench/runs.csv`, the journals, and the tracks, and writes `bench/results/`. One command does this. The build phase names it, and the lock registers it.
+The analysis reads `bench/runs.csv`, `bench/registry.json`, the lock file, the move lists, the journals, and the tracks, and writes `bench/results/`. One command does this: `scriptkin bench analyse <repository root>`. The lock commit registers it. The command checks the digests of the lock file and the build of every journal first. It refuses to run while a block of the registry has no row or a row is still `planned` (section 13).
+
+The analysis reads these keys of `bench/registry.json`. Other keys are allowed.
+
+| Key | Content |
+| --- | --- |
+| `studyStore` | The path of the study store. |
+| `mountings` | One record per mounting: `device`, `mounting`, `block`, `originMM` (the stimulus origin in plane millimetres, `x` and `y`), and `qualificationSession` (optional, for the noise floor of the hold). |
+| `constants` | The results of the pilot: `bandPowerPrograms`, `excludedPrograms`, and `faultDwellGapsOnP`. |
+
+In `bench/results/`, `run_status.csv` gives each run its outcome of section 6.4, its camera state, and the time lag of its camera track. `features.csv` holds the library features of every recorded run, with the run id in the `participant` column. `bench_features.csv` holds the bench features of each run from the device and from the camera. The statistics files name the analysis in their first column: `main`, or a sensitivity analysis of section 11.9 (`no_motion_exclusion`, `raw_device`, `median`, `by_task`, `by_scale`, `by_speed`). A value that cannot be computed is empty, with its reason in the `reason` column.
+
+The other commands are `scriptkin bench pilot`, `scriptkin bench interim`, `scriptkin bench lock`, and `scriptkin bench start-point`. The last one prints the commanded start point of a run in plane millimetres for `scriptkin bench track`. The camera steps are `scriptkin bench lens`, `plane`, `marker-offset`, `clock`, `readout`, and `track`. Every command exits with 0 when it is done, 1 when it refuses, and 2 for a damaged input.
 
 ## 16. What the paper may and may not claim
 
