@@ -1,12 +1,14 @@
 # Bench protocol
 
-Version 1.1. The status is draft until the lock (section 14). After the lock, every change is a deviation (section 13). Version 1.1 revises version 1.0 after its independent review. Before the lock, sections 2.4 and 5.2 were corrected to match the capture tools. The corrections are the clip wording, the rotation channel, and the time of a mark.
+Version 1.2. The status is draft until the lock (section 14). After the lock, every change is a deviation (section 13). Version 1.1 revised version 1.0 after its independent review. Then sections 2.4 and 5.2 were corrected to match the capture tools: the clip wording, the rotation channel, and the time of a mark.
+
+Version 1.2 revises version 1.1 after the build of the analysis software, before the lock. It adds the start point to the move list (sections 5.1 and 15). It changes the ramp tolerance (section 7.4), the LED rule and the readout clip (section 7.3), and the path fits (sections 7.6 and 8.2). It gives each program set its own correction model, fitted on the raw device values (sections 11.5, 11.8, and 12). Section 15 names the analysis commands and their files. Section 4.3 now holds the checked facts of the NextDraw 8511.
 
 This protocol defines the robotic bench study of `docs/PAPER_PLAN.md`. A motion system moves a stylus along registered programs on two devices. A camera records the executed movement of every run. The study has no participants and uses no data from people. It makes no mental health claim and no claim about people.
 
 A reader with the hardware can run the study from this document. Sections 2 to 7 cover the devices, the fixture, the motion system, the programs, the mountings and the run order, and the camera. Sections 8 to 12 cover the measures, the features, the equivalence limits, the statistics, and the deliverables for the consequence experiment. Sections 13 to 16 cover the stop rules and deviations, the lock, the file layout, and the claims that the paper may make.
 
-Three scripts belong to this protocol. `python/studies/bench_programs.py` computes the geometry, the timing, and the motion demands of every program and writes the move lists and the run orders. `python/studies/bench_limits.py` computes the equivalence limits from the source values of section 10. `python/studies/bench_precision.py` simulates the precision of the design. Section 11.8 gives their commands and seeds.
+Three scripts belong to this protocol. `python/studies/bench_programs.py` computes the geometry, the timing, and the motion demands of every program and writes the move lists and the run orders. `python/studies/bench_limits.py` computes the equivalence limits from the source values of section 10. `python/studies/bench_precision.py` simulates the precision of the design. Section 11.8 gives their commands and seeds. The analysis code is the package `scriptkin.bench` (section 2.3).
 
 ## 0. Terms
 
@@ -86,8 +88,8 @@ The Wacom page states a "high report rate" and gives no number. A retailer lists
 ### 2.3 Analysis software
 
 - `scriptkin` at the locked commit (section 14), with the Python version and `python/uv.lock`.
-- The bench module `scriptkin.bench` (section 9). The build phase of the plan adds it before the pilot.
-- OpenCV and `ffprobe` for the camera (section 7). Record their versions.
+- The bench package `scriptkin.bench`. `scriptkin.bench.moves` reads the move lists (section 5.1). `scriptkin.bench.features` holds the motion interval and the features (sections 7.4, 8.1, and 9). `scriptkin.bench.camera` holds the camera record checks and the spatial comparisons (sections 7.3 to 7.7, 8.2, and 9.2). `scriptkin.bench.stats` holds the statistics (sections 11 and 12).
+- The camera steps of section 7 in `scriptkin.bench.calibration`, `scriptkin.bench.clock`, and `scriptkin.bench.tracker`. They need OpenCV, which the `camera` extra of `scriptkin` installs as `opencv-python-headless`. `ffprobe` writes the frames file of each clip (section 15). Record both versions.
 - The quality policy is `scriptkin.quality.DEFAULT_QC`: `max_gap_s` 0.05, `min_segment_s` 0.1, `min_rate_hz` 40, `reject_unresolved` true.
 - The preprocessing is `scriptkin.signal.DEFAULT_PREPROCESSING`: `grid_hz` 200, Savitzky-Golay `window` 11 and `polynomial` 3, `welch_window_s` 2, `band_hz` 4 to 12.
 
@@ -144,7 +146,7 @@ Before the lock, a parity test must pass. Synthetic raw events for both tools gi
 - The total vertical load is 100 g, measured with a scale with 0.1 g resolution. Adjust the added mass so that the load is equal on both devices within 1 g. Record both values.
 - The holder must not touch the device surface. The holder is non-conductive near the device P screen, or the pilot shows that the holder gives no finger lines in the device P journals.
 - The clamp holds the Pencil Pro barrel away from the squeeze area (section 2.1). The clamp holds the Pro Pen 3 barrel away from its side switches.
-- The camera marker is a 3 mm matte white dot on a black field. It is fixed to the stylus barrel, as near to the nib as the camera view permits (section 7.1). Measure its height z_m above the surface with a caliper and record it.
+- The camera marker is a 3 mm matte white dot on a black field at least 8 mm across. It is fixed to the stylus barrel, as near to the nib as the camera view permits (section 7.1). Measure its height z_m above the surface with a caliper and record it.
 - Measure the altitude with a digital angle gauge at the start of each block. If the altitude differs from 60 degrees by more than 1 degree, adjust the holder before the block.
 
 Friction and stiffness, once before the pilot and after any change of the holder:
@@ -173,7 +175,7 @@ Any motion system for this bench must meet every requirement in this table. `ben
 | Lookahead | Off, or with a known model | Corner smoothing changes the executed path. The camera check decides whether the executed path is within 0.2 mm. |
 | Input shaping | Off | It changes the executed timing. |
 | Stylus load and angle | Set by the holder of section 3.2, not by the machine | The load must be constant and known. |
-| Stylus lift | A vertical lift of at least 10 mm, a lift to 2 mm for `fault-lift`, and a controlled lowering speed of 10 mm/s or less | A fast drop bounces the nib. |
+| Stylus lift | A vertical lift of 10 mm or more, a lift to 2 mm for `fault-lift`, and a controlled lowering speed of 10 mm/s or less | A fast drop bounces the nib. The lift must keep the perspective shift of the raised marker inside the first search square (section 7.3). |
 | Device motion | The device stays still. If the device moves, the camera must also track a marker fixed to the device. | The executed movement is the stylus movement relative to the device. |
 | Vibration at rest | Marker position noise of 0.02 mm or less (camera, 2 s still) | Vibration adds to the measured noise. |
 | Command record | The controller file of each program is generated by a script from the registered move list and hashed | The commanded trajectory is known from the file, and the camera verifies the execution. |
@@ -204,13 +206,15 @@ If any step fails, change the settings and repeat the test. If the system cannot
 
 ### 4.3 Candidates
 
-NextDraw pen plotter, the successor of the AxiDraw. The AxiDraw product page (reference M1) gives these values. The resolution is 80 steps per mm. The reproducibility is better than 0.1 mm at low speeds. The maximum speed is 38 cm per second. The vertical pen travel is 17 mm. The usable travel of the V3/B6 is 190 × 140 mm. The page lists a Python API and the EBB command protocol. It does not state whether they accept timed moves. The page names the Bantam Tools NextDraw 8511 as the replacement. The device stays still under the moving arm. The arm is a belt-driven gantry, so its rigidity at the stylus must pass section 4.2. The pen lift is a servo, so the lowering speed must be set low. The NextDraw page was not reachable on 3 November 2026 (HTTP 429). Confirm its figures and the timed-move interface before purchase.
+NextDraw 8511 pen plotter, the successor of the AxiDraw. The NextDraw 8511 page (reference M3) gives these values. The usable travel is 300 × 218 mm. The resolution is 80 steps per mm, at 16 microsteps per full step. The reproducibility is better than 0.1 mm at low speeds. The maximum speed is 38 cm per second, which needs 8 microsteps and 40 steps per mm. At 80 steps per mm, the step limit of 25,000 steps per second allows 221 mm/s. The vertical pen travel is 17 mm, and 7.5 mm with the optional spring, so do not fit the spring. The pen lift is a brushless servo on a vertical slide. The page gives no acceleration, stiffness, or backlash value.
+
+The controller is an EBB board with firmware 3.0.2 or later. Its `SM` command is a timed move: a step count for each motor and a duration in whole milliseconds (reference M4). Consecutive moves queue without dead time. A move of 10 ms at 107.7 mm/s uses at most 49 percent of the step limit. The NextDraw Python API has no timed move, so the translation script sends `SM` commands as raw commands. It rounds the absolute motor positions of the registered end points, which bounds the end-point error at 0.00625 mm without drift. The device stays still under the moving arm. The arm is a belt-driven gantry, so its rigidity at the stylus must pass section 4.2. The servo sets the lift height and the lowering rate, and section 4.2 measures the real lowering speed. The research notes of 4 November 2026 list what the owner must confirm on the machine.
 
 GRBL pen plotter. A budget belt plotter with GRBL firmware accepts G1 moves with feed rates. GRBL plans junctions with a junction deviation setting, so the executed path differs from the command at corners. The frame rigidity and the repeatability vary between kits. The qualification test decides.
 
 Klipper 3D printer, Ender-3 V3 KE. The Creality page (reference M2) gives these values. The build volume is 220 × 220 × 240 mm. The speed is 500 mm/s or less. The acceleration is 8000 mm/s² or less. The structure is Cartesian, and the firmware of the series is based on Klipper. The page does not name the moving axis. In the Ender-3 design the bed moves in y, and the device with it. The camera must then track a device marker as well as the stylus marker. The device cable and the tablet weight load the moving bed. Klipper's lookahead needs the registered settings of protocol 4.8: `SQUARE_CORNER_VELOCITY`, `MINIMUM_CRUISE_RATIO` 0, and input shaping off. The executed path model of the reference implementation (`bench_reference/src/bench_reference/motion.py`) still applies.
 
-The recommended system is the NextDraw 8511. The device stays still, which keeps the camera method of section 7 simple. The resolution and the repeatability meet section 4.1. The open risks are the gantry rigidity, the servo lift, the timed-move interface, and the acceleration at 80 mm/s. Section 4.2 tests them. The Ender-3 V3 KE is the fallback when the NextDraw fails section 4.2. It has the highest acceleration and a modelled planner, at the cost of a moving device.
+The recommended system is the NextDraw 8511. The device stays still, which keeps the camera method of section 7 simple. The resolution and the repeatability meet section 4.1. The open risks are the gantry rigidity, the servo lift, and the acceleration at 80 mm/s. A pause of the host computer in the stream of moves is a fourth risk. Section 4.2 tests them. The Ender-3 V3 KE is the fallback when the NextDraw fails section 4.2. It has the highest acceleration and a modelled planner, at the cost of a moving device.
 
 ## 5. Programs
 
@@ -236,9 +240,9 @@ The tangential speed profile:
 
 - For the loops, the speed is proportional to the cube root of the curvature radius. The radius is capped at 40 mm. The constant makes the mean speed outside the ramps equal to the program speed.
 - For the spiral and the line, the cruise speed is constant and equal to the program speed.
-- Every program starts and ends with a ramp of 0.2 s at constant tangential acceleration, from rest to the program speed and back. The ramp covers 2 mm at 20 mm/s, 4 mm at 40 mm/s, and 8 mm at 80 mm/s.
+- Every program starts and ends with a ramp of 0.2 s at constant tangential acceleration. The ramp goes from rest to the speed at the start point, and back at the end. For the spiral and the line, this is the program speed. For the loops, it is the curvature speed of the start point, which is lower. At the program speed, the ramp covers 2 mm at 20 mm/s, 4 mm at 40 mm/s, and 8 mm at 80 mm/s.
 
-The move list samples the time parametrisation every 10 ms. Each move is an end point and a duration. The last move can be shorter. `bench_programs.py --write bench/programs` writes the lists.
+The move list samples the time parametrisation every 10 ms. Each move is an end point and a duration. The last move can be shorter. The file also holds the start point of the program, because the first move needs it. `bench_programs.py --write bench/programs` writes the lists.
 
 | Program | Task | Speed (mm/s) | Path (mm) | Duration (s) | Mean speed (mm/s) | Cruise speed (mm/s) | Speed CV | Peak acceleration (mm/s²) | Smallest radius (mm) | LDLJ | Band power (mm/s)² | Moves |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -256,6 +260,8 @@ The move list samples the time parametrisation every 10 ms. Each move is an end 
 | `line-osc11` | `bench-line` | 20 | 124.0 | 6.40 | 19.4 | 7.6 to 32.4 | 0.463 | 826 | straight | 22.34 | 74.2 | 640 |
 
 The speed CV is time-weighted on the 200 Hz grid over the whole run, ramps included. LDLJ is the commanded log dimensionless jerk of section 9.3. Band power is the commanded 4 to 12 Hz band power of the speed, computed as the bench module computes it. The ramps give the spiral programs a small speed CV and a band power below 0.001 (mm/s)².
+
+The speed CV and the band power of the table come from the analytic path over the whole run. Two effects make the values of a run lower. First, the move list follows the oscillation with straight moves of 10 ms. On the move list, the band power of `line-osc5`, `line-osc8`, and `line-osc11` is 77.84, 75.57, and 69.92 (mm/s)². These values are 1.2, 3.1, and 5.8 percent below the table. Section 6.5 uses these move list values as the command. Second, the bench features resample a record to the 200 Hz grid by linear interpolation. This lowers the band power of a noise-free record at 240 Hz by a further 0.7 to 3.1 percent, the most at 11 Hz. The effect is part of the measurement chain under test. The bench speed CV on the motion interval is also lower than the table. The difference is 0.005 for the loops, 0.010 to 0.013 for the spiral, and 0.011 to 0.033 for the line.
 
 Every program except `loops-l-v80` lasts 6 s or more, so one gap split still leaves four Welch windows of 2 s for the band power. `loops-l-v80` is kept only when the motion system passes section 4.2 step 7. The mean speeds of 20 and 40 mm/s are slow writing speeds. The fast loop program approaches the adult loop speed of 104.55 mm/s on paper (reference R6). The claim does not extend to faster movement.
 
@@ -278,7 +284,7 @@ Each fault program is the program `loops-l-v20` with one change after loop 4, wh
 
 | Program | Change | Expected result on device P | Expected result on device W |
 | --- | --- | --- | --- |
-| `fault-dwell` | The stylus stops for 0.5 s on the surface, then continues. The move list holds a move of zero length and 0.5 s. | Written from the pilot before the lock (section 6.5). The pilot records whether a still Pencil under the load gives samples. The expectation is then either a `gaps` finding with two contact segments, or no finding. `bench.motion_s` is within 2 percent of the clean median plus 0.5 s. | No `gaps` finding, because the tablet reports a still pen. `bench.motion_s` is within 2 percent of the clean median plus 0.5 s. |
+| `fault-dwell` | The stylus stops for 0.5 s on the surface, then continues. The move list holds a move of zero length and 0.5 s. | Written from the pilot before the lock (section 6.5). The pilot records whether a still Pencil under the load gives samples. The expectation is then either a `gaps` finding in the contact strokes with two contact segments, or no `gaps` finding in the contact strokes. `bench.motion_s` is within 2 percent of the clean median plus 0.5 s. | No `gaps` finding in the contact strokes, because the tablet reports a still pen. `bench.motion_s` is within 2 percent of the clean median plus 0.5 s. |
 | `fault-lift` | The stylus rises 2 mm at 10 mm/s, stays 0.3 s, lowers at 10 mm/s, and continues. The in-air time is about 0.7 s. The move list holds a move with `lift_mm` 2. | `timing.stroke_count` is 2. | `timing.stroke_count` is 2. |
 | `fault-truncated` | The program stops after loop 4. | `bench.path_length_mm` and `bench.motion_s` are at most 0.6 times the clean medians of the block. | The same. |
 
@@ -326,6 +332,8 @@ The totals are 720 main runs and 108 fault runs in 12 blocks. The motion time is
 
 A main run fails in three cases. `assess` rejects it. The camera check finds a motion failure (section 7.6). The operator records a `mark` with code `disturbance` or `deviceProblem`. Keep the recording. Run the same program once more at the end of the block, with run index 6. If the rerun fails too, run it once more with run index 7. No program gets more than 2 reruns in one mounting. Use a rerun only when it passes. Report every failure and every rerun.
 
+The analysis uses a rerun with run index 6 only when an earlier run of the program in the mounting failed. It uses a rerun with index 7 only when two failed. A void row of `bench/runs.csv` counts as a failed run. `run_status.csv` gives any other rerun the reason `unused_rerun`, and the analysis does not use it.
+
 A program is estimable for a feature on a device only when every mounting has at least 4 valid runs. For the camera-referenced features of section 9.2, a valid run also needs a valid camera record. A program that is not estimable makes its feature "not shown equivalent" (section 11.3). Report every program that is not estimable.
 
 ### 6.5 Pilot
@@ -338,18 +346,18 @@ Before the lock, with 2 mountings per device:
 - The camera validation of section 7.5 once.
 - On device P, 10 s with the loaded stylus still on the glass. Record the sample count and the sample times.
 
-The pilot checks the equipment, the software, the run sequence, the executed duration, the fault results, the camera, and the noise floor. It compares each device with its own command, never with the other device. These checks pass before the lock:
+The pilot checks the equipment, the software, the run sequence, the executed duration, the fault results, the camera, and the noise floor. It compares each device with its own command, never with the other device. `scriptkin bench pilot` prints these checks and writes `pilot.csv`. These checks pass before the lock:
 
 - The motion duration of every run is within 1 percent of the command on the camera and on the device.
-- On each device, the band power of every line program is between 0.5 and 2 times the command. Otherwise the motion system does not execute the oscillation, and the line programs leave the study before the lock.
-- The noise floor of section 8.1 is measured on each device. The commanded band power of every line program is at least 10 times the larger noise floor of the two devices. A line program that fails this rule leaves the band-power program set.
+- On each device, the band power of every main line program is between 0.5 and 2 times the command of the move list (section 5.1). Otherwise the motion system does not execute the oscillation, and the line programs leave the study before the lock.
+- The noise floor of section 8.1 is measured on each device. The band power of the move list of every line program is at least 10 times the larger noise floor of the two devices. A line program that fails this rule leaves the band-power program set.
 - The `fault-dwell` expectation for device P is written into section 5.3 from the still-stylus record and the pilot fault runs.
 
 The pilot gives the measured sample interval, the noise floor, and the hold jitter. It does not estimate the mounting variance, because 2 mountings give 1 degree of freedom. The design assumes σ_mount at or below 0.25 L (section 11.8), and section 6.6 checks the assumption. The pilot feature values do not enter the main analysis, and nobody inspects the device difference of the pilot feature values. Changes after the pilot go into the protocol before the lock.
 
 ### 6.6 Interim check of the mounting variance
 
-After block 6 and before block 7, a locked script reads the journals of blocks 1 to 6. For each device and each feature of the feature set, it estimates σ_mount from the 3 mountings of the device. It uses the one-way analysis of variance of section 11.2 per program, pooled over the program set of the feature. It prints the variance components only. It prints no device mean and no device difference. The person who runs it records the access in `bench/DEVIATIONS.md`.
+After block 6 and before block 7, a locked script reads the journals of blocks 1 to 6. For each device and each feature of the feature set, it estimates σ_mount from the 3 mountings of the device. It uses the one-way analysis of variance of section 11.2 per program, pooled over the program set of the feature. It prints the variance components only. It prints no device mean and no device difference. The script is `scriptkin bench interim`. It reports the components of the raw device values of every feature. For the four camera features, it also reports the components of the camera-referenced differences, which the main analysis compares. It writes `interim.csv` and prints the row that the person who runs it adds to `bench/DEVIATIONS.md`.
 
 If the pooled σ_mount of any feature is above 0.25 L on either device, the study adds two mountings per device. These are `M7` and `M8`, blocks 13 to 16. Rerun `bench_precision.py --sigma-mount <estimate>` with the largest estimate, and record the result. The rule is locked before the first main run. Nobody looks at a device difference before the last block (section 13).
 
@@ -416,18 +424,23 @@ Marker offset, at every mounting. Put the stylus tip on the marked grid point. R
 
 Frame clock, once before the lock. Record an LED driven by a crystal-timed square wave at 1 Hz for 60 s. Count the frames per LED period. The real frame rate is the frame count divided by the LED time. It must be within 0.1 percent of the nominal rate. Record the measured rate and use it in the analysis. If the presentation timestamps of the file agree with the LED count within 0.1 percent, they are capture times. If they do not, the file holds playback times. The analysis then takes the frame time as the frame index divided by the measured rate.
 
-LED frame count, every clip. The LED stays in the field of view, outside the device area, during every run. Count the frames per LED period in every clip. A clip whose count differs from the measured rate by more than 0.1 percent inside the motion interval is an invalid record (section 7.7).
+LED frame count, every clip. The LED stays in the field of view, outside the device area, during every run. A period runs from one frame where the LED turns on to the next. Count the frames of every full period inside the motion interval. Every period must hold the frames of the measured rate within one frame plus 0.1 percent. All periods together must also hold their total within one frame plus 0.1 percent. Otherwise the clip is an invalid record (section 7.7).
 
-Row readout, once before the lock, for a rolling shutter only. Drive the LED at 1 kHz and record it with the camera. A rolling shutter shows the LED as bands. The band pitch in rows times the row time equals the LED period. The row readout time is therefore 1 ms divided by the band pitch in rows. Record the readout time. In the analysis, correct the time of each centroid by its image row: t = t_frame + row × t_row.
+The tolerance of one frame is needed. At a measured rate of 239.987 frames per second, a period of 1 s holds 239 or 240 frames. A simulation of clean clips at rates from 239.76 to 240.24 frames per second found that the rule fails none. A per-period tolerance of 0.1 percent alone failed 74 percent of them. The rule detects a rate error above 0.1 percent and two or more lost frames in one second. It does not detect one lost frame at a rate between two integers. With capture times, the frame interval rule below detects every lost frame. With playback times, one lost frame can pass. It then shifts the later frame times by 1/240 s, which changes `bench.motion_s` of the shortest program by 0.09 percent, or 0.024 L.
+
+Row readout, once before the lock, for a rolling shutter only. Drive the LED at 1 kHz and record it with the camera. Record this clip with an exposure of 1/4000 s or shorter. At 1 ms, every row integrates one whole LED period and shows no band. A rolling shutter shows the LED as bands. The band pitch in rows times the row time equals the LED period. The row readout time is therefore 1 ms divided by the band pitch in rows. Record the readout time. In the analysis, correct the time of each centroid by its raw image row. When the sensor reads the top row first, t = t_frame + row × t_row. When it reads the bottom row first, t = t_frame + (H − 1 − row) × t_row, with H the image height in rows.
+
+The readout step also measures the direction from the movement of the bands between consecutive frames. At 240 frames per second, the bands of the 1 kHz LED move by 0.167 of a pitch per frame in one direction. In the other direction, they move by 0.833 of a pitch. The readout file and the track facts record the direction, and the operator checks the recorded value. Record the readout clip with the camera in its bench mounting, because the direction belongs to the stored frames. The camera steps read every clip and still as stored, without its rotation metadata. When you take a still from a clip with ffmpeg, use `-noautorotate`. The synthetic test of the tracker aligned each track as in section 7.4. The root mean square error on `loops-l-v80` was then 0.004 mm with the correction. It was 0.013 mm without the correction, and 0.026 mm with the wrong direction.
 
 Duplicate frames, every clip. A frame whose pixel difference from the previous frame is zero everywhere is a duplicate. A clip with a duplicate or a missing frame inside the motion interval is an invalid record (section 7.7).
 
-Frame times, every clip. Read the presentation timestamps with `ffprobe`. When the timestamps are capture times, every frame interval must be within 1 percent of the median interval plus 1 µs. Otherwise the record is invalid. When they are playback times, the LED frame count is the only timing check.
+Frame times, every clip. Read the presentation timestamps with `ffprobe`. When the timestamps are capture times, every frame interval inside the motion interval must be within 1 percent of the median interval plus 1 µs. Otherwise the record is invalid. When they are playback times, the LED frame count is the only timing check. Never convert a clip to the Matroska format (MKV), because it rounds the timestamps to 1 ms.
 
 Tracking, every clip:
 
-- In the first frame, find the marker inside a 10 mm square in the marker plane. The square is centred on the commanded start point plus the marker offset. A bright region counts only when it lies completely inside the square.
-- In each later frame, search a window around the previous position. Separate the marker with Otsu thresholding and take the intensity-weighted centroid of the largest bright region.
+- Until the tracker first finds the marker, it searches a 24 mm square in the marker plane. The square is centred on the commanded start point plus the marker offset. The clip starts with the stylus at the lift height. The camera sees a marker raised by z at a shift of X z / (D − z) in the plane. X is its distance from the nadir, and D is the camera height above the marker plane. The 24 mm square holds a shift of about 10 mm on each axis, and a 10 mm square only about 3.4 mm. With D = 144 mm, a lift of 17 mm gives a shift of up to about 9.4 mm. A lower camera gives a larger shift, so choose the lift for the measured D. The background test of section 7.5 step 4 checks it.
+- After the first find, each frame searches a 10 mm square, centred on the last position where the marker was found.
+- In both squares, separate the marker with Otsu thresholding and take the intensity-weighted centroid of the largest bright region that counts. A bright region counts only when it lies completely inside the square. Its area must be 0.5 to 2 times the area of the marker dot. The black field of the marker must surround it: a ring from 1.5 to 3 mm around its centroid is dark. The two Otsu classes must differ by 32 grey levels or more.
 - Remove the lens distortion from the centroid and map it through the homography. Subtract the marker offset. Apply the row correction when the shutter is rolling.
 - The record is invalid when more than 2 percent of the frames have no marker.
 
@@ -439,9 +452,11 @@ The camera and the devices share no clock. One rule finds the motion interval on
 - The motion start is the first grid sample of the first run of 6 consecutive grid samples with a speed of 2 mm/s or more. The motion end is the last grid sample of the last such run. The motion interval runs from the start to the end, gaps included.
 - The motion duration is the time from the motion start to the motion end.
 
-The bench module implements the rule once, and the lock hashes it. The ramps of section 5.1 cross 2 mm/s within 0.02 s of the command start. The motion interval is therefore the commanded motion within this tolerance.
+The bench module implements the rule once, and the lock hashes it. A run of 6 grid samples lies inside one segment. The ramps of section 5.1 cross 2 mm/s within 0.03 s of the command start, plus one grid step. The loops at 20 mm/s take the longest, because their ramp ends at the curvature speed of the start point. The motion interval is therefore the commanded motion within this tolerance.
 
-The spatial comparison of section 8.2 aligns a camera track to its device record in time. Compute the cross-correlation of the two grid speed profiles over the motion intervals. Take the lag with the largest correlation and refine it with a parabolic fit through the three largest values. The alignment is sub-frame. Report the lag per run.
+A camera record also holds the stylus at the lift height, the lowering, and the lift. The camera sees a raised marker shifted by perspective, so a lowering at 10 mm/s appears as a movement of 2 to 5 mm/s. The rule therefore searches a camera record only inside a window. A coarse alignment slides the speed profile of the commanded motion of the program, inside its motion interval, over the whole clip. It takes the lag with the largest correlation coefficient. The window is the commanded motion interval at this lag, widened by 0.2 s before and by 0.15 s after. Both margins are shorter than the dwells of section 5.2. For this coarse alignment only, a moving average of 0.2 s smooths both speed profiles, which removes the oscillation of the line programs. The camera reference therefore never depends on the device under test. A camera motion interval that touches an edge of its window is a motion failure (section 7.6), because the movement then continues outside the window. The fine alignment below then refines the lag.
+
+The spatial comparison of section 8.2 aligns a camera track to its device record in time. At each lag up to 0.5 s, compute the correlation coefficient of the two grid speed profiles over their overlap inside the motion intervals. Take the lag with the largest correlation and refine it with a parabolic fit through that value and its two neighbours. The alignment is sub-frame. Report the lag per run. A plain cross-correlation sum is not used, because it pulled the lag towards zero by 3.7 ms in a test.
 
 ### 7.5 Validation before the lock
 
@@ -457,15 +472,19 @@ The static and speed tests use the motion system, and section 4.2 uses the camer
 
 For every run with a valid camera record:
 
-1. Align the camera track to the commanded path of its program by a least-squares translation and rotation.
+1. Align the camera track to the commanded path of its program with the path fit below.
 2. Compute the distance from each camera sample to the nearest point of the commanded path.
-3. The run is a motion failure when the largest distance is above 0.2 mm. It is also a motion failure when the motion duration differs from the commanded duration by more than 1 percent.
+3. The run is a motion failure when the largest distance is above 0.2 mm. It is also a motion failure when its motion duration differs from the commanded one by more than 1 percent. The rule of section 7.4 on the commanded path gives the commanded motion duration. A camera motion interval that touches an edge of its window (section 7.4) is also a motion failure. Its reason in `run_status.csv` is `window_edge`. A best coarse correlation below 0.5 is a motion failure too, when the clip has no camera cause of section 7.7. Its reason is `alignment`. The executed movement then does not match the command, for example after a pause of the motion system.
+
+The path fit. The commanded path is in the stimulus frame with y down, and every record has y up. The fit therefore mirrors the commanded path first, because a rotation cannot undo a reflection. The fit aligns the record to the commanded motion in time, as in section 7.4. Each sample then pairs with the commanded position at its commanded time, which gives the first rigid fit. An iterative closest point fit to the commanded polyline repeats the rigid fit with nearest points. It stops when the root mean square changes by less than 10⁻⁶ mm, or after 100 iterations. The time pairs keep the fit from a neighbouring loop, and they fix the position along a straight line.
 
 A motion failure is a failed run (section 6.4). Report the main analysis also without the motion failure exclusions, as a sensitivity analysis.
 
 ### 7.7 Missing or invalid camera records
 
 The run stays in the device comparison of the features that the camera does not reference. The run leaves the accuracy analysis and the camera-referenced comparison. Report the count per device and program.
+
+A camera record is also invalid when its coarse alignment of section 7.4 fails for a camera cause. The camera causes are a clip shorter than the commanded motion, and a clip that fails a rule of section 7.3. Without a motion interval, the rules of section 7.3 apply over the whole clip. A camera record whose executed movement check of section 7.6 cannot be computed is invalid too. The camera cannot tell a clip that starts after the movement from a movement that does not match the command. Such a run fails and gets a rerun.
 
 ## 8. Measures
 
@@ -482,13 +501,13 @@ For every main run, compute the same interval statistics from its contact stroke
 
 The device P hold is a special case. A still Pencil can give few samples. Report the sample count of the hold with the jitter.
 
-Noise floor. The noise floor of a device is its 4 to 12 Hz band power of the grid speed when the command holds none. Report two values per device. The first is the band power of the `qual-hold` record, at rest. The second is the median band power of the spiral runs, whose command is 0.001 (mm/s)² or less. Report both per mounting and overall. The band-power program set uses the pilot values (section 6.5).
+Noise floor. The noise floor of a device is its 4 to 12 Hz band power of the grid speed when the command holds none. Report two values per device. The first is the band power of the `qual-hold` record, at rest. The second is the median band power of the spiral runs, whose command is 0.001 (mm/s)² or less. Report both per mounting and overall. The band-power program set uses the pilot values (section 6.5). The analysis reads a qualification session only from a build of the lock file.
 
 ### 8.2 Spatial accuracy
 
-For every main run with a valid camera record, align the camera track to the device record in time (section 7.4). Then align the device samples to the camera track by a least-squares translation and rotation over the matched grid times. Report the fitted rotation. A rotation above 1 degree is a deviation. Then compute the distance between the device position and the camera position at each matched grid time. Report the root mean square and the 95th percentile per device and program.
+For every main run with a valid camera record, align the camera track to the device record in time (section 7.4). Then align the device samples to the camera track by a least-squares translation and rotation over the matched grid times. Report the fitted rotation. A rotation above 1 degree is a deviation, and `run_status.csv` and `accuracy.csv` flag it. Then compute the distance between the device position and the camera position at each matched grid time. Report the root mean square and the 95th percentile per device and program. A scale error of the device is not a rigid transform, so it shows as a distance. A scale error of 6 percent gave 1.2 to 2.2 mm in the synthetic study.
 
-For every main run, compute the trace error in the bench module. Align the device samples to the commanded path of the program by a least-squares translation and rotation. Then take the root mean square of the nearest distances. The library features `spatial.trace_rmse` and `spatial.copy_rmse` depend on the stimulus origin and are descriptive only.
+For every main run, compute the trace error in the bench module. Align the raw device samples of the motion interval to the commanded path of the program by the path fit of section 7.6. Then take the root mean square of the nearest distances. The library features `spatial.trace_rmse` and `spatial.copy_rmse` depend on the stimulus origin and are descriptive only.
 
 ### 8.3 Feature agreement
 
@@ -523,7 +542,7 @@ The plan names "duration", "path length", "mean speed", "speed variability", and
 
 ### 9.2 Camera-referenced features
 
-The camera measures four of the six features on its track: `bench.motion_s`, `bench.path_length_mm`, `bench.speed_mean_mm_s`, and `bench.loop_height_mm`. The bench module computes them from the camera track with the same code, after the motion interval rule of section 7.4. The camera track is processed as a recording with the measured frame interval and `spatial_unit` `mm`.
+The camera measures four of the six features on its track: `bench.motion_s`, `bench.path_length_mm`, `bench.speed_mean_mm_s`, and `bench.loop_height_mm`. The bench module computes them from the camera track with the same code, after the motion interval rule of section 7.4. The camera track is processed as a recording with the measured frame interval and `spatial_unit` `mm`. The frames with a marker form one contact stroke, which `assess` checks with `DEFAULT_QC`. A marker lost for 12 or more consecutive frames, which is 0.05 s, splits the track.
 
 For these four features, the primary comparison uses the camera-referenced difference of each run: the device value minus the camera value on the comparison scale. The mounting mean of a program is the mean of the run differences. Section 11.2 compares the devices on these mounting means. The camera sees the executed movement on both surfaces. A device bias in the camera-referenced difference is therefore a bias of the measurement chain for the executed movement.
 
@@ -581,13 +600,15 @@ No variance is pooled across programs. The interval includes the mounting effect
 
 The variance components per device and program come from a one-way analysis of variance of the runs with mounting as the factor. σ²_run = MS_within. σ²_mount = max(0, (MS_between − MS_within) / n₀). With nᵢ valid runs in mounting i, N runs in total, and k mountings, n₀ = (N − Σnᵢ² / N) / (k − 1). With equal counts, n₀ is the count.
 
+Sections 6.6, 11.4, and 11.5 pool the components over the programs of a set. The pooled σ²_run is the sum of the within squares divided by the sum of their degrees of freedom. The pooled σ²_mount is the mean over the programs of (MS_between − MS_within) / n₀, with the floor at 0 applied to the mean.
+
 ### 11.3 Equivalence test and the feature decision
 
-For each feature and program, the two one-sided tests (TOST) p-value is the larger of two one-sided Welch t-test p-values. The first tests the bias against the lower limit −L. The second tests it against the upper limit L. The program is equivalent at level α when the p-value is at most α. At α = 0.05 this is the 90 percent interval of section 11.2 inside [−L, L]. A program that is not estimable has a p-value of 1.
+For each feature and program, the two one-sided tests (TOST) p-value is the larger of two one-sided Welch t-test p-values. The first tests the bias against the lower limit −L. The second tests it against the upper limit L. The program is equivalent at level α when the p-value is at most α. At α = 0.05 this is the 90 percent interval of section 11.2 inside [−L, L]. A program that is not estimable has a p-value of 1. A standard error of 0 makes the interval a point. The p-value is then 0 when the bias lies inside the limits, and 1 when it does not.
 
 The feature decision is the claim. The p-value of a feature is the largest p-value over the programs of its program set. This is an intersection-union test and needs no adjustment across programs. A feature is bench-equivalent when every program of its set is estimable and equivalent. A feature with a non-estimable program is "not shown equivalent".
 
-The family is the six features of the feature set. The Holm procedure at α = 0.05 adjusts across them. Order the six feature p-values from the smallest. Feature j in this order is declared equivalent when every p-value up to and including j is at most 0.05 / (7 − its rank). Report every feature p-value, the adjusted decision, and the unadjusted decision.
+The family is the six features of the feature set. The Holm procedure at α = 0.05 adjusts across them. Order the six feature p-values from the smallest. Feature j in this order is declared equivalent when every p-value up to and including j is at most 0.05 / (7 − its rank). Tied p-values keep the order of the table of section 9.1. Report every feature p-value, the adjusted decision, and the unadjusted decision.
 
 The per-program decisions are descriptive. Report them with their intervals, without a claim.
 
@@ -597,17 +618,29 @@ Pair the mountings of the two devices by their index, 1 to m, in mounting order.
 
 The limits of agreement for a mounting mean are d̄ ± 1.96 × s_d. d̄ is the mean of all d_pi of the program set. s_d² = σ²_within + σ²_between, from a one-way analysis of variance of d_pi with program as the factor. σ²_within = MS_within. σ²_between = max(0, (MS_between − MS_within) / m). The pooled limits depend on the programs in the set, so report the per-program limits of agreement too, from the m differences of each program.
 
-The limits of agreement for a single run add the run variances. s²_single = s_d² + (1 − 1 / n̄) × (σ²_run,P + σ²_run,W), with n̄ the mean number of valid runs per mounting. With 5 valid runs the factor is 4 / 5. The run variances are pooled across programs.
+The limits of agreement for a single run add the run variances. s²_single = s_d² + (1 − 1 / n̄_P) × σ²_run,P + (1 − 1 / n̄_W) × σ²_run,W, with n̄ the mean number of valid runs per mounting of each device. With 5 valid runs the factor is 4 / 5. The run variances are pooled across programs.
 
 ### 11.5 Correction with covariates and the lack-of-fit check
 
-Fit a correction for every feature. For a feature that is not bench-equivalent, the fit is the correction. For every other feature, the fit is a report. The model maps a device W value to a device P value with the speed and scale of the program as covariates. The model is P = α + β W + γ_u u + γ_v v, with u = ln(speed / 20 mm/s) and v = ln(scale). The line programs have u = v = 0. The points are the mounting-mean pairs of section 11.4 over the program set, 72 pairs for 12 programs and 6 mountings.
+Fit a correction for every feature. For a feature that is not bench-equivalent, the fit is the correction. For every other feature, the fit is a report. The model maps a device W value to a device P value. The points are the mounting means of the raw device values of section 11.2, paired by mounting index as in section 11.4. There are 72 pairs for 12 programs and 6 mountings. For the four camera features, the correction does not use the camera-referenced differences. A difference holds no spread between the programs, so it leaves β unidentified. In the synthetic study of the analysis tests, the jackknife SE of β was 1.1 to 5.0 on the differences. A recording without a camera has the raw device value, and the correction maps that value.
 
-The fit has three steps:
+Each program set has its own model, because the covariates identify the slope only on the 12 programs:
 
-1. Regress the device P mounting means and the device W mounting means on (1, u, v) by least squares. Keep the coefficients c_P and c_W and the residuals e_P and e_W.
-2. Fit the Deming slope β on the residuals. The error variance ratio λ is (σ²_mount,P + σ²_run,P / n̄) / (σ²_mount,W + σ²_run,W / n̄). The variance components are the pooled components of section 11.2, with a floor of 10⁻⁶ on each variance. The slope is β = (S_yy − λ S_xx + √((S_yy − λ S_xx)² + 4 λ S_xy²)) / (2 S_xy).
-3. The corrected value is P̂ = c_P · z + β (W − c_W · z), with z = (1, u, v). The intercept and the covariate coefficients of the correction are c_P − β c_W.
+| Program set | Features | Model | Fitted terms |
+| --- | --- | --- | --- |
+| All 12 main programs | `bench.motion_s`, `bench.path_length_mm`, `bench.speed_mean_mm_s` | Covariates: P = α + β W + γ_u u + γ_v v | α, β, γ_u, γ_v |
+| The 5 loops programs | `bench.loop_height_mm`, `bench.speed_cv` | Slope: P = α + β W | α, β |
+| The line programs | `bench.band_power_mm2_s2` | Shift: P = α + W | α |
+
+Here u = ln(speed / 20 mm/s) and v = ln(scale). On the 5 loops programs, u and v explain almost all of the device W differences between the programs. The residuals after the covariates then hold mostly noise, and β is not identified. In a simulation with a true β of 1.05, the covariate model gave β values near −1 and near +1 on this set. The line programs have u = v = 0 and nearly equal device W values, so only a shift is identified. A term outside the model keeps its fixed value (β = 1, γ = 0). The deliverables mark it as not fitted (section 12). The covariate model refuses a program set on which (1, u, v) has a rank below 3.
+
+The covariate fit has three steps. The slope fit has the same steps with z = (1). The shift fit takes α as the mean of P − W over the pairs, with no λ.
+
+1. Regress the mounting means of both devices on z = (1, u, v) by least squares. Keep the coefficients c_P and c_W and the residuals e_P and e_W.
+2. Fit the Deming slope β on the residuals. The error variance ratio λ is (σ²_mount,P + σ²_run,P / n̄_P) / (σ²_mount,W + σ²_run,W / n̄_W). The variance components are the pooled components of section 11.2 of the fitted mountings. A floor of 10⁻⁶ applies to each of the two error variances. The slope is β = (S_yy − λ S_xx + √((S_yy − λ S_xx)² + 4 λ S_xy²)) / (2 S_xy).
+3. The corrected value is P̂ = c_P · z + β (W − c_W · z). The intercept and the covariate coefficients of the correction are c_P − β c_W.
+
+A program that is not estimable on both devices removes the correction of its feature, because the check below cannot then pass for every program.
 
 Lack-of-fit check with held-out mountings. For each mounting index k from 1 to m, fit the model on the pairs of the other mountings. Apply it to the device W mounting means of mounting k. The residual of a program is its device P mounting mean of mounting k minus the corrected value. For each program, the residual bias is the mean over the m held-out mountings. Its 90 percent t interval comes from their standard deviation with m − 1 degrees of freedom. The correction passes for a program when this interval lies inside [−L, L]. The check is a lack-of-fit check with a mounting-based interval, not an out-of-sample test. Every fold subtracts the mean of the other mountings. The mean of the held-out residuals therefore adds little to the in-sample residual of the full fit. The interval carries the mounting variation. A program-dependent difference that the covariates cannot explain fails the check (section 11.8).
 
@@ -651,7 +684,7 @@ Per-program decision for 6 mountings × 5 runs, share of 20000 datasets declared
 | 0.50 | 0.25 | 0.346 | 0.998 | 0.763 | 0.045 |
 | 0.50 | 0.50 | 0.564 | 0.797 | 0.421 | 0.049 |
 
-The share at a bias of L is 0.045 to 0.051 in every cell, so the per-program test keeps its 5 percent error. The feature decision at a bias of L is 0.021 or less in every cell.
+The share at a bias of L is 0.045 to 0.051 in every cell, and at most 0.052 at 8 × 5. The per-program test therefore keeps its 5 percent error. At a bias of L, the feature decision is 0.021 or less on the 12 programs. It is 0.033 or less on the loops and the line programs.
 
 Feature decision for 6 × 5, share declared equivalent for every program of the set. The bias applies to every program. Each cell gives the share at α = 0.05 and at the Holm bound α = 0.05 / 6:
 
@@ -708,6 +741,30 @@ The correction table of the same run uses the model of section 11.5 on the 12 pr
 
 With a difference that the model can represent, the held-out check passes every program in 0.999 of datasets at σ_mount up to 0.25 L. The true residual bias of the published fit is then 0.09 to 0.16 L. With program offsets that the covariates cannot represent, the check passes in 0.26 of datasets or less. The true residual bias stays near 0.9 L. The check therefore detects a misfit of this size. It does not estimate the out-of-sample bias beyond the in-sample residual.
 
+The same run simulates the slope model on the 5 loops programs and the shift model on the 3 line programs. Each cell has 5000 datasets. The line programs have u = 0, so their `speed` truth equals the `linear` truth.
+
+| Program set and model | σ_mount | Truth | Largest uncorrected bias | Held-out check passes all programs | True residual bias of the full fit (median of the largest) | β median (quartiles) | Jackknife SE of β (median) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Loops, slope | 0.10 | linear | 1.05 | 1.000 | 0.079 | 1.050 (1.045 to 1.055) | 0.0070 |
+| Loops, slope | 0.10 | speed | 2.05 | 1.000 | 0.172 | 1.142 (1.137 to 1.148) | 0.0074 |
+| Loops, slope | 0.10 | program | 1.55 | 0.960 | 0.673 | 1.095 (1.090 to 1.100) | 0.0074 |
+| Loops, slope | 0.25 | linear | 1.05 | 1.000 | 0.135 | 1.050 (1.045 to 1.055) | 0.0071 |
+| Loops, slope | 0.25 | speed | 2.05 | 0.999 | 0.230 | 1.142 (1.137 to 1.148) | 0.0074 |
+| Loops, slope | 0.25 | program | 1.55 | 0.384 | 0.730 | 1.095 (1.089 to 1.100) | 0.0077 |
+| Loops, slope | 0.50 | linear | 1.05 | 0.806 | 0.239 | 1.050 (1.045 to 1.055) | 0.0075 |
+| Loops, slope | 0.50 | speed | 2.05 | 0.662 | 0.340 | 1.142 (1.137 to 1.148) | 0.0078 |
+| Loops, slope | 0.50 | program | 1.55 | 0.041 | 0.829 | 1.094 (1.089 to 1.100) | 0.0082 |
+| Line, shift | 0.10 | linear | 0.45 | 1.000 | 0.046 | fixed | fixed |
+| Line, shift | 0.10 | program | 0.95 | 0.958 | 0.668 | fixed | fixed |
+| Line, shift | 0.25 | linear | 0.45 | 1.000 | 0.101 | fixed | fixed |
+| Line, shift | 0.25 | program | 0.95 | 0.439 | 0.670 | fixed | fixed |
+| Line, shift | 0.50 | linear | 0.45 | 0.850 | 0.199 | fixed | fixed |
+| Line, shift | 0.50 | program | 0.95 | 0.051 | 0.732 | fixed | fixed |
+
+On the small sets, the check passes program offsets of ± 0.5 L in about 0.96 of datasets at σ_mount 0.1 L. These passes are correct, because the true residual bias of 0.67 L lies inside the limit. The check detects the offsets only at σ_mount 0.25 L or more. On the loops programs, the slope model takes a speed-dependent difference into β. With the `speed` truth, β is 1.142 against the device slope of 1.05. The loops β therefore contains any speed dependence over the bench speeds (section 12). The W values of the simulation spread over about 13 L on the loops programs. At the designed spread of `bench.speed_cv` (0.298 to 0.342), the jackknife SE of β is 0.054 at σ_mount 0.1 L and 0.064 at 0.25 L. At the spread of `bench.loop_height_mm` (20 and 14 mm), it is 0.0075.
+
+`bench_precision.py` takes every statistic from `scriptkin.bench.stats`, so the precision study simulates the statistics of the analysis.
+
 ### 11.9 Sensitivity analyses
 
 Report the analysis of sections 11.2 to 11.5 also:
@@ -717,6 +774,8 @@ Report the analysis of sections 11.2 to 11.5 also:
 - per task, per scale, and per speed, pooled over the other factors,
 - with the mounting means replaced by the medians of the runs.
 
+A pooled group averages the per-program mounting means. Its run variance has N − k P degrees of freedom for P programs.
+
 ## 12. Deliverables for the consequence experiment
 
 The bench delivers `bench/results/deliverables.json` with, for each feature and program:
@@ -724,7 +783,9 @@ The bench delivers `bench/results/deliverables.json` with, for each feature and 
 - The bias on the comparison scale, its standard error, and its 90 percent interval.
 - For a logarithmic feature, the bias factor exp(bias) with its interval. The factor applies to the feature in any unit. For `bench.speed_cv`, the bias itself.
 - The variance components σ²_run and σ²_mount for each device.
-- The correction coefficients α, β, γ_u, and γ_v with their jackknife standard errors, and the held-out residual bias with its interval.
+- The correction model of the program set, and its coefficients α, β, γ_u, and γ_v on the raw device values. Each coefficient has its jackknife standard error. A term outside the model of section 11.5 is marked as not fitted. The β of the loops programs contains any speed dependence of the device difference over the bench speeds.
+- The held-out residual bias with its interval.
+- For each coefficient, whether it is fitted. For each feature, the values of its bias (`camera_referenced` or `raw_device`) and of its correction (`raw_device`).
 
 The deliverables give each difference per program, because the bench shows whether the difference depends on the task, the scale, and the speed. For each feature, the deliverables state the range in which the factors hold. The scales are 0.7 and 1.0. The speeds are 20 to 80 mm/s for the loops, or 20 to 40 mm/s without `loops-l-v80`. They are 20 to 40 mm/s for the spiral, and 20 mm/s with a 5 to 11 Hz oscillation for the line. The consequence experiment and the ParkinsonHW example of the plan apply the factor of the program closest to their data in task, scale, and speed. They state the choice.
 
@@ -749,7 +810,7 @@ Stop a block after the lock, remount, and record a deviation when any of these h
 - Three consecutive runs fail.
 - The stylus altitude or the load is outside its tolerance.
 
-No person and no script compares the feature values of the two devices before the last block. The interim check of section 6.6 prints variance components only. Every access to the feature values during the main runs is a row in `bench/DEVIATIONS.md`. The row gives the person, the date, the script, and what it printed.
+No person and no script compares the feature values of the two devices before the last block. `scriptkin bench analyse` refuses to run until the registry holds the complete design of section 6.3. Every block must also hold each run label of its order file, as a recorded or a void row. The interim check of section 6.6 prints variance components only. Every access to the feature values during the main runs is a row in `bench/DEVIATIONS.md`. The row gives the person, the date, the script, and what it printed.
 
 A deviation is any departure from this protocol after the lock. Record every deviation as a table row in `bench/DEVIATIONS.md`. The row has the date and time, the runs affected, the departure, the cause, the decision, and the person. Commit each row when it is written, so that the Git history dates the row. Analysis changes after the lock are deviations and are reported in the paper as post hoc.
 
@@ -761,12 +822,13 @@ The lock registers everything that the main runs depend on. Do it after the pilo
 2. Write the pilot results into the protocol: the `fault-dwell` expectation of device P, the band-power program set, and the `loops-l-v80` decision. Run `./check` at the lock commit. It must pass.
 3. Put the pilot measurements and the chosen constants into `bench/registry.json`. Run the three scripts of section 11.8. Copy the precision report to `bench/results/bench_precision.json`.
 4. Generate the run orders (section 6.3), the program files (section 5.1), the controller files (section 4.1), and `contract/bench_programs.json` (section 2.4).
-5. Write `bench/BENCH_LOCK.json`. It holds the protocol version and the repository commit hash. It holds `app.build` and `app.sourceRevision` of SCRIPT Capture and of SCRIPT Bench. It holds the SHA-256 of each file in this list:
+5. Write `bench/BENCH_LOCK.json` with `scriptkin bench lock`. It holds the protocol version and the repository commit hash. It holds `app.build` and `app.sourceRevision` of SCRIPT Capture and of SCRIPT Bench. It holds the SHA-256 of each file in this list:
    - `docs/BENCH_PROTOCOL.md`
    - `bench/registry.json`
    - every file under `bench/programs/` and `bench/order/`
    - `contract/bench_programs.json`
    - `python/uv.lock`
+   - every file under `python/src/scriptkin/`, without `__pycache__`, `.DS_Store`, and `._` files
    - `python/studies/bench_programs.py`, `python/studies/bench_limits.py`, and `python/studies/bench_precision.py`
    - the translation script of section 4.1
    - the precision report `bench/results/bench_precision.json`
@@ -778,6 +840,8 @@ The lock registers everything that the main runs depend on. Do it after the pilo
 
 The lock file does not contain its own digest. The paper and the supplement cite the lock commit.
 
+`scriptkin bench analyse` refuses to run when the `scriptkin` package that runs is not the folder `python/src/scriptkin/` of the repository, or when a locked file changed. With `--post-hoc`, it runs with changed, added, or removed code files. Every output then says that the analysis is post hoc and names the changed files (section 13).
+
 ## 15. Data and file naming
 
 All bench files live under `bench/` in the repository. The recordings and the video are large and live in the study store of the records drive. The study store path is in `bench/registry.json`.
@@ -785,21 +849,33 @@ All bench files live under `bench/` in the repository. The recordings and the vi
 | Path | Content |
 | --- | --- |
 | `bench/registry.json` | Devices, software versions, fixture measurements, friction and stiffness, camera facts and checks, motion settings, one record per mounting, pilot measurements, constants, and the move list digests. |
-| `bench/programs/<program>.json` | The move list of each program, from `bench_programs.py --write`. |
+| `bench/programs/<program>.json` | The move list of each program, from `bench_programs.py --write`: the program, the start point, and the moves. |
 | `bench/programs/<program>.<controller>` | The controller file generated from the move list by the translation script. Its SHA-256 is the trajectory digest. |
 | `bench/order/block-<bb>.csv` | The run order of block bb (01 to 16), with position, program, and repeat, from `bench_programs.py --orders`. |
-| `bench/runs.csv` | One row per run, with run id, device, mounting, block, position, program, run index, session id, trial index, clip, status, and deviation row. |
+| `bench/runs.csv` | One row per run, with the columns `run_id`, `device`, `mounting`, `block`, `position`, `program`, `run_index`, `session_id`, `trial_index`, `clip`, `status`, and `deviation_row`. The status is `planned`, `recorded`, or `void`. A void row names its deviation row. The clip equals the run id. |
 | `bench/DEVIATIONS.md` | The deviation log and the data access log. |
 | `bench/BENCH_LOCK.json` | The lock file. |
-| `bench/results/` | The analysis outputs: `features.csv` in the `FeatureTable` format with its provenance file, `agreement.csv`, `bland_altman.csv`, `correction.csv`, `sampling.csv`, `accuracy.csv`, `gate.csv`, `interim.csv`, `bench_precision.json`, and `deliverables.json`. |
+| `bench/results/` | The analysis outputs: `run_status.csv`, `features.csv` in the `FeatureTable` format with its provenance file, `bench_features.csv`, `agreement.csv`, `bland_altman.csv`, `correction.csv`, `sampling.csv`, `accuracy.csv`, `gate.csv`, `interim.csv`, `pilot.csv`, `bench_precision.json`, and `deliverables.json`. |
 
 Run ids are `<device>-<mounting>-<program>-r<run index>`, for example `P-M3-loops-s-v40-r2`. A rerun has the run index 6 or 7.
 
 Each block is one journal session. The capture tool exports it as `SCRIPT_BENCH_<device><mounting>_<session8>/`. Each run is one trial, in block order. `trialStarted.bench` names the program, the run index, the trajectory digest, and the clip (section 2.4). The clip is the run id.
 
-The camera files are `<run id>.mov`, `<run id>.frames.json` from `ffprobe`, and `<run id>.track.csv` from the tracker. They live under `camera/<device>-<mounting>/` in the study store.
+The camera files are `<run id>.mov`, `<run id>.frames.json` from `ffprobe`, and `<run id>.track.csv` with `<run id>.track.json` from the tracker. The frames file comes from `ffprobe -v error -select_streams v:0 -show_frames -of json <run id>.mov`. The track rows hold one row per frame, and the track facts name the clip, the frames file, and the calibration by their SHA-256. They live under `camera/<device>-<mounting>/` in the study store. The camera steps write one JSON file each: the lens, the plane, the mounting calibration, the frame clock, and the row readout with its direction. The track format is version 2. Its facts record the readout direction.
 
-The analysis reads `bench/runs.csv`, the journals, and the tracks, and writes `bench/results/`. One command does this. The build phase names it, and the lock registers it.
+The analysis reads `bench/runs.csv`, `bench/registry.json`, the lock file, the move lists, the journals, and the tracks, and writes `bench/results/`. One command does this: `scriptkin bench analyse <repository root>`. The lock commit registers it. The command checks the digests of the lock file and the build of every journal first. It refuses to run until the study is complete (section 13).
+
+The analysis reads these keys of `bench/registry.json`. Other keys are allowed.
+
+| Key | Content |
+| --- | --- |
+| `studyStore` | The path of the study store. |
+| `mountings` | One record per mounting: `device`, `mounting`, `block`, `originMM` (the stimulus origin in plane millimetres, `x` and `y`), `calibrationSHA256`, and `qualificationSession` (optional). |
+| `constants` | The results of the pilot: `bandPowerPrograms`, `excludedPrograms`, and `faultDwellGapsOnP`. |
+
+In `bench/results/`, `run_status.csv` gives each run its outcome of section 6.4, its camera state, and the time lag of its camera track. `features.csv` holds the library features of every recorded run, with the run id in the `participant` column. `bench_features.csv` holds the bench features of each run from the device and from the camera. Every table starts with the `post_hoc` column. The next column of each statistics file names the analysis. It is `main` or a sensitivity analysis of section 11.9: `no_motion_exclusion`, `raw_device`, `median`, `by_task`, `by_scale`, or `by_speed`. A value that cannot be computed is empty, with its reason in the `reason` column.
+
+The other commands are `scriptkin bench pilot`, `scriptkin bench interim`, `scriptkin bench lock`, and `scriptkin bench start-point`. The last one prints the commanded start point of a run in plane millimetres for `scriptkin bench track`. The camera steps are `scriptkin bench lens`, `plane`, `marker-offset`, `clock`, `readout`, and `track`. Every command exits with 0 when it is done, 1 when it refuses, and 2 for a damaged input.
 
 ## 16. What the paper may and may not claim
 
@@ -840,7 +916,9 @@ Each reference was opened on 3 November 2026 at the address given.
 - R5. Sisti JA, Christophe B, Seville AR, Garton ALA, Gupta VP, Bandin AJ, Yu Q, Pullman SL. Computerized spiral analysis using the iPad. Journal of Neuroscience Methods. 2017;275:50-54. DOI 10.1016/j.jneumeth.2016.11.004. Opened at https://pmc.ncbi.nlm.nih.gov/articles/PMC5308231/. Prior work. An iPad with a finger or a capacitive stylus at 60 Hz or less against a Wacom Intuos 4 with a ballpoint stylus. 15 healthy people and 16 patients took part. No Apple Pencil was used. All nine indices correlated between the devices, with R² from 0.52 to 0.90.
 - R6. Gerth S, Klassert A, Dolk T, Fliesser M, Fischer MH, Nottbusch G, Festman J. Is handwriting performance affected by the writing surface? Comparing preschoolers', second graders', and adults' writing performance on a tablet vs. paper. Frontiers in Psychology. 2016;7:1308. DOI 10.3389/fpsyg.2016.01308. Opened at https://www.frontiersin.org/journals/psychology/articles/10.3389/fpsyg.2016.01308/full. Values used. 25 adults, mean age 21.8 years, wrote on paper over a Wacom Intuos4 XL and on a pen screen, both at 133 Hz. Loops: duration 4760.90 ± 1273.86 ms on paper and 4549.95 ± 934.84 ms on the screen, velocity 104.55 ± 36.75 and 125.06 ± 31.97 mm/s. Sentence: duration 5039.54 ± 1414.62 and 5872.78 ± 1823.93 ms, velocity 30.46 ± 7.90 and 35.88 ± 8.93 mm/s.
 - W1. Wacom. Wacom Intuos Pro (2025) product page. Opened at https://www.wacom.com/en-us/products/pen-tablets/wacom-intuos-pro. Values used in section 2.2.
-- M1. Evil Mad Scientist. AxiDraw V3/B6 product page. Opened at https://shop.evilmadscientist.com/945. Values used in section 4.3.
+- M1. Evil Mad Scientist. AxiDraw V3/B6 product page. Opened at https://shop.evilmadscientist.com/945. Values used in version 1.1 of section 4.3.
+- M3. Bantam Tools. NextDraw 8511 product page. Opened on 4 November 2026 at https://bantamtools.com/products/bantam-tools-nextdraw-8511. Values used in section 4.3.
+- M4. Evil Mad Scientist. EBB (EiBotBoard) command set, firmware 3.0 and later. Opened on 4 November 2026 at https://evil-mad.github.io/EggBot/ebb.html. Values used in section 4.3.
 - M2. Creality. Ender-3 V3, V3 Plus, and V3 KE technical specifications. Opened at https://www.creality3dofficial.com/blogs/null/exploring-the-ender-3-v3-plus-3d-printer. Values used in section 4.3.
 - Protocol 4.8 and its reference implementation, `Screening_Device/BENCH_PROTOCOL.md` and `Screening_Device/bench_reference/` in the earlier project folder. Reused: the fixture and holder design, the camera method, the axis and length check, the lock procedure, and the designed contrast rule.
 

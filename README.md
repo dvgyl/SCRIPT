@@ -6,6 +6,7 @@ SCRIPT is a research platform that records drawing movement and tests whether it
 - **scriptkin** is a Python library. It reads the recordings, checks their quality, and calculates movement features.
 - **The evaluation harness** in scriptkin tests screening models and measurement reliability without data leakage.
 - **SCRIPT Bench** is a Mac app for the robotic bench study. It records a Wacom tablet in the journal format of SCRIPT Capture, which has a bench mode for the iPad.
+- **The bench analysis** in scriptkin tracks the camera reference of each run and analyses the bench study by its protocol.
 
 SCRIPT is not a screening or diagnostic tool. The app never shows a result to the person who draws.
 
@@ -29,6 +30,22 @@ This runs the contract check, the Swift core tests, and the SCRIPT Bench tests o
 ```
 
 The sections are `contract`, `core`, `bench`, `app`, and `python`, and `./check` with no argument runs them in this order. For example, `./check bench` runs the tests of the Mac target `ScriptBench` and checks its String Catalog. Build output goes to `~/Library/Caches/SCRIPT/`, outside the repository, because the repository can sit on an exFAT drive.
+
+## Analyse the bench study
+
+The bench protocol, `docs/BENCH_PROTOCOL.md`, defines every step. The commands below run from the repository root in the `./check` environment. Section 15 of the protocol gives their files.
+
+| Command | Step |
+| --- | --- |
+| `scriptkin bench lens`, `plane`, `marker-offset`, `clock`, `readout` | Calibrate the camera (protocol section 7) |
+| `scriptkin bench start-point ROOT RUN_ID` | Print the commanded start point of a run for the tracker |
+| `scriptkin bench track CLIP` | Track the marker in one clip and write its track files |
+| `scriptkin bench pilot ROOT` | Check each device against its own command (section 6.5) |
+| `scriptkin bench lock ROOT` | Write the lock file (section 14) |
+| `scriptkin bench interim ROOT` | Print the variance components of blocks 1 to 6 (section 6.6) |
+| `scriptkin bench analyse ROOT [--post-hoc]` | Analyse the study and write `bench/results/` |
+
+The camera steps need OpenCV, which `./check` installs with the `camera` extra, and `ffprobe` for the frames file of each clip.
 
 ## Find your way
 

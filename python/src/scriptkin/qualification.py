@@ -43,13 +43,14 @@ class QualificationReport:
     observed_channels: frozenset[Channel]
 
 
-def _intervals(strokes: Sequence[Stroke]) -> Intervals | Refusal:
+def intervals(strokes: Sequence[Stroke], gap_s: float = GAP_S) -> Intervals | Refusal:
+    """The sample intervals of the given strokes. `gap_share` is the share of intervals above `gap_s`."""
     dt = np.concatenate([np.diff(s.t) for s in strokes]) if strokes else np.empty(0)
     dt = dt[np.isfinite(dt)]
     if not len(dt):
         return Refusal(RefusalCode.TOO_FEW_VALUES, "No contact stroke has two samples.")
     p5, median, p95 = np.percentile(dt, [5, 50, 95])
-    return Intervals(len(dt), float(median), float(p5), float(p95), float(np.mean(dt > GAP_S)))
+    return Intervals(len(dt), float(median), float(p5), float(p95), float(np.mean(dt > gap_s)))
 
 
 def _hold_residual(xy: FloatArray) -> FloatArray:
@@ -94,7 +95,7 @@ def qualify(recording: Recording) -> QualificationReport:
         recording.session_id,
         recording.device.model,
         context.device_asset,
-        _intervals(contact),
+        intervals(contact),
         _pooled_rms(recording, HOLD_TASK, _hold_residual),
         _pooled_rms(recording, LINE_TASK, _line_residual),
         context.scale,

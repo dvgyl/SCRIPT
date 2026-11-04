@@ -53,6 +53,14 @@ scriptkin declares five direct dependencies in `python/pyproject.toml`. In the t
 | cryptography | 50.0.2 | Apache-2.0 OR BSD-3-Clause | X25519, HKDF, and ChaCha20-Poly1305 for the HPKE decryption, and the study key pair | `python/src/scriptkin/hpke.py` and `python/src/scriptkin/studytools.py` | `test_rfc9180_vector_seals_and_opens` in `python/tests/test_export.py` |
 | jsonschema | 4.26.0 | MIT | `scriptkin config check` checks a configuration against `contract/config.schema.json`. The tests also check journal lines against `contract/journal.schema.json`. | `python/src/scriptkin/studytools.py` | `test_config_check_lists_every_schema_problem_with_its_location` in `python/tests/test_studytools.py` |
 
+The optional `camera` extra of `python/pyproject.toml` adds one package for the camera steps of the bench. `./check` installs it.
+
+| Package | Locked version | Licence | Role | Imported by | Test that uses it |
+| --- | --- | --- | --- | --- | --- |
+| opencv-python-headless | 5.0.0.93 | Apache-2.0 (metadata and classifier). `cv2/LICENSE.txt` is MIT and covers the packaging scripts. The macOS wheel bundles FFmpeg built with `--enable-gpl --enable-version3`, with libx264, libx265, libpostproc, libvidstab, and librubberband, which are under the GPL. The third-party licence file of the wheel names LGPL-2.1 for FFmpeg, which does not match the build. This matters only when SCRIPT distributes the wheel. | The lens and plane calibration, the marker search, and the video reader of the bench camera steps | `python/src/scriptkin/bench/calibration.py` and `python/src/scriptkin/bench/tracker.py` | `test_video_boundary_decodes_every_frame_of_the_real_clip_unchanged` in `python/tests/test_bench_tracker.py` |
+
+The camera steps also need `ffprobe` from FFmpeg, outside Python. The operator runs it on each clip to write the frames file (`docs/BENCH_PROTOCOL.md` section 15). The tests do not run it. The fixture in `python/tests/fixtures/bench_camera/` was made with `ffprobe` 8.1.2, and its README gives the command.
+
 The direct dependencies need these packages:
 
 | Package | Locked version | Licence | Required by | Role |

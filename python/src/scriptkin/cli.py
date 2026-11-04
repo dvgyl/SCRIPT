@@ -1,5 +1,5 @@
 """Command line: `scriptkin contract`, `evaluate`, `plan-digest`, `plan-size`, `intake`, `qc-report`,
-and `config`."""
+`config`, and `bench`."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import argparse
 import getpass
 import hashlib
 import json
+import math
 import re
 import sys
 from collections.abc import Mapping
@@ -224,6 +225,366 @@ def _config_check(args: argparse.Namespace) -> int:
     return 0
 
 
+FFPROBE_COMMAND = "ffprobe -v error -select_streams v:0 -show_frames -of json CLIP > CLIP_STEM.frames.json"
+_FRAMES_HELP = f"The frames file must sit beside the clip. Make it with:\n  {FFPROBE_COMMAND}"
+
+
+def _pattern(text: str) -> tuple[int, int]:
+    match = re.fullmatch(r"(\d+)x(\d+)", text)
+    if not match or min(int(match[1]), int(match[2])) < 3:
+        raise argparse.ArgumentTypeError("a board pattern is COLSxROWS inner corners, 3 or more each, as 9x6")
+    return int(match[1]), int(match[2])
+
+
+def _finite(text: str) -> float:
+    value = float(text)
+    if not math.isfinite(value):
+        raise argparse.ArgumentTypeError("expected a finite number")
+    return value
+
+
+def _positive(text: str) -> float:
+    value = _finite(text)
+    if value <= 0:
+        raise argparse.ArgumentTypeError("expected a positive number")
+    return value
+
+
+def _bench_lens(args: argparse.Namespace) -> tuple[Any, list[Path]]:
+    from scriptkin.bench.calibration import calibrate_lens, read_image
+
+    return calibrate_lens((read_image(p) for p in args.views), args.pattern, args.pitch_mm), args.views
+
+
+def _bench_plane(args: argparse.Namespace) -> tuple[Any, list[Path]]:
+    from scriptkin.bench.calibration import calibrate_plane, read_image
+    from scriptkin.bench.camerafiles import Lens, read_camera_file
+
+    lens = read_camera_file(Lens, args.lens)
+    plane = calibrate_plane(read_image(args.board), lens, args.pattern, args.pitch_mm, args.x_direction)
+    return plane, [args.lens, args.board]
+
+
+def _bench_marker_offset(args: argparse.Namespace) -> tuple[Any, list[Path]]:
+    from scriptkin.bench.calibration import read_image
+    from scriptkin.bench.camerafiles import Plane, Region, read_camera_file
+    from scriptkin.bench.tracker import measure_marker_offset
+
+    plane = read_camera_file(Plane, args.plane)
+    calibration = measure_marker_offset(read_image(args.still), plane, tuple(args.near_mm), Region(*args.led))
+    return calibration, [args.plane, args.still]
+
+
+def _bench_clock(args: argparse.Namespace) -> tuple[Any, list[Path]]:
+    from scriptkin.bench.camerafiles import Region, frames_path, read_frame_times
+    from scriptkin.bench.clock import led_levels, measure_clock
+    from scriptkin.bench.tracker import read_video
+
+    frames = frames_path(args.clip)
+    levels = led_levels(read_video(args.clip), Region(*args.led))
+    clock = measure_clock(levels, read_frame_times(frames), led_hz=args.led_hz, nominal_hz=args.nominal_hz)
+    return clock, [args.clip, frames]
+
+
+def _bench_readout(args: argparse.Namespace) -> tuple[Any, list[Path]]:
+    from scriptkin.bench.camerafiles import Region
+    from scriptkin.bench.clock import measure_readout
+    from scriptkin.bench.tracker import read_video
+
+    readout = measure_readout(
+        read_video(args.clip), Region(*args.region), led_hz=args.led_hz, nominal_hz=args.nominal_hz
+    )
+    return readout, [args.clip]
+
+
+def _bench(args: argparse.Namespace) -> int:
+    from scriptkin.bench.camerafiles import write_camera_file
+    from scriptkin.formats import FormatError
+    from scriptkin.quality import Refusal
+
+    try:
+        if args.action == "track":
+            from scriptkin.bench.tracker import track_clip
+
+            written = track_clip(
+                args.clip,
+                calibration=args.calibration,
+                clock=args.clock,
+                readout=args.readout,
+                start_mm=tuple(args.start_mm),
+                out_dir=args.out_dir,
+            )
+        else:
+            value, sources = args.step(args)
+            if isinstance(value, Refusal):
+                print(f"bench {args.action}: refused. {value.detail}", file=sys.stderr)
+                return 1
+            written = (write_camera_file(value, args.out, sources),)
+    except (OSError, FormatError, ValueError) as e:
+        print(f"bench {args.action}: {e}", file=sys.stderr)
+        return 2
+    for path in written:
+        print(f"bench {args.action}: wrote {path}")
+    return 0
+
+
+def _bench_analyse(args: argparse.Namespace) -> int:
+    """`scriptkin bench analyse`: the analysis of sections 8 to 12 into bench/results/ (section 15)."""
+    from scriptkin.bench.analysis import analyse_all
+    from scriptkin.bench.outputs import write_results
+    from scriptkin.bench.study import evaluate_study, incomplete, read_study
+    from scriptkin.formats import FormatError
+
+    try:
+        study = read_study(args.root, post_hoc=args.post_hoc)
+        problems = incomplete(study)
+        if problems:
+            print("bench analyse: refused. The study is not complete (section 13):", file=sys.stderr)
+            for problem in problems:
+                print(f"  {problem}", file=sys.stderr)
+            return 1
+        evaluated = evaluate_study(study)
+        written = write_results(evaluated, analyse_all(evaluated.runs, study), args.results or study.results)
+    except (OSError, FormatError, ValueError) as e:
+        print(f"bench analyse: {e}", file=sys.stderr)
+        return 2
+    for path in written:
+        print(f"bench analyse: wrote {path}")
+    if study.post_hoc:
+        print("bench analyse: post hoc (section 13). These locked code files changed after the lock:")
+        for path in study.changed_code:
+            print(f"  {path}")
+    return 0
+
+
+def _bench_interim(args: argparse.Namespace) -> int:
+    """`scriptkin bench interim`: section 6.6 on blocks 1 to 6. Prints variance components only."""
+    import datetime
+
+    from scriptkin.bench.interim import INTERIM_BLOCKS, INTERIM_COLUMNS, deviation_row, interim, interim_text
+    from scriptkin.bench.outputs import write_csv
+    from scriptkin.bench.study import evaluate_study, incomplete, read_study
+    from scriptkin.formats import FormatError
+
+    try:
+        study = read_study(args.root)
+        problems = incomplete(study, INTERIM_BLOCKS)
+        if problems:
+            print("bench interim: refused. Blocks 1 to 6 are not complete:", file=sys.stderr)
+            for problem in problems:
+                print(f"  {problem}", file=sys.stderr)
+            return 1
+        rows = tuple(r for r in study.rows if r.block in INTERIM_BLOCKS)
+        result = interim(evaluate_study(study, rows))
+        study.results.mkdir(parents=True, exist_ok=True)
+        path = write_csv(study.results / "interim.csv", INTERIM_COLUMNS, (r.row() for r in result))
+    except (OSError, FormatError, ValueError) as e:
+        print(f"bench interim: {e}", file=sys.stderr)
+        return 2
+    print(interim_text(result))
+    print(f"bench interim: wrote {path}")
+    when = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d %H:%M UTC")
+    print("Add this row to bench/DEVIATIONS.md:")
+    print(deviation_row(getpass.getuser(), when))
+    return 0
+
+
+def _bench_pilot(args: argparse.Namespace) -> int:
+    """`scriptkin bench pilot`: section 6.5, each device against its own command, before the lock."""
+    from scriptkin.bench.interim import PILOT_COLUMNS, pilot, pilot_text
+    from scriptkin.bench.outputs import write_csv
+    from scriptkin.bench.study import evaluate_study, read_study
+    from scriptkin.formats import FormatError
+
+    try:
+        study = read_study(args.root, locked=False)
+        rows = pilot(evaluate_study(study))
+        study.results.mkdir(parents=True, exist_ok=True)
+        path = write_csv(study.results / "pilot.csv", PILOT_COLUMNS, rows)
+    except (OSError, FormatError, ValueError) as e:
+        print(f"bench pilot: {e}", file=sys.stderr)
+        return 2
+    print(pilot_text(rows))
+    print(f"bench pilot: wrote {path}")
+    return 0
+
+
+def _bench_lock(args: argparse.Namespace) -> int:
+    """`scriptkin bench lock`: section 14 step 5, the lock file of the files and the two builds."""
+    from scriptkin.bench.inputs import Build, lock_json, write_lock
+    from scriptkin.formats import FormatError
+
+    builds = {role: Build(build, revision) for role, build, revision in args.build}
+    try:
+        lock = write_lock(args.root, builds, args.commit, args.file)
+        args.out.write_bytes(lock_json(lock))
+    except (OSError, FormatError, ValueError) as e:
+        print(f"bench lock: {e}", file=sys.stderr)
+        return 2
+    print(f"bench lock: wrote {args.out} with {len(lock.files)} file digests")
+    return 0
+
+
+def _bench_start_point(args: argparse.Namespace) -> int:
+    """`scriptkin bench start-point`: the commanded start of a run in plane millimetres."""
+    from scriptkin.bench.study import read_study, start_point_mm
+    from scriptkin.formats import FormatError
+
+    try:
+        x, y = start_point_mm(read_study(args.root, locked=False), args.run_id)
+    except (OSError, FormatError, ValueError) as e:
+        print(f"bench start-point: {e}", file=sys.stderr)
+        return 2
+    print(f"{x:.4f} {y:.4f}")
+    return 0
+
+
+def _add_bench_analysis(steps: Any) -> None:
+    root_help = "the repository root that holds bench/"
+    analyse = steps.add_parser("analyse", help="run the bench analysis and write bench/results/")
+    analyse.add_argument("root", type=Path, help=root_help)
+    analyse.add_argument("--results", type=Path, help="the output folder (default: bench/results)")
+    analyse.add_argument(
+        "--post-hoc",
+        action="store_true",
+        help="run with analysis code that changed after the lock (section 13); every output says so",
+    )
+    analyse.set_defaults(run=_bench_analyse)
+    interim = steps.add_parser("interim", help="print the variance components of blocks 1 to 6, section 6.6")
+    interim.add_argument("root", type=Path, help=root_help)
+    interim.set_defaults(run=_bench_interim)
+    pilot = steps.add_parser("pilot", help="check each device against its own command, section 6.5")
+    pilot.add_argument("root", type=Path, help=root_help)
+    pilot.set_defaults(run=_bench_pilot)
+    lock = steps.add_parser("lock", help="write the lock file of section 14 step 5")
+    lock.add_argument("root", type=Path, help=root_help)
+    lock.add_argument("--commit", type=str, required=True, help="the full hash of the commit to lock")
+    lock.add_argument(
+        "--build",
+        nargs=3,
+        action="append",
+        required=True,
+        metavar=("ROLE", "BUILD", "REVISION"),
+        help="the app.build and app.sourceRevision of the capture tool of device P or W; give both",
+    )
+    lock.add_argument(
+        "--file",
+        type=Path,
+        action="append",
+        default=[],
+        help="an extra file to lock, as the translation script",
+    )
+    lock.add_argument("--out", type=Path, required=True, help="the lock file to write")
+    lock.set_defaults(run=_bench_lock)
+    start = steps.add_parser("start-point", help="print the commanded start point of a run in plane mm")
+    start.add_argument("root", type=Path, help=root_help)
+    start.add_argument("run_id", help="the run id, as P-M3-loops-s-v40-r2")
+    start.set_defaults(run=_bench_start_point)
+
+
+def _add_bench(sub: Any) -> None:
+    b = sub.add_parser("bench", help="the camera steps and the analysis of the bench protocol")
+    steps = b.add_subparsers(dest="action", required=True)
+    _add_bench_analysis(steps)
+
+    def step(name: str, help: str, run: Any = None, frames: bool = False) -> argparse.ArgumentParser:
+        p = steps.add_parser(
+            name,
+            help=help,
+            description=f"{help[0].upper()}{help[1:]}.",
+            epilog=_FRAMES_HELP if frames else None,
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+        )
+        p.set_defaults(run=_bench, step=run)
+        if name != "track":
+            p.add_argument("--out", type=Path, required=True, help="the file to write")
+        return p
+
+    lens = step("lens", "calibrate the lens from 20 or more views of the board", _bench_lens)
+    lens.add_argument("views", type=Path, nargs="+", help="still images in the video mode of the clips")
+    plane = step(
+        "plane", "calibrate the marker plane of one mounting from one view of the board", _bench_plane
+    )
+    plane.add_argument("board", type=Path, help="a still image of the board on the spacer")
+    plane.add_argument("--lens", type=Path, required=True, help="the lens file")
+    plane.add_argument(
+        "--x-direction",
+        choices=["right", "left", "up", "down"],
+        default="right",
+        help="the image direction of device +x, within 45 degrees (default: right)",
+    )
+    for p in (lens, plane):
+        p.add_argument("--pattern", type=_pattern, required=True, help="inner corners along x and y, as 9x6")
+        p.add_argument("--pitch-mm", type=_positive, required=True, help="the measured pitch of the board")
+    offset = step(
+        "marker-offset",
+        "measure the marker offset of one mounting and write its calibration",
+        _bench_marker_offset,
+    )
+    offset.add_argument("still", type=Path, help="a still image with the stylus tip on the marked grid point")
+    offset.add_argument("--plane", type=Path, required=True, help="the plane file of the mounting")
+    offset.add_argument(
+        "--near-mm",
+        nargs=2,
+        type=_finite,
+        required=True,
+        metavar=("X", "Y"),
+        help="the marker position within 3.5 mm, in plane millimetres",
+    )
+    offset.add_argument(
+        "--led",
+        nargs=4,
+        type=int,
+        required=True,
+        metavar=("LEFT", "TOP", "WIDTH", "HEIGHT"),
+        help="the pixel rectangle of the clock LED",
+    )
+    clock = step(
+        "clock", "measure the frame clock from a 60 s clip of the 1 Hz LED", _bench_clock, frames=True
+    )
+    clock.add_argument("clip", type=Path)
+    clock.add_argument(
+        "--led",
+        nargs=4,
+        type=int,
+        required=True,
+        metavar=("LEFT", "TOP", "WIDTH", "HEIGHT"),
+        help="the pixel rectangle of the clock LED",
+    )
+    clock.add_argument("--led-hz", type=_positive, default=1.0)
+    clock.add_argument("--nominal-hz", type=_positive, default=240.0)
+    readout = step("readout", "measure the row time from a clip of the 1 kHz LED", _bench_readout)
+    readout.add_argument("clip", type=Path, help="a clip recorded with an exposure of 1/4000 s or shorter")
+    readout.add_argument(
+        "--region",
+        nargs=4,
+        type=int,
+        required=True,
+        metavar=("LEFT", "TOP", "WIDTH", "HEIGHT"),
+        help="the pixel rectangle where the bands show",
+    )
+    readout.add_argument("--led-hz", type=_positive, default=1000.0)
+    readout.add_argument("--nominal-hz", type=_positive, default=240.0)
+    track = step("track", "track the marker in one clip and write its track files", frames=True)
+    track.add_argument("clip", type=Path, help="the clip, named <run id> with its suffix")
+    track.add_argument("--calibration", type=Path, required=True, help="the calibration file of the mounting")
+    track.add_argument("--clock", type=Path, required=True, help="the clock file")
+    shutter = track.add_mutually_exclusive_group(required=True)
+    shutter.add_argument("--readout", type=Path, help="the readout file of a rolling shutter")
+    shutter.add_argument("--global-shutter", action="store_true", help="the camera has a global shutter")
+    track.add_argument(
+        "--start-mm",
+        nargs=2,
+        type=_finite,
+        required=True,
+        metavar=("X", "Y"),
+        help="the commanded start point of the stylus tip, in plane millimetres",
+    )
+    track.add_argument(
+        "--out-dir", type=Path, help="the folder for the track files (default: beside the clip)"
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="scriptkin")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -301,6 +662,8 @@ def main(argv: list[str] | None = None) -> int:
     v = actions.add_parser("check", help="check a configuration against the schema and the rules")
     v.add_argument("file", type=Path)
     v.set_defaults(run=_config_check)
+
+    _add_bench(sub)
 
     args = parser.parse_args(argv)
     return args.run(args)
