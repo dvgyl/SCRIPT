@@ -15,10 +15,13 @@ along x. At that lift, the 24 mm square holds a shift of 10.3 mm on each axis, o
 diagonal.
 
 Inside the square, Otsu thresholding separates the bright pixels. A bright region counts only when it
-lies completely inside the square and its area is at least half the area of the 3 mm marker dot. The two
-Otsu classes must differ by `MARKER_MIN_CONTRAST` grey levels. A frame without such a region has no
-marker, and the tracker records NaN. The marker is the largest region that counts, and its position is
-the intensity-weighted centroid of its pixels.
+lies completely inside the square and its area is between half and twice the area of the 3 mm marker
+dot. The 24 mm first square reaches the lit screen beyond the black field of the marker, where a shape
+enclosed by a dark line, such as a stimulus figure or a UI line, is a bright region too; the upper bound
+keeps a larger shape out. A marker raised 17 mm on the test camera appears 1.29 times larger, inside
+the band. The two Otsu classes must differ by `MARKER_MIN_CONTRAST` grey levels. A frame without such a
+region has no marker, and the tracker records NaN. The marker is the largest region that counts, and its
+position is the intensity-weighted centroid of its pixels.
 
 The row of a centroid is its raw image row, before the distortion is removed, because the sensor reads
 raw rows. The time of the centroid is `t_frame + row * row_time` when the sensor reads row 0 first, and
@@ -63,6 +66,7 @@ FIRST_SEARCH_MM = 24.0
 MARKER_DIAMETER_MM = 3.0
 MARKER_MIN_CONTRAST = 32.0
 _MIN_AREA_SHARE = 0.5
+_MAX_AREA_SHARE = 2.0
 _EDGE_POINTS = 8
 _BORDER_KERNEL = np.ones((3, 3), np.uint8)
 
@@ -110,10 +114,13 @@ def find_marker(frame: Frame, outline_px: FloatArray, side_mm: float = SEARCH_MM
     eroded = cv2.erode(mask, _BORDER_KERNEL, borderType=cv2.BORDER_CONSTANT, borderValue=0)
     border = inside & ~eroded.astype(bool)
     touching = set(np.unique(labels[border & bright]).tolist())
-    dot_area_mm2 = np.pi * (MARKER_DIAMETER_MM / 2) ** 2
-    min_area = _MIN_AREA_SHARE * dot_area_mm2 * _polygon_area(outline_px) / side_mm**2
+    dot_area_px = np.pi * (MARKER_DIAMETER_MM / 2) ** 2 * _polygon_area(outline_px) / side_mm**2
     areas = stats[:, cv2.CC_STAT_AREA]
-    counted = [k for k in range(1, count) if k not in touching and areas[k] >= min_area]
+    counted = [
+        k
+        for k in range(1, count)
+        if k not in touching and _MIN_AREA_SHARE * dot_area_px <= areas[k] <= _MAX_AREA_SHARE * dot_area_px
+    ]
     if not counted:
         return None
     marker = max(counted, key=lambda k: int(areas[k]))

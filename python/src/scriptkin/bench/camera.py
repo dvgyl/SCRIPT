@@ -10,8 +10,11 @@ step 5. A camera at height D above the marker plane sees a marker raised by dz a
 its true position, away from the nadir, where X is the distance from the nadir. A lowering at 10 mm/s
 therefore appears as a movement of 2 to 5 mm/s at the start points, above the 2 mm/s of section 7.4,
 and the rule alone would start the motion interval at the lowering. The rule is unchanged. It applies
-only inside a window around the motion of the reference record of the run, which a coarse alignment
-of the speed profiles places in the clip.
+only inside a window around the commanded motion of the program, which a coarse alignment of the
+speed profiles places in the clip (`coarse_alignment`). The commanded motion is the reference of every
+run, so the window never depends on the device record that the camera measures. A motion interval that
+touches an edge of the window is cut, because the movement extends beyond the commanded window, and
+the run is then a motion failure of section 7.6 (`touches_window`, `ExecutedMovement.window_edge`).
 
 The QC policy. The camera record has no policy of its own, so `DEFAULT_QC` applies. Its `max_gap_s` of
 0.05 s is twelve frame intervals at 240 frames per second: a marker lost for twelve or more consecutive
@@ -65,6 +68,7 @@ MAX_PATH_DISTANCE_MM = 0.2
 MAX_DURATION_ERROR = 0.01
 MAX_ROTATION_DEG = 1.0
 COARSE_CORRELATION = 0.5
+COARSE_SMOOTHING_S = 0.2
 WINDOW_BEFORE_S = 0.2
 WINDOW_AFTER_S = 0.15
 _ICP_MAX_ITERATIONS = 100
@@ -74,8 +78,8 @@ _MIRROR = np.array([1.0, -1.0])
 
 class CameraRule(StrEnum):
     ALIGNMENT = "alignment"
-    """The clip does not hold the whole motion of the reference record, or the speed profile of the clip
-    does not match the profile of the reference (`motion_window`)."""
+    """The run has no commanded motion, the clip does not hold the whole commanded motion, or the speed
+    profile of the clip does not match the commanded profile (`coarse_alignment`)."""
     DUPLICATE_FRAME = "duplicate_frame"
     """A duplicate frame inside the motion interval."""
     FRAME_INTERVAL = "frame_interval"
@@ -93,6 +97,9 @@ class CameraRecord:
     track: Track
     run: RunFeatures
     failed: tuple[CameraRule, ...]
+    window_edge: bool = False
+    """The motion interval touches an edge of its window (`touches_window`). The record is valid, and
+    the executed movement check of section 7.6 fails the run."""
 
     @property
     def valid(self) -> bool:
@@ -140,11 +147,15 @@ class ExecutedMovement:
     fit: PathFit
     motion_s: float
     commanded_s: float
+    window_edge: bool = False
+    """The camera motion interval touches an edge of its window, so the movement extends beyond the
+    commanded window and `motion_s` holds only a part of it (`CameraRecord.window_edge`)."""
 
     @property
     def failure(self) -> bool:
         return (
-            self.fit.max_mm > MAX_PATH_DISTANCE_MM
+            self.window_edge
+            or self.fit.max_mm > MAX_PATH_DISTANCE_MM
             or abs(self.motion_s - self.commanded_s) > MAX_DURATION_ERROR * self.commanded_s
         )
 
@@ -215,28 +226,50 @@ def _sliding_correlation(reference: FloatArray, clip: FloatArray) -> FloatArray:
     return np.where((variance > 0) & (scale > 0), coefficients, -np.inf)
 
 
-def motion_window(
-    reference: Motion | None, ok: Accepted, settings: Preprocessing = DEFAULT_PREPROCESSING
-) -> MotionInterval | Refusal:
-    """Where the motion interval rule of section 7.4 applies on a camera record.
+@dataclass(frozen=True)
+class CoarseAlignment:
+    """Where the commanded motion lies in the clip: camera time equals command time plus `lag_s`.
+    `correlation` is the largest coefficient of the smoothed speed profiles, from -1 to 1."""
 
-    The reference is the device record of the run, or the commanded motion when the device record is
-    rejected. Its speed profile inside its motion interval slides over the speed profile of the whole
-    clip, and the lag with the largest correlation coefficient places the motion in the clip. The
-    window is the reference interval at that lag, wider by `WINDOW_BEFORE_S` before and
-    `WINDOW_AFTER_S` after. Both are shorter than the dwells of 0.5 s and 0.3 s of section 5.2, so the
-    lowering and the lift stay outside. The lag is accurate to about one grid step, and
-    `time_alignment` refines it on the motion intervals afterwards.
+    lag_s: float
+    correlation: float
 
-    The alignment fails without a reference, when the clip does not hold the whole reference
-    interval, and when the largest coefficient is below `COARSE_CORRELATION`. The two records of one
-    run correlate above 0.9. A clip of another program correlates far below 0.5, because its profile
-    has another length and another shape. The commanded motion as the reference can be 1 percent
-    longer or shorter than the executed one (section 7.6), which cuts up to 0.2 s of the longest
-    program into the margins; a run without a device record fails in any case (section 6.4).
+
+def _smoothed(profile: FloatArray, grid_hz: float) -> FloatArray:
+    """The moving average of a speed profile over `COARSE_SMOOTHING_S`, with zeros beyond its ends."""
+    width = max(1, round(COARSE_SMOOTHING_S * grid_hz))
+    return np.convolve(profile, np.full(width, 1.0 / width), mode="same")
+
+
+def coarse_alignment(
+    reference: Motion, ok: Accepted, settings: Preprocessing = DEFAULT_PREPROCESSING
+) -> CoarseAlignment | Refusal:
+    """Section 7.4: the lag that places the commanded motion in the clip, from the speed profiles.
+
+    The reference is the commanded motion of the program of the run (`features.commanded_motion`),
+    for every run. The camera record measures the device record, so the alignment must not depend on
+    it: a device record that loses part of the movement would cut the camera interval to the part
+    that it holds. The speed profile of the reference inside its motion interval slides over the
+    speed profile of the whole clip, and the lag with the largest correlation coefficient is the
+    result. The lag is accurate to about one grid step, and `time_alignment` refines it on the motion
+    intervals afterwards.
+
+    Both profiles are smoothed with a moving average of `COARSE_SMOOTHING_S` before the correlation.
+    The raw profiles of the line programs oscillate at 5 to 11 Hz, and a run off the command
+    stretches the oscillation against the commanded one: on the raw profiles, `line-osc11` correlated
+    at 0.46 one percent slow and `line-osc8` at 0.39 1.5 percent slow, below `COARSE_CORRELATION`,
+    so a run inside the tolerance of section 7.6 lost its camera record. The average over 0.2 s
+    removes 5 Hz and above and keeps the loop structure near 1 Hz. In a sweep of synthetic tracks
+    0.98 to 1.02 times the command, with and without the lift, the smallest coefficient is 0.56 on
+    `line-osc8` (an average over 1.6 of its periods leaves 19 percent of the oscillation), 0.87 on
+    `line-osc11`, 0.94 on `line-osc5`, and at least 0.79 on the loops and spiral programs. The fine
+    alignment reads the raw profiles as before.
+
+    The alignment fails when the clip does not hold the whole reference interval, and when the
+    largest coefficient is below `COARSE_CORRELATION`. The two records of one run correlate above
+    0.9. A clip of another program correlates below 0.5, because its profile has another length and
+    another shape.
     """
-    if reference is None:
-        return Refusal(RefusalCode.NOT_APPLICABLE, "The run has no reference record for the alignment.")
     grids = [k for _, k in contact_grids(ok, settings)]
     if not grids:
         return Refusal(RefusalCode.TOO_FEW_VALUES, "The track has no grid.")
@@ -246,7 +279,7 @@ def motion_window(
     profile = _profile(reference, hz)
     if len(clip) < len(profile):
         return Refusal(RefusalCode.TOO_FEW_VALUES, "The clip is shorter than the motion of the reference.")
-    coefficients = _sliding_correlation(profile, clip)
+    coefficients = _sliding_correlation(_smoothed(profile, hz), _smoothed(clip, hz))
     peak = int(np.argmax(coefficients))
     if coefficients[peak] < COARSE_CORRELATION:
         return Refusal(
@@ -254,16 +287,51 @@ def motion_window(
             f"The speed profiles of the clip and the reference correlate at {coefficients[peak]:.2f} at"
             f" best, below {COARSE_CORRELATION:g}.",
         )
-    lag = first + peak / hz - reference.interval.start_s
+    return CoarseAlignment(first + peak / hz - reference.interval.start_s, float(coefficients[peak]))
+
+
+def motion_window(
+    reference: Motion | None, ok: Accepted, settings: Preprocessing = DEFAULT_PREPROCESSING
+) -> MotionInterval | Refusal:
+    """Where the motion interval rule of section 7.4 applies on a camera record.
+
+    The window is the commanded interval at the lag of `coarse_alignment`, wider by `WINDOW_BEFORE_S`
+    before and `WINDOW_AFTER_S` after. Both are shorter than the dwells of 0.5 s and 0.3 s of section
+    5.2, so the lowering and the lift stay outside. The executed movement can be 1 percent longer or
+    shorter than the command (section 7.6), and the margins hold that difference on every program; a
+    run further off the command reaches an edge of the window (`touches_window`). In a sweep of
+    synthetic tracks, no program touches an edge within 1.5 percent of the command, the first touch
+    is at 2 percent slow on `loops-l-v20` and `spiral-l-v20`, and `loops-l-v20` 1.2 percent slow
+    keeps its interval and fails the duration check.
+    """
+    if reference is None:
+        return Refusal(RefusalCode.NOT_APPLICABLE, "The run has no reference record for the alignment.")
+    found = coarse_alignment(reference, ok, settings)
+    if isinstance(found, Refusal):
+        return found
     return MotionInterval(
-        reference.interval.start_s + lag - WINDOW_BEFORE_S, reference.interval.end_s + lag + WINDOW_AFTER_S
+        reference.interval.start_s + found.lag_s - WINDOW_BEFORE_S,
+        reference.interval.end_s + found.lag_s + WINDOW_AFTER_S,
     )
+
+
+def touches_window(
+    motion: Motion, window: MotionInterval, ok: Accepted, settings: Preprocessing = DEFAULT_PREPROCESSING
+) -> bool:
+    """Whether the motion interval starts at the first grid sample inside the window or ends at the last
+    one. The movement then extends beyond the commanded window, and the interval holds only a part of
+    it, so the run is a motion failure of section 7.6. The rule compares the interval with the grid
+    samples that the rule of section 7.4 searched, so a window edge between two grid samples counts as
+    the sample inside it."""
+    times = np.concatenate([k.t for _, k in contact_grids(ok, settings)])
+    inside = times[(times >= window.start_s) & (times <= window.end_s)]
+    return bool(motion.interval.start_s <= inside.min() or motion.interval.end_s >= inside.max())
 
 
 def camera_record(
     track: Track, reference: Motion | None, settings: Preprocessing = DEFAULT_PREPROCESSING
 ) -> CameraRecord:
-    """The record of a track, with its motion interval inside the window of the reference record."""
+    """The record of a track, with its motion interval inside the window of the commanded motion."""
     trial = camera_trial(track)
     qc = assess(trial, DEFAULT_QC)
     failed: tuple[CameraRule, ...] = ()
@@ -273,8 +341,10 @@ def camera_record(
             refusal, failed = window, (CameraRule.ALIGNMENT,)
         else:
             run = run_features(qc, settings, window=window)
-            interval = run.motion.interval if isinstance(run.motion, Motion) else None
-            return CameraRecord(track, run, validity(track, interval))
+            motion = run.motion if isinstance(run.motion, Motion) else None
+            failed = validity(track, motion.interval if motion is not None else None)
+            edge = motion is not None and touches_window(motion, window, qc, settings)
+            return CameraRecord(track, run, failed, edge)
     else:
         refusal = qc.refusals[0]
     run = RunFeatures(
@@ -387,9 +457,10 @@ def nearest_on_path(points: FloatArray, vertices: FloatArray) -> FloatArray:
 
     Example. The polyline has the vertices (0, 0), (10, 0), and (10, 10), so its edges are 0 and 1,
     and the longest edge is 10. The point (4, 1) has its nearest vertex (0, 0) at 4.12. Its ball of
-    radius 4.12 + 10 holds the vertices 0 and 1, so its candidate edges are the ones that start or
-    end there: edge 0 twice and edge 1. The projections are (4, 0) on edge 0 and (10, 1) on edge 1,
-    and (4, 0) at 1.0 is the nearest. A vertex outside the ball cannot start or end a nearer edge,
+    radius 4.12 + 10 holds all three vertices, because vertex 2 is at 10.82. Its candidate edges are
+    the ones that start or end at a vertex of the ball: edge 0 from the vertices 0 and 1, and edge 1
+    from the vertices 1 and 2. The projections are (4, 0) on edge 0 and (10, 1) on edge 1, and
+    (4, 0) at 1.0 is the nearest. A vertex outside the ball cannot start or end a nearer edge,
     because every point of such an edge is farther than the ball radius minus the edge length.
     """
     deltas = np.diff(vertices, axis=0)
@@ -493,4 +564,6 @@ def executed_movement(
     fit = path_fit(motion, move_list.path(), commanded, settings)
     if isinstance(fit, Refusal):
         return fit
-    return ExecutedMovement(fit, motion.interval.duration_s, commanded.interval.duration_s)
+    return ExecutedMovement(
+        fit, motion.interval.duration_s, commanded.interval.duration_s, record.window_edge
+    )

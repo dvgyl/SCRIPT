@@ -19,8 +19,9 @@ shifted by the median minus the mean, which keeps the run spread and the counts 
 analyses `by_task`, `by_scale`, and `by_speed` pool the programs that share the factor into one group
 per level, with the other factors mixed, and report sections 11.2 to 11.4 per group. The mounting mean
 of a group is the mean of the per-program mounting means (`pooled_group`), so a program with more valid
-runs does not weigh more. They report no correction, because the covariates of section 11.5 are per
-program, and no group has one speed and one scale.
+runs does not weigh more, and the run variance of a group counts one mean per program and mounting.
+They report no correction, because the covariates of section 11.5 are per program, and no group has
+one speed and one scale.
 
 The correction of section 11.5 is fitted on the raw device values of every feature, in every analysis,
 while the equivalence test and the limits of agreement of the main analysis use the camera-referenced
@@ -45,7 +46,7 @@ from scriptkin.bench.features import ALL, CATALOG, Geometry
 from scriptkin.bench.inputs import InputError, Registry
 from scriptkin.bench.runs import CAMERA_FEATURES, FEATURE_SET, Evaluated, comparison_value
 from scriptkin.bench.study import Study
-from scriptkin.recording import BenchRole, FloatArray
+from scriptkin.recording import BenchRole, FloatArray, IntArray
 
 LIMITS: dict[str, float] = {
     "bench.motion_s": 0.036,
@@ -133,6 +134,11 @@ class Arrays:
     def of(self, device: BenchRole) -> FloatArray:
         return self.p if device == "P" else self.w
 
+    @property
+    def programs(self) -> IntArray:
+        """The number of programs that each group pools, (G,), for the degrees of freedom of `stats`."""
+        return np.array([len(g.programs) for g in self.groups])
+
 
 def run_value(run: Evaluated, feature: str, analysis: Analysis) -> float:
     """The value of a run on the comparison scale, NaN for a failed run or a missing value."""
@@ -170,8 +176,9 @@ def pooled_group(runs: FloatArray, programs: int) -> FloatArray:
     mounting mean. The mean of all runs of the mounting is then the mean of the per-program mounting
     means, and the run spread and the counts of section 11.2 stay. A mounting where a program of the
     group has fewer than `MIN_VALID_RUNS` valid runs is NaN for the group, as it makes the program not
-    estimable (section 6.4). The within-mounting mean square of the group then counts the runs of every
-    program against one mean, so its degrees of freedom are n - 1 per mounting, not n - programs.
+    estimable (section 6.4). The shift centres the runs of every program on its own mounting mean, so
+    the within-mounting squares of the group have n - programs degrees of freedom per mounting, which
+    `Arrays.programs` gives to the functions of `stats`.
     """
     m, width = runs.shape
     by_program = runs.reshape(m, width // _SLOTS, _SLOTS)[:, :programs]
@@ -277,16 +284,16 @@ def feature_result(
     bias = stats.bias(arrays.p, arrays.w)
     p = stats.tost_p(bias, limit)
     components: dict[BenchRole, stats.VarianceComponents] = {
-        device: stats.variance_components(arrays.of(device)) for device in DEVICES
+        device: stats.variance_components(arrays.of(device), arrays.programs) for device in DEVICES
     }
     pooled: dict[BenchRole, stats.VarianceComponents] = {
-        device: stats.pooled_variance_components(arrays.of(device)) for device in DEVICES
+        device: stats.pooled_variance_components(arrays.of(device), arrays.programs) for device in DEVICES
     }
     m = arrays.p.shape[1]
     bland_altman = None
     bland_altman_reason = ""
     if len(arrays.groups) >= 2 and m >= 2:
-        bland_altman = stats.bland_altman(arrays.p, arrays.w)
+        bland_altman = stats.bland_altman(arrays.p, arrays.w, programs=arrays.programs)
     else:
         bland_altman_reason = "The limits of agreement need 2 programs and 2 mountings."
     model = correction = None

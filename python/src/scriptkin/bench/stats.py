@@ -105,34 +105,42 @@ class _Anova:
     mean_count: FloatArray
 
 
-def _anova(runs: FloatArray) -> _Anova:
+Programs = IntArray | int
+"""The number of programs whose runs each mounting of a run array pools (`analysis.pooled_group`), 1
+for the runs of one program. A pooled group centres the runs of every program on their own mounting
+mean, so the within-mounting degrees of freedom are N - k times the programs, not N - k. The value
+broadcasts over the leading axes of the array."""
+
+
+def _anova(runs: FloatArray, programs: Programs = 1) -> _Anova:
     """The one-way analysis of variance with mounting as the factor, over the mountings with a valid run."""
     valid = np.isfinite(runs)
     counts = valid.sum(axis=-1)
     means = mounting_means(runs)
     n = counts.sum(axis=-1)
     k = (counts > 0).sum(axis=-1)
+    df_within = n - k * programs
     with np.errstate(divide="ignore", invalid="ignore"):
         grand = np.where(valid, runs, 0.0).sum(axis=(-2, -1)) / n
         ss_within = np.where(valid, (runs - means[..., None]) ** 2, 0.0).sum(axis=(-2, -1))
         ss_between = np.where(counts > 0, counts * (means - grand[..., None]) ** 2, 0.0).sum(axis=-1)
         n0 = (n - (counts**2).sum(axis=-1) / n) / (k - 1)
-        mount = (ss_between / (k - 1) - ss_within / (n - k)) / n0
-    return _Anova(ss_within, (n - k).astype(float), mount, counts.mean(axis=-1))
+        mount = (ss_between / (k - 1) - ss_within / df_within) / n0
+    return _Anova(ss_within, np.asarray(df_within, dtype=float), mount, counts.mean(axis=-1))
 
 
-def variance_components(runs: FloatArray) -> VarianceComponents:
+def variance_components(runs: FloatArray, programs: Programs = 1) -> VarianceComponents:
     """Section 11.2: sigma^2_run = MS_within and sigma^2_mount = max(0, (MS_between - MS_within) / n0).
 
     (..., m, r) to (...). n0 = (N - sum n_i^2 / N) / (k - 1) over the k mountings with a valid run. A
     program needs 2 such mountings and more valid runs than mountings, or its components are NaN.
     """
-    a = _anova(runs)
+    a = _anova(runs, programs)
     with np.errstate(divide="ignore", invalid="ignore"):
         return VarianceComponents(a.ss_within / a.df_within, np.maximum(0.0, a.mount), a.mean_count)
 
 
-def pooled_variance_components(runs: FloatArray) -> VarianceComponents:
+def pooled_variance_components(runs: FloatArray, programs: Programs = 1) -> VarianceComponents:
     """The components of section 11.2 pooled over programs (sections 6.6, 11.4, 11.5), (..., P, m, r).
 
     sigma^2_run is the pooled within-mounting mean square, the sum of the squares over the sum of the
@@ -140,7 +148,7 @@ def pooled_variance_components(runs: FloatArray) -> VarianceComponents:
     program, with the floor at 0 applied once to the mean. With equal counts this is the analysis of
     variance on the mean squares averaged over programs. n-bar is the mean over programs and mountings.
     """
-    a = _anova(runs)
+    a = _anova(runs, programs)
     with np.errstate(divide="ignore", invalid="ignore"):
         run = a.ss_within.sum(axis=-1) / a.df_within.sum(axis=-1)
     return VarianceComponents(run, np.maximum(0.0, a.mount.mean(axis=-1)), a.mean_count.mean(axis=-1))
@@ -274,15 +282,16 @@ class BlandAltman:
     """For a single run over the program set, (...)."""
 
 
-def bland_altman(runs_p: FloatArray, runs_w: FloatArray) -> BlandAltman:
+def bland_altman(runs_p: FloatArray, runs_w: FloatArray, *, programs: Programs = 1) -> BlandAltman:
     """Section 11.4 with repeated measures, (..., P, m, r) to (...).
 
     s_d^2 = sigma^2_within + sigma^2_between from the one-way analysis of variance of d_pi with program as
     the factor. The single-run limits add (1 - 1 / n-bar) sigma^2_run for each device, from the pooled
     components of that device. With equal counts on both devices this is the factor of the protocol.
+    `programs` counts the programs that each cell of the program axis pools (`Programs`).
     """
-    programs, m = runs_p.shape[-3:-1]
-    if programs < 2 or m < 2:
+    cells, m = runs_p.shape[-3:-1]
+    if cells < 2 or m < 2:
         raise ValueError("The limits of agreement need 2 programs and 2 mountings.")
     p, w = _pairs(runs_p, runs_w)
     d = p - w
@@ -293,7 +302,7 @@ def bland_altman(runs_p: FloatArray, runs_w: FloatArray) -> BlandAltman:
     sd2 = within + between
     single = sd2
     for runs in (runs_p, runs_w):
-        components = pooled_variance_components(runs)
+        components = pooled_variance_components(runs, programs)
         single = single + (1 - 1 / components.mean_count) * components.run
     return BlandAltman(
         d,

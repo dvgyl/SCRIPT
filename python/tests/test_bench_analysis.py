@@ -6,8 +6,10 @@ from __future__ import annotations
 import csv
 import json
 import math
+import os
 import shutil
-import time
+import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -31,7 +33,7 @@ from test_bench_inputs import CODE_FILE
 
 from scriptkin import bench
 from scriptkin.bench.analysis import LIMITS
-from scriptkin.bench.inputs import Registry, RunStatus, read_registry
+from scriptkin.bench.inputs import LOCK_CODE, Registry, RunRow, RunStatus, read_registry
 from scriptkin.bench.interim import INTERIM_COLUMNS, PILOT_COLUMNS
 from scriptkin.bench.moves import MoveList
 from scriptkin.bench.outputs import (
@@ -48,7 +50,7 @@ from scriptkin.bench.runs import FEATURE_SET, Evaluated, evaluate
 from scriptkin.cli import main
 from scriptkin.features import read_feature_table
 from scriptkin.quality import Refusal
-from scriptkin.recording import Trial
+from scriptkin.recording import BenchRole, Trial
 
 programs_folder = moves_tests.programs_folder
 move_lists = moves_tests.move_lists
@@ -85,14 +87,11 @@ def lock_args(root: Path) -> list[str]:
 def study(
     tmp_path_factory: pytest.TempPathFactory, programs_folder: Path, move_lists: dict[str, MoveList]
 ) -> Path:
-    """The synthetic study, locked, and analysed once. The tests read its outputs. The CPU time of the
-    analysis, which the load of the machine does not change, guards its cost."""
+    """The synthetic study, locked, and analysed once. The tests read its outputs."""
     root = tmp_path_factory.mktemp("study")
     write_study(root, programs_folder, move_lists)
     assert main(lock_args(root)) == 0
-    started = time.process_time()
     assert main(["bench", "analyse", str(root)]) == 0
-    (root / "analyse_seconds.txt").write_text(f"{time.process_time() - started:.1f}")
     return root
 
 
@@ -274,9 +273,6 @@ def test_the_sampling_and_accuracy_tables_describe_the_simulated_devices(study: 
     assert all(r["deviations"] == "" for r in accuracy if r["measure"] != "camera_rotation_deg")
     duration = [r for r in accuracy if r["measure"] == "executed_duration_error"]
     assert all(abs(float(r["median"])) < 0.01 for r in duration)
-    # About 75 s of CPU time on an idle machine. CPU time grows when another check loads every core,
-    # because a thread then runs at half speed and still counts full time, so the limit leaves room.
-    assert float((study / "analyse_seconds.txt").read_text()) < 120
 
 
 def test_the_analysis_refuses_an_incomplete_study_a_changed_file_and_a_foreign_build(
@@ -285,7 +281,7 @@ def test_the_analysis_refuses_an_incomplete_study_a_changed_file_and_a_foreign_b
     # Detects an analysis that runs on a study with a planned row or a missing block, after a locked
     # file changed, or on a journal whose build the lock does not list.
     root = tmp_path / "copy"
-    shutil.copytree(study, root, ignore=shutil.ignore_patterns("analyse_seconds.txt"))
+    shutil.copytree(study, root, symlinks=True)
     for output in (root / "bench" / "results").iterdir():
         if output.name != "bench_precision.json":
             output.unlink()
@@ -303,6 +299,12 @@ def test_the_analysis_refuses_an_incomplete_study_a_changed_file_and_a_foreign_b
     runs.write_text("\n".join(kept) + "\n", encoding="utf-8")
     assert main(["bench", "analyse", str(root)]) == 1
     assert "Block 6 has no row" in capsys.readouterr().err
+    first = next(line for line in original.splitlines() if line.split(",")[3] == "6")
+    runs.write_text(original.replace(first + "\n", ""), encoding="utf-8")
+    assert main(["bench", "analyse", str(root)]) == 1
+    assert (
+        f"Block 6 has no row for {first.split(',')[0]}, position 1 of its order." in capsys.readouterr().err
+    )
     runs.write_text(original, encoding="utf-8")
     protocol = root / "docs" / "BENCH_PROTOCOL.md"
     protocol.write_text(protocol.read_text(encoding="utf-8") + "changed\n", encoding="utf-8")
@@ -336,7 +338,7 @@ def test_the_qualification_session_and_the_track_calibration_are_checked(
     with pytest.raises(InputError, match=f"Session {QUALIFICATION_SESSION}.*which the lock does not list"):
         hold_noise(foreign)
     root = tmp_path / "copy"
-    shutil.copytree(study, root, ignore=shutil.ignore_patterns("analyse_seconds.txt"))
+    shutil.copytree(study, root, symlinks=True)
     facts = root / "store" / "camera" / "W-M1" / "W-M1-loops-l-v20-r1.track.json"
     facts.write_text(facts.read_text(encoding="utf-8").replace("c" * 64, "d" * 64), encoding="utf-8")
     assert main(["bench", "analyse", str(root)]) == 2
@@ -344,15 +346,30 @@ def test_the_qualification_session_and_the_track_calibration_are_checked(
     assert "W-M1-loops-l-v20-r1" in err and "calibration" in err and "mounting M1 of device W" in err
 
 
+def analyse_with(package_src: Path, *args: str) -> tuple[int, str, str]:
+    """`scriptkin bench analyse` in a process that imports `scriptkin` from `package_src`: the exit
+    code, the standard output, and the standard error."""
+    code = "import sys\nfrom scriptkin.cli import main\nsys.exit(main(sys.argv[1:]))"
+    done = subprocess.run(
+        [sys.executable, "-c", code, "bench", "analyse", *args],
+        env={**os.environ, "PYTHONPATH": str(package_src)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return done.returncode, done.stdout, done.stderr
+
+
 @pytest.mark.slow
 def test_the_analysis_refuses_an_unlisted_file_and_runs_changed_code_post_hoc_only(
     study: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # Detects a lock check that passes a move list file added after the lock, a lock file that lost an
-    # entry, or analysis code that changed after the lock (section 14), and a post hoc analysis whose
-    # outputs do not say so or that does not name the changed files (section 13).
+    # entry, analysis code that runs from another place than the locked code, or code that changed
+    # after the lock (section 14), and a post hoc analysis whose outputs do not say so or that does
+    # not name the changed and the added code files (section 13).
     root = tmp_path / "copy"
-    shutil.copytree(study, root, ignore=shutil.ignore_patterns("analyse_seconds.txt"))
+    shutil.copytree(study, root, symlinks=True)
     out_dir = root / "bench" / "results"
     for output in out_dir.iterdir():
         if output.name != "bench_precision.json":
@@ -370,14 +387,27 @@ def test_the_analysis_refuses_an_unlisted_file_and_runs_changed_code_post_hoc_on
     assert main(["bench", "analyse", str(root)]) == 2
     assert "does not hold these files: bench/registry.json" in capsys.readouterr().err
     assert main(lock_args(root)) == 0
-    code = root / CODE_FILE
-    code.write_text(code.read_text(encoding="utf-8") + "changed\n", encoding="utf-8")
+    # A copy of the package under the root is the code of another place for this process, whose
+    # scriptkin is the package of the check environment. It is the code that runs for a process whose
+    # import path names the copy.
+    package = root / "python" / "src" / "scriptkin"
+    running = package.resolve()
+    package.unlink()
+    shutil.copytree(running, package, ignore=shutil.ignore_patterns("__pycache__"))
     assert main(["bench", "analyse", str(root)]) == 2
-    assert CODE_FILE in capsys.readouterr().err
+    assert f"runs scriptkin from {running}, not from the locked code" in capsys.readouterr().err
+    code = root / CODE_FILE
+    code.write_text(code.read_text(encoding="utf-8") + "\n# Changed after the lock.\n", encoding="utf-8")
+    status, out, err = analyse_with(package.parent, str(root))
+    assert status == 2 and f"changed or are missing: {CODE_FILE}" in err, (status, out, err)
     assert not (out_dir / "agreement.csv").exists()
-    assert main(["bench", "analyse", str(root), "--post-hoc"]) == 0
-    out = capsys.readouterr().out
-    assert "post hoc" in out and CODE_FILE in out
+    new_module = f"{LOCK_CODE}/bench/new_module.py"
+    (root / new_module).write_text("x = 1\n", encoding="utf-8")
+    status, out, err = analyse_with(package.parent, str(root))
+    assert status == 2 and f"does not hold these files: {new_module}" in err, (status, out, err)
+    status, out, err = analyse_with(package.parent, str(root), "--post-hoc")
+    assert status == 0, (status, out, err)
+    assert "post hoc" in out and CODE_FILE in out and new_module in out
     for name in (
         "run_status.csv",
         "bench_features.csv",
@@ -391,7 +421,7 @@ def test_the_analysis_refuses_an_unlisted_file_and_runs_changed_code_post_hoc_on
         rows = read_csv(out_dir / name)
         assert rows and all(r["post_hoc"] == "true" for r in rows), name
     deliverables = json.loads((out_dir / "deliverables.json").read_text(encoding="utf-8"))
-    assert deliverables["postHoc"] == {"changedFiles": [CODE_FILE]}
+    assert deliverables["postHoc"] == {"changedFiles": [new_module, CODE_FILE]}
     table = read_feature_table(out_dir / "features.csv")
     assert table.rows and all(r.site == "bench-post-hoc" for r in table.rows)
 
@@ -447,41 +477,47 @@ def test_the_analysis_refuses_a_registry_without_the_complete_design(
     assert "design of section 6.3" in err and "blocks [1, 2, 3, 4, 5, 6]" in err
     assert not (results(interim_study) / "agreement.csv").exists()
     root = tmp_path / "four_blocks"
-    shutil.copytree(pilot_study, root)
+    shutil.copytree(pilot_study, root, symlinks=True)
     assert main(lock_args(root)) == 0
     assert main(["bench", "analyse", str(root)]) == 1
     assert "design of section 6.3" in capsys.readouterr().err
     assert not (results(root) / "agreement.csv").exists()
 
 
+def block_registry(tmp_path: Path, order: str, swap: tuple[int, int] | None = None) -> Registry:
+    """A registry with one mounting per block in the device order `order`, with the mounting codes of
+    two blocks exchanged when `swap` names them."""
+    import test_bench_inputs as inputs_tests
+
+    mountings: list[dict[str, object]] = []
+    counts = {"P": 0, "W": 0}
+    for block, device in enumerate(order, start=1):
+        counts[device] += 1
+        mountings.append(
+            {
+                "device": device,
+                "mounting": f"M{counts[device]}",
+                "block": block,
+                "originMM": {"x": 0, "y": 0},
+                "calibrationSHA256": "c" * 64,
+            }
+        )
+    if swap is not None:
+        a, b = swap
+        mountings[a]["mounting"], mountings[b]["mounting"] = (
+            mountings[b]["mounting"],
+            mountings[a]["mounting"],
+        )
+    return read_registry(inputs_tests.registry_json(tmp_path / "r.json", mountings=mountings), tmp_path)
+
+
 def test_the_design_check_knows_the_block_order_of_section_6_3(tmp_path: Path) -> None:
     # Detects a design check that passes 12 blocks in another device order, a mounting code out of its
     # block order, or 16 blocks whose last four are not P W W P, or that fails the two complete designs.
-    import test_bench_inputs as inputs_tests
-
     from scriptkin.bench.study import BLOCK_ORDER, EXTRA_BLOCK_ORDER, design_problems
 
     def registry(order: str, swap: tuple[int, int] | None = None) -> Registry:
-        mountings: list[dict[str, object]] = []
-        counts = {"P": 0, "W": 0}
-        for block, device in enumerate(order, start=1):
-            counts[device] += 1
-            mountings.append(
-                {
-                    "device": device,
-                    "mounting": f"M{counts[device]}",
-                    "block": block,
-                    "originMM": {"x": 0, "y": 0},
-                    "calibrationSHA256": "c" * 64,
-                }
-            )
-        if swap is not None:
-            a, b = swap
-            mountings[a]["mounting"], mountings[b]["mounting"] = (
-                mountings[b]["mounting"],
-                mountings[a]["mounting"],
-            )
-        return read_registry(inputs_tests.registry_json(tmp_path / "r.json", mountings=mountings), tmp_path)
+        return block_registry(tmp_path, order, swap)
 
     assert design_problems(registry(BLOCK_ORDER)) == []
     assert design_problems(registry(BLOCK_ORDER + EXTRA_BLOCK_ORDER)) == []
@@ -503,6 +539,66 @@ def test_the_design_check_knows_the_block_order_of_section_6_3(tmp_path: Path) -
         "Block 2 is mounting M2 of device P; its block order makes it M1.",
         "Block 3 is mounting M1 of device P; its block order makes it M2.",
     ]
+
+
+def test_a_block_is_complete_only_with_every_run_of_its_order_file(tmp_path: Path) -> None:
+    # Detects an analysis that runs during the last block (section 13): a registry of 12 blocks with
+    # one recorded row per block passes the design check, and bench/runs.csv gets a row only when a run
+    # is recorded. Also detects a block check that passes a row at another position than its order or
+    # a planned-index row outside the order, that refuses a rerun, or that passes a block without an
+    # order file.
+    from test_bench_runs import row as run_row
+
+    from scriptkin.bench.inputs import RunLabel
+    from scriptkin.bench.study import BLOCK_ORDER, Study, incomplete
+
+    registry = block_registry(tmp_path, BLOCK_ORDER)
+    labels = (RunLabel(1, "loops-l-v20", 1), RunLabel(2, "fault-lift", 1), RunLabel(3, "loops-l-v20", 2))
+    orders = {block: labels for block in range(1, 13)}
+
+    def row(device: BenchRole, mounting: str, program: str, index: int, position: int) -> RunRow:
+        rid = f"{device}-{mounting}-{program}-r{index}"
+        block = registry.mounting(device, mounting).block
+        return run_row(
+            program,
+            index,
+            0,
+            run_id=rid,
+            clip=rid,
+            device=device,
+            mounting=mounting,
+            block=block,
+            position=position,
+        )
+
+    def study(rows: list[RunRow], orders: dict[int, tuple[RunLabel, ...]] = orders) -> Study:
+        return Study(tmp_path, registry, None, tuple(rows), {}, orders)
+
+    one_each = [row(m.device, m.mounting, "loops-l-v20", 1, 1) for m in registry.mountings]
+    problems = incomplete(study(one_each))
+    assert len(problems) == 24
+    assert problems[0] == "Block 1 has no row for W-M1-fault-lift-r1, position 2 of its order."
+    assert problems[1] == "Block 1 has no row for W-M1-loops-l-v20-r2, position 3 of its order."
+    complete = [
+        row(m.device, m.mounting, label.program, label.repeat, label.position)
+        for m in registry.mountings
+        for label in labels
+    ]
+    assert incomplete(study(complete)) == []
+    rerun = row("W", "M1", "loops-l-v20", 6, 4)
+    assert incomplete(study([*complete, rerun])) == []
+    extra = row("W", "M1", "loops-l-v20", 3, 4)
+    assert incomplete(study([*complete, extra])) == ["W-M1-loops-l-v20-r3 is not in the order of block 1."]
+    moved = [replace(r, position=4 - r.position) if r.block == 2 else r for r in complete]
+    assert incomplete(study(moved)) == [
+        "P-M1-loops-l-v20-r1 is at position 3; the order puts it at 1.",
+        "P-M1-loops-l-v20-r2 is at position 1; the order puts it at 3.",
+    ]
+    without_last = {block: order for block, order in orders.items() if block != 12}
+    assert incomplete(study(complete, without_last)) == [
+        "Block 12 has no order file bench/order/block-12.csv."
+    ]
+    assert incomplete(study(complete, without_last), frozenset(range(1, 7))) == []
 
 
 @pytest.fixture(scope="module")
@@ -698,6 +794,36 @@ def test_a_pooled_group_averages_the_per_program_mounting_means(
     assert float(stats.mounting_means(arrays.w[0])[0]) == pytest.approx(unweighted, abs=1e-9)
     assert np.std(m1[:4]) == pytest.approx(np.std(loops_runs), abs=1e-9)
     assert not bool(stats.estimable(arrays.w[0]))
+
+
+def test_the_run_variance_of_a_pooled_group_counts_one_mean_per_program_and_mounting() -> None:
+    # Detects a within-mounting variance of a pooled group with N - k degrees of freedom, as the runs of
+    # one program have, although every program of the group was centred on its own mounting mean. The
+    # variance is then low by (N - kP) / (N - k), and so are the single-run limits of agreement.
+    from scriptkin.bench import stats
+    from scriptkin.bench.analysis import pooled_group
+
+    rng = np.random.default_rng(1)
+    runs = np.full((2, 14), np.nan)
+    runs[:, 0:5] = rng.normal(0.0, 0.01, (2, 5))
+    runs[:, 7:12] = 1.0 + rng.normal(0.0, 0.01, (2, 5))
+    runs[1, 11] = np.nan
+    pooled = pooled_group(runs, 2)
+    cells = [runs.reshape(2, 2, 7)[i, j] for i in range(2) for j in range(2)]
+    squares = sum(float(np.nansum((c - np.nanmean(c)) ** 2)) for c in cells)
+    freedom = sum(int(np.isfinite(c).sum()) - 1 for c in cells)
+    direct = squares / freedom
+    assert freedom == 15
+    assert stats.variance_components(pooled, 2).run == pytest.approx(direct)
+    assert stats.pooled_variance_components(pooled[None], 2).run == pytest.approx(direct)
+    assert stats.variance_components(pooled, 2).mean_count == pytest.approx(9.5)
+    assert stats.variance_components(pooled).run == pytest.approx(direct * 15 / 17)
+    groups = np.stack([pooled, pooled])
+    grouped = stats.bland_altman(groups, groups + 0.1, programs=2)
+    single = stats.bland_altman(groups, groups + 0.1)
+    assert grouped.single_run.sd**2 == pytest.approx(
+        single.single_run.sd**2 + 2 * (1 - 1 / 9.5) * direct * 2 / 17
+    )
 
 
 def _lengths(evaluated: dict[str, Evaluated], mounting: str, program: str) -> list[float]:

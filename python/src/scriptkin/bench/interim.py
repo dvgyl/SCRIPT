@@ -193,9 +193,15 @@ def _duration_rows(run: Evaluated, commanded: Motion | Refusal) -> list[Row]:
     device = run.device_value("bench.motion_s")
     rows.append(_ratio_row(head, "device", device, command, lambda r: abs(r - 1) <= DURATION_TOLERANCE))
     if isinstance(run.executed, ExecutedMovement):
+        # A camera interval that touches its window edge holds only a part of the movement.
+        edge = run.executed.window_edge
         rows.append(
             _ratio_row(
-                head, "camera", run.executed.motion_s, command, lambda r: abs(r - 1) <= DURATION_TOLERANCE
+                head,
+                "camera",
+                run.executed.motion_s,
+                command,
+                lambda r: abs(r - 1) <= DURATION_TOLERANCE and not edge,
             )
         )
     else:

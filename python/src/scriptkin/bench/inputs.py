@@ -13,6 +13,10 @@ deviation removes from the study. A void row names its row of `bench/DEVIATIONS.
 A planned row has an empty session id, trial index, and clip. The analysis decides whether a recorded
 run passes (section 6.4); the operator does not.
 
+`bench/order/block-<bb>.csv` is the run order of block bb (section 6.3), with the columns `position`,
+`program`, and `repeat`: one row per planned run of the block. The reruns of section 6.4 are not in
+it. A block is complete when `bench/runs.csv` holds a row for every run label of its order file.
+
 `bench/registry.json` holds much more than the analysis reads (section 2). The analysis reads three
 keys and ignores the rest. `studyStore` is the store path, absolute or relative to the root. `mountings`
 is one record per mounting: `device`, `mounting`, `block`, `originMM` with `x` and `y`,
@@ -27,9 +31,11 @@ pass section 6.5, `excludedPrograms`, the main programs that section 4.2 step 7 
 `bench/BENCH_LOCK.json` holds the protocol version, the lock commit, the `app.build` and
 `app.sourceRevision` of each capture tool by device role, and the SHA-256 of each locked file by its path
 relative to the root. `write_lock` hashes the files of section 14 step 5, every file of the analysis code
-under `LOCK_CODE`, and any extra file, such as the translation script. `check_lock` refuses a lock that
-does not hold every file that it must hold, and a changed or missing file. `check_build` refuses a
-journal whose build is not the build of its device.
+under `LOCK_CODE`, and any extra file, such as the translation script. The analysis code is the
+`scriptkin` package that runs, which must be the one under the root (`code_folder`). `check_lock` refuses
+a lock that does not hold every file that it must hold, and a changed or missing file. `check_build`
+refuses a journal whose build is not the build of its device. The lock skips the `._` files that macOS
+writes on an exFAT drive, the `.DS_Store` files of Finder, and `__pycache__`.
 """
 
 from __future__ import annotations
@@ -45,6 +51,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, cast
 
+import scriptkin
 from scriptkin import bench
 from scriptkin.bench import MOUNTINGS, RUNS
 from scriptkin.formats import FormatError
@@ -67,7 +74,9 @@ LOCK_FILES = (
 LOCK_FOLDERS = ("bench/programs", "bench/order")
 LOCK_CODE = "python/src/scriptkin"
 """The analysis code. Section 14 says that the lock commit covers it; the lock also hashes every file
-under it, so that a change of the code after the lock fails the check without Git."""
+under it, so that a change of the code after the lock fails the check without Git. The files are the
+files of the package that runs (`code_folder`)."""
+_IGNORED_NAMES = frozenset({".DS_Store"})
 RUN_COLUMNS = (
     "run_id",
     "device",
@@ -85,6 +94,8 @@ RUN_COLUMNS = (
 ROLES: tuple[BenchRole, ...] = ("P", "W")
 PLANNED_RUNS = 5
 """The run indices 1 to 5 are the planned runs; 6 and 7 are the reruns of section 6.4."""
+ORDER_COLUMNS = ("position", "program", "repeat")
+_ORDER_FILE = re.compile(r"block-(\d{2})\.csv")
 
 
 class InputError(FormatError):
@@ -125,6 +136,16 @@ class RunRow:
     @property
     def fault(self) -> bool:
         return bench.program(self.program).fault is not None
+
+
+@dataclass(frozen=True)
+class RunLabel:
+    """One planned run of a block order file: its position in the block, its program, and its repeat,
+    which is the run index of its row."""
+
+    position: int
+    program: str
+    repeat: int
 
 
 @dataclass(frozen=True)
@@ -280,6 +301,56 @@ def read_runs(path: str | Path) -> tuple[RunRow, ...]:
     return tuple(rows)
 
 
+def _order(path: Path) -> tuple[RunLabel, ...]:
+    labels: list[RunLabel] = []
+    try:
+        with path.open(encoding="utf-8", newline="") as stream:
+            reader = csv.DictReader(stream)
+            if tuple(reader.fieldnames or ()) != ORDER_COLUMNS:
+                raise InputError(f"{path.name}: the header must be {','.join(ORDER_COLUMNS)}.")
+            for line, record in enumerate(reader, start=2):
+                if None in record or any(v is None for v in record.values()):
+                    raise InputError(f"{path.name}, line {line}: the row has the wrong number of fields.")
+                try:
+                    repeat = _int(record["repeat"], "repeat", minimum=1)
+                    if repeat > PLANNED_RUNS:
+                        raise ValueError(f"repeat must be 1 to {PLANNED_RUNS}")
+                    label = RunLabel(
+                        _int(record["position"], "position", minimum=1),
+                        bench.program(record["program"]).id,
+                        repeat,
+                    )
+                except (KeyError, ValueError) as e:
+                    raise InputError(f"{path.name}, line {line}: {e}") from e
+                if label.position != line - 1:
+                    raise InputError(f"{path.name}, line {line}: the position must be {line - 1}.")
+                labels.append(label)
+    except OSError as e:
+        raise InputError(f"{path.name}: {e}") from e
+    runs = [(label.program, label.repeat) for label in labels]
+    if len(set(runs)) != len(runs):
+        program, repeat = next(r for r in runs if runs.count(r) > 1)
+        raise InputError(f"{path.name}: {program} repeat {repeat} appears more than once.")
+    return tuple(labels)
+
+
+def read_orders(folder: str | Path) -> dict[int, tuple[RunLabel, ...]]:
+    """Read every `block-<bb>.csv` of `bench/order/` (section 6.3), by block number.
+
+    The positions of a file run from 1 in file order, and no run label repeats. Without the folder,
+    which step 4 of section 14 writes, there is no order, and no block can be complete."""
+    folder = Path(folder)
+    orders: dict[int, tuple[RunLabel, ...]] = {}
+    if not folder.is_dir():
+        return orders
+    for path in sorted(folder.iterdir()):
+        match = _ORDER_FILE.fullmatch(path.name)
+        if match is None or not _lockable(path):
+            continue
+        orders[int(match.group(1))] = _order(path)
+    return orders
+
+
 def _finite(value: Any, name: str) -> float:
     number = float(value)
     if not math.isfinite(number):
@@ -350,19 +421,49 @@ def _sha256(path: Path) -> str:
 
 
 def _lockable(path: Path) -> bool:
-    return path.is_file() and not path.name.startswith("._") and "__pycache__" not in path.parts
+    return (
+        path.is_file()
+        and not path.name.startswith("._")
+        and path.name not in _IGNORED_NAMES
+        and "__pycache__" not in path.parts
+    )
+
+
+def _code(path: str) -> bool:
+    """Whether a locked path is a file of the analysis code."""
+    return path.startswith(f"{LOCK_CODE}/")
+
+
+def code_folder(root: str | Path) -> Path:
+    """The folder of the `scriptkin` package that runs, which must be the locked code under the root.
+
+    The lock covers the code that the analysis runs (section 14). A process can import `scriptkin`
+    from another place, for example the source of another checkout, and the files under the root then
+    say nothing about the analysis. So the analysis refuses when the package that runs is not
+    `<root>/python/src/scriptkin`. Both paths are resolved, so a root whose code folder is a symbolic
+    link to the package that runs holds the same files and passes.
+    """
+    running = Path(scriptkin.__file__).resolve().parent
+    locked = Path(root) / LOCK_CODE
+    if running != locked.resolve():
+        raise InputError(f"The analysis runs scriptkin from {running}, not from the locked code {locked}.")
+    return running
 
 
 def lock_files(root: str | Path, extra: Iterable[str | Path] = ()) -> list[str]:
     """The paths of section 14 step 5 and of the analysis code relative to the root, in path order.
-    Every file must exist."""
+    Every file must exist, and the analysis code is the package that runs (`code_folder`)."""
     root = Path(root).resolve()
     found: list[str] = list(LOCK_FILES)
-    for folder, pattern in (*((f, "*") for f in LOCK_FOLDERS), (LOCK_CODE, "**/*")):
-        files = [p for p in sorted((root / folder).glob(pattern)) if _lockable(p)]
+    for folder in LOCK_FOLDERS:
+        files = [p for p in sorted((root / folder).glob("*")) if _lockable(p)]
         if not files:
             raise InputError(f"{folder}/ has no file to lock.")
         found.extend(p.relative_to(root).as_posix() for p in files)
+    code = code_folder(root)
+    found.extend(
+        f"{LOCK_CODE}/{p.relative_to(code).as_posix()}" for p in sorted(code.rglob("*")) if _lockable(p)
+    )
     for path in extra:
         path = Path(path)
         if not path.is_absolute():
@@ -428,9 +529,10 @@ def check_lock(lock: Lock, root: str | Path, *, post_hoc: bool = False) -> list[
 
     The files that the lock must hold are `lock_files(root)` without extras, so a file added under a
     locked folder after the lock, and an entry removed from the lock file, both fail the check. With
-    `post_hoc`, the files under `LOCK_CODE` may differ from the lock, and the function returns the
-    paths that do. Section 13 calls an analysis change after the lock a deviation, reported as post
-    hoc. Every other change refuses.
+    `post_hoc`, the analysis code may differ from the lock: a code file whose digest changed, a code
+    file that the lock does not hold, and a locked code file that is gone are the post hoc changes,
+    which the function returns as paths. Section 13 calls an analysis change after the lock a
+    deviation, reported as post hoc. Every other change refuses.
     """
     root = Path(root)
     if lock.protocol_version != bench.PROTOCOL_VERSION:
@@ -439,16 +541,15 @@ def check_lock(lock: Lock, root: str | Path, *, post_hoc: bool = False) -> list[
             f" The library implements protocol {bench.PROTOCOL_VERSION}."
         )
     unlisted = sorted(set(lock_files(root)) - set(lock.files))
-    if unlisted:
+    if any(not _code(p) for p in unlisted) or (unlisted and not post_hoc):
         raise InputError(f"The lock does not hold these files: {', '.join(unlisted)}.")
     changed = sorted(
         p for p, digest in lock.files.items() if not (root / p).is_file() or _sha256(root / p) != digest
     )
-    code = [p for p in changed if p.startswith(f"{LOCK_CODE}/")]
-    refused = [p for p in changed if not post_hoc or p not in code]
+    refused = [p for p in changed if not post_hoc or not _code(p)]
     if refused:
         raise InputError(f"These locked files changed or are missing: {', '.join(refused)}.")
-    return code
+    return sorted(unlisted + changed)
 
 
 def check_build(lock: Lock, journal: Journal) -> None:

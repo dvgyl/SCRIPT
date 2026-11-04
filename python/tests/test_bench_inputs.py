@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -8,13 +9,17 @@ from typing import Any
 import pytest
 from conftest import fixture_lines, write_export
 
+import scriptkin
 from scriptkin import bench
 from scriptkin.bench.inputs import (
+    LOCK_CODE,
     LOCK_FILES,
+    ORDER_COLUMNS,
     RUN_COLUMNS,
     Build,
     InputError,
     Lock,
+    RunLabel,
     RunStatus,
     check_build,
     check_lock,
@@ -22,6 +27,7 @@ from scriptkin.bench.inputs import (
     parse_run_id,
     read_bench_journal,
     read_lock,
+    read_orders,
     read_registry,
     read_runs,
     write_lock,
@@ -94,16 +100,22 @@ def registry_json(path: Path, **changes: Any) -> Path:
 
 
 CODE_FILE = "python/src/scriptkin/bench/stats.py"
-"""The one file that stands for the analysis code in a test root."""
+"""One file of the analysis code, by its locked path."""
 
 
 def lock_root(root: Path, extra: tuple[str, ...] = ()) -> Path:
-    """A root with every file of protocol section 14 step 5 and one code file, with short content."""
+    """A root with every file of protocol section 14 step 5 with short content, and the analysis code.
+
+    The lock covers the package that runs, so the code folder of the root is a symbolic link to it.
+    The tests never change a file of the package; they change the lock entries instead."""
     folders = ("bench/programs/loops-s-v40.json", "bench/order/block-01.csv")
-    for rel in (*LOCK_FILES, *folders, CODE_FILE, *extra):
+    for rel in (*LOCK_FILES, *folders, *extra):
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f"content of {rel}\n", encoding="utf-8")
+    code = root / LOCK_CODE
+    code.parent.mkdir(parents=True, exist_ok=True)
+    code.symlink_to(Path(scriptkin.__file__).resolve().parent, target_is_directory=True)
     return root
 
 
@@ -231,13 +243,16 @@ def test_the_lock_hashes_every_file_and_the_check_finds_a_change(tmp_path: Path)
     # build, a check that passes a changed or missing file, or a build check that passes another build.
     root = lock_root(tmp_path, ("tools/translate.py",))
     lock = write_lock(root, BUILDS, COMMIT, ["tools/translate.py"])
-    assert set(lock.files) == {
+    expected = {
         *LOCK_FILES,
         "bench/programs/loops-s-v40.json",
         "bench/order/block-01.csv",
-        CODE_FILE,
         "tools/translate.py",
     }
+    code = set(lock.files) - expected
+    assert expected <= set(lock.files) and CODE_FILE in code
+    assert all(p.startswith(f"{LOCK_CODE}/") and p.endswith(".py") for p in code)
+    assert f"{LOCK_CODE}/__init__.py" in code and f"{LOCK_CODE}/bench/__init__.py" in code
     assert lock.protocol_version == bench.PROTOCOL_VERSION and lock.commit == COMMIT
     (root / "bench" / "BENCH_LOCK.json").write_bytes(lock_json(lock))
     assert read_lock(root / "bench" / "BENCH_LOCK.json") == lock
@@ -274,17 +289,108 @@ def test_the_lock_check_needs_every_file_and_allows_changed_code_post_hoc_only(t
     added.write_text("edited\n", encoding="utf-8")
     with pytest.raises(InputError, match=r"does not hold these files: bench/programs/loops-s-v40~edited"):
         check_lock(lock, root)
+    with pytest.raises(InputError, match=r"does not hold these files: bench/programs/loops-s-v40~edited"):
+        check_lock(lock, root, post_hoc=True)
     added.unlink()
     files = {k: v for k, v in lock.files.items() if k != "bench/registry.json"}
     with pytest.raises(InputError, match=r"does not hold these files: bench/registry\.json"):
         check_lock(Lock(lock.protocol_version, lock.commit, lock.builds, files), root)
-    (root / CODE_FILE).write_text("changed\n", encoding="utf-8")
+    # The lock entry of a code file with another digest: the file changed after the lock.
+    changed = Lock(lock.protocol_version, lock.commit, lock.builds, {**lock.files, CODE_FILE: "0" * 64})
     with pytest.raises(InputError, match=f"changed or are missing: {re.escape(CODE_FILE)}"):
-        check_lock(lock, root)
-    assert check_lock(lock, root, post_hoc=True) == [CODE_FILE]
+        check_lock(changed, root)
+    assert check_lock(changed, root, post_hoc=True) == [CODE_FILE]
     (root / "bench" / "registry.json").write_text("changed\n", encoding="utf-8")
     with pytest.raises(InputError, match=r"changed or are missing: bench/registry\.json\."):
+        check_lock(changed, root, post_hoc=True)
+
+
+def test_a_post_hoc_check_reports_an_added_or_gone_code_file_and_skips_finder_files(tmp_path: Path) -> None:
+    # Detects a post hoc check that refuses a code file that the lock does not hold or a locked code
+    # file that is gone, instead of reporting them as changed code, a check that refuses a .DS_Store
+    # file that Finder wrote into a locked folder, and a post hoc check that passes a file outside the
+    # code that the lock does not hold.
+    root = lock_root(tmp_path)
+    lock = write_lock(root, BUILDS, COMMIT)
+    gone = f"{LOCK_CODE}/bench/gone.py"
+    with_gone = Lock(lock.protocol_version, lock.commit, lock.builds, {**lock.files, gone: "1" * 64})
+    with pytest.raises(InputError, match=f"changed or are missing: {re.escape(gone)}"):
+        check_lock(with_gone, root)
+    assert check_lock(with_gone, root, post_hoc=True) == [gone]
+    without = Lock(
+        lock.protocol_version,
+        lock.commit,
+        lock.builds,
+        {k: v for k, v in lock.files.items() if k != CODE_FILE},
+    )
+    with pytest.raises(InputError, match=f"does not hold these files: {re.escape(CODE_FILE)}"):
+        check_lock(without, root)
+    assert check_lock(without, root, post_hoc=True) == [CODE_FILE]
+    (root / "bench" / "programs" / ".DS_Store").write_bytes(b"\0\0\0\1Bud1")
+    (root / "bench" / "programs" / "._loops-s-v40.json").write_bytes(b"\0\5\x16\7")
+    assert check_lock(lock, root) == []
+    assert "bench/programs/.DS_Store" not in write_lock(root, BUILDS, COMMIT).files
+    (root / "bench" / "programs" / "extra.json").write_text("{}\n", encoding="utf-8")
+    with pytest.raises(InputError, match=r"does not hold these files: bench/programs/extra\.json"):
         check_lock(lock, root, post_hoc=True)
+
+
+def test_the_lock_covers_the_package_that_runs(tmp_path: Path) -> None:
+    # Detects a lock that hashes the code files under the root while the analysis runs the package of
+    # another place, so that a change of the code that runs passes the lock check.
+    root = lock_root(tmp_path)
+    lock = write_lock(root, BUILDS, COMMIT)
+    running = Path(scriptkin.__file__).resolve().parent
+    assert lock.files[CODE_FILE] == hashlib.sha256((running / "bench" / "stats.py").read_bytes()).hexdigest()
+    other = tmp_path / "other"
+    for rel in (*LOCK_FILES, "bench/programs/loops-s-v40.json", "bench/order/block-01.csv", CODE_FILE):
+        path = other / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"content of {rel}\n", encoding="utf-8")
+    with pytest.raises(InputError, match=f"runs scriptkin from {re.escape(str(running))}, not from"):
+        write_lock(other, BUILDS, COMMIT)
+    with pytest.raises(InputError, match="runs scriptkin from"):
+        check_lock(lock, other)
+    with pytest.raises(InputError, match="runs scriptkin from"):
+        check_lock(lock, other, post_hoc=True)
+
+
+def test_the_order_files_read_their_labels_and_reject_each_damaged_file(tmp_path: Path) -> None:
+    # Detects a reader that misses a block file or reads a `._` file, accepts a position out of file
+    # order, a repeat above 5, an unknown program, or a repeated run label, or that fails without the
+    # folder, which the pilot runs before.
+    folder = tmp_path / "order"
+    folder.mkdir()
+
+    def write(name: str, rows: list[str], header: str = ",".join(ORDER_COLUMNS)) -> Path:
+        path = folder / name
+        path.write_text("\n".join([header, *rows]) + "\n", encoding="utf-8")
+        return path
+
+    write("block-01.csv", ["1,loops-l-v20,1", "2,fault-lift,1", "3,loops-l-v20,2"])
+    write("block-12.csv", ["1,line-osc8,5"])
+    write("._block-01.csv", ["garbage"], header="\0\5\x16\7")
+    write("notes.txt", ["1,loops-l-v20,1"])
+    orders = read_orders(folder)
+    assert set(orders) == {1, 12}
+    assert orders[1] == (
+        RunLabel(1, "loops-l-v20", 1),
+        RunLabel(2, "fault-lift", 1),
+        RunLabel(3, "loops-l-v20", 2),
+    )
+    assert orders[12] == (RunLabel(1, "line-osc8", 5),)
+    assert read_orders(tmp_path / "absent") == {}
+    for message, rows, header in [
+        ("position must be 2", ["1,loops-l-v20,1", "3,loops-l-v20,2"], None),
+        ("repeat must be 1 to 5", ["1,loops-l-v20,6"], None),
+        ("'loops-x'", ["1,loops-x,1"], None),
+        ("loops-l-v20 repeat 1 appears more than once", ["1,loops-l-v20,1", "2,loops-l-v20,1"], None),
+        ("header must be", ["1,loops-l-v20"], "position,program"),
+        ("wrong number of fields", ["1,loops-l-v20"], None),
+    ]:
+        write("block-02.csv", rows, *([] if header is None else [header]))
+        with pytest.raises(InputError, match=message):
+            read_orders(folder)
 
 
 def test_a_bench_journal_gives_its_role_mounting_and_build(tmp_path: Path) -> None:

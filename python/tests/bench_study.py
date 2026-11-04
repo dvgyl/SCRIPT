@@ -32,7 +32,7 @@ import test_bench_camera as camera_tests
 import test_bench_inputs as inputs_tests
 
 from scriptkin import battery, bench
-from scriptkin.bench.inputs import RUN_COLUMNS, Build
+from scriptkin.bench.inputs import ORDER_COLUMNS, PLANNED_RUNS, RUN_COLUMNS, Build
 from scriptkin.bench.moves import MoveList, commanded_trial
 from scriptkin.bench.study import BLOCK_ORDER
 from scriptkin.bench.track import write_track
@@ -127,11 +127,15 @@ def run_id(device: BenchRole, mounting: str, program: str, run_index: int) -> st
 def block_runs(
     device: BenchRole, mounting: str, rng: np.random.Generator, runs_per_program: int = RUNS_PER_PROGRAM
 ) -> list[tuple[str, int]]:
-    """The runs of a block in a shuffled order, with the reruns of its failed runs at the end (6.4).
-    The block holds one fault run; the fault programs take turns over the mountings of the device."""
+    """The runs of a block: the planned runs in a shuffled order, the extra planned run of `EXTRA_RUNS`,
+    then the reruns of its failed runs and the extra rerun (section 6.4). The block holds one fault run;
+    the fault programs take turns over the mountings of the device. The planned runs, which come first,
+    are the order file of the block."""
     runs = [(p, k) for p in PROGRAMS for k in range(1, runs_per_program + 1)]
     runs.append((bench.FAULTS[(int(mounting[1]) - 1) % len(bench.FAULTS)].id, 1))
     ordered = [runs[i] for i in rng.permutation(len(runs))]
+    extras = [(p, k) for rid, (p, k) in EXTRA_RUNS.items() if rid.startswith(f"{device}-{mounting}-")]
+    ordered.extend((p, k) for p, k in extras if k <= PLANNED_RUNS)
     for program, index in list(ordered):
         if DEFECTS.get(run_id(device, mounting, program, index)) not in FAILING:
             continue
@@ -140,10 +144,20 @@ def block_runs(
         while DEFECTS.get(run_id(device, mounting, program, rerun)) in FAILING and rerun < 7:
             rerun += 1
             ordered.append((program, rerun))
-    for rid, (program, index) in EXTRA_RUNS.items():
-        if rid.startswith(f"{device}-{mounting}-"):
-            ordered.append((program, index))
+    ordered.extend((p, k) for p, k in extras if k > PLANNED_RUNS)
     return ordered
+
+
+def write_order(root: Path, block: int, runs: list[tuple[str, int]]) -> None:
+    """The order file of a block (section 6.3): its planned runs at the positions of their rows."""
+    folder = root / "bench" / "order"
+    folder.mkdir(parents=True, exist_ok=True)
+    with (folder / f"block-{block:02d}.csv").open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.writer(stream, lineterminator="\n")
+        writer.writerow(ORDER_COLUMNS)
+        for position, (program, index) in enumerate(runs, start=1):
+            if index <= PLANNED_RUNS:
+                writer.writerow((position, program, index))
 
 
 def executed_strokes(
@@ -363,6 +377,7 @@ def write_study(
     inputs_tests.lock_root(root)
     shutil.rmtree(root / "bench" / "programs")
     shutil.copytree(programs_folder, root / "bench" / "programs")
+    shutil.rmtree(root / "bench" / "order")
     blocks = BLOCKS[: 2 * mountings]
     write_registry(root, blocks)
     store = root / "store"
@@ -370,9 +385,9 @@ def write_study(
     for device, mounting in blocks:
         b = _builder(device, mounting).opened()
         t0 = 1000.0
-        for position, (program, index) in enumerate(
-            block_runs(device, mounting, rng, runs_per_program), start=1
-        ):
+        runs = block_runs(device, mounting, rng, runs_per_program)
+        write_order(root, block_number(device, mounting), runs)
+        for position, (program, index) in enumerate(runs, start=1):
             rid = run_id(device, mounting, program, index)
             move_list = move_lists[program]
             trial, speed_factor, defect = _write_run(
@@ -401,9 +416,9 @@ def write_study(
         _export(store / "sessions" / b.session_id, b)
     if planned_after:
         for device, mounting in BLOCKS[2 * mountings :]:
-            for position, (program, index) in enumerate(
-                ((p, k) for p in PROGRAMS for k in range(1, runs_per_program + 1)), start=1
-            ):
+            planned = [(p, k) for p in PROGRAMS for k in range(1, runs_per_program + 1)]
+            write_order(root, block_number(device, mounting), planned)
+            for position, (program, index) in enumerate(planned, start=1):
                 rows.append(
                     {
                         "run_id": run_id(device, mounting, program, index),

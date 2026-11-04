@@ -11,6 +11,15 @@ a valid camera record has no motion failure and stays valid for the features tha
 reference (section 7.7). `failed_without_motion_check` is the status of the sensitivity analysis of
 section 7.6, which keeps the motion failures.
 
+The camera record is the reference that measures the device record. Its motion window (section 7.4)
+therefore comes from the commanded motion of the program, for every run, and never from the device
+record: a device record that loses part of the movement would cut the camera interval to the part that
+it holds, and the loss would then leave the camera-referenced difference and could fail the run. A
+camera motion interval that touches an edge of its window extends beyond the commanded window, which
+happens only beyond the 1 percent tolerance of section 7.6, so the run is a motion failure with the
+reason `window_edge`. A coarse alignment that fails for another reason, a short clip or a profile that
+does not match, leaves an invalid camera record and the run stays valid (section 7.7).
+
 The comparison scale of section 11.1 is a property of the feature name: `comparison_value` takes the
 natural logarithm of every feature of the feature set except `bench.speed_cv`. A refusal, and a value
 that is not positive on the logarithmic scale, give NaN, which the statistics read as a missing run.
@@ -86,6 +95,9 @@ class Outcome:
     unused_rerun: bool = False
     """Section 6.4: the rerun follows fewer failed earlier runs of its program and mounting than its
     run index needs, so the analysis does not use it (`scriptkin.bench.study.mark_unused_reruns`)."""
+    window_edge: bool = False
+    """The motion failure is a camera motion interval that touches an edge of its window
+    (`scriptkin.bench.camera.touches_window`): the movement extends beyond the commanded window."""
 
     @property
     def failed_without_motion_check(self) -> bool:
@@ -99,7 +111,7 @@ class Outcome:
     def reason(self) -> str:
         parts = [str(code) for code in self.rejected] + list(self.marks)
         if self.motion_failure:
-            parts.append("motion_failure")
+            parts.append("window_edge" if self.window_edge else "motion_failure")
         if self.unused_rerun:
             parts.append("unused_rerun")
         return ";".join(parts)
@@ -204,11 +216,11 @@ def evaluate(
         features, library = qc.refusals[0], {f.name: qc.refusals[0] for f in LIBRARY_CATALOG}
     device = features.motion if isinstance(features, RunFeatures) else None
     device = device if isinstance(device, Motion) else None
-    reference = device if device is not None else commanded if isinstance(commanded, Motion) else None
+    reference = commanded if isinstance(commanded, Motion) else None
     camera = camera_record(track, reference, settings) if track is not None else None
     executed = alignment = accuracy = None
     if camera is not None and camera.valid and isinstance(camera.run.motion, Motion):
-        executed = _executed(camera.run.motion, move_list, commanded, settings)
+        executed = _executed(camera.run.motion, move_list, commanded, settings, camera.window_edge)
         if device is not None:
             alignment = time_alignment(device, camera.run.motion, settings)
             if isinstance(alignment, TimeAlignment):
@@ -226,6 +238,7 @@ def evaluate(
         state,
         camera.failed if camera is not None else (),
         executed.failure if isinstance(executed, ExecutedMovement) else None,
+        window_edge=isinstance(executed, ExecutedMovement) and executed.window_edge,
     )
     return Evaluated(
         row, trial, move_list, qc, features, library, camera, executed, alignment, accuracy, trace, outcome
@@ -242,7 +255,11 @@ def _fit(
 
 
 def _executed(
-    record: Motion, move_list: MoveList, commanded: Motion | Refusal, settings: Preprocessing
+    record: Motion,
+    move_list: MoveList,
+    commanded: Motion | Refusal,
+    settings: Preprocessing,
+    window_edge: bool,
 ) -> ExecutedMovement | Refusal:
     """Section 7.6 as `camera.executed_movement` computes it, on a commanded motion computed once."""
     if isinstance(commanded, Refusal):
@@ -250,7 +267,7 @@ def _executed(
     fit = _fit(record, move_list, commanded, settings)
     if isinstance(fit, Refusal):
         return fit
-    return ExecutedMovement(fit, record.interval.duration_s, commanded.interval.duration_s)
+    return ExecutedMovement(fit, record.interval.duration_s, commanded.interval.duration_s, window_edge)
 
 
 @dataclass(frozen=True)

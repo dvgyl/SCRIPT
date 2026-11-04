@@ -36,6 +36,7 @@ from scriptkin.quality import Refusal
 from scriptkin.recording import FloatArray
 
 Background = Literal["ipad", "wacom"]
+Figure = Callable[[FloatArray], FloatArray]
 Motion = Callable[[FloatArray], FloatArray]
 """The stylus tip position in plane millimetres, as (n, 2), at each of n times."""
 Height = Callable[[FloatArray], FloatArray]
@@ -234,12 +235,20 @@ def led_on(t: FloatArray) -> np.ndarray:
     return ((np.asarray(t) - LED_PHASE_S) % 1.0) < 0.5
 
 
+def _level(background: Background, figure: Figure | None, xy: FloatArray) -> FloatArray:
+    """The grey level of the background at plane points, with the figure drawn on it."""
+    level = _background(background, xy)
+    return level if figure is None else level + figure(xy)
+
+
 @functools.cache
-def _bank(camera: Camera, background: Background, noise: float, seed: int) -> tuple[Frame, ...]:
+def _bank(
+    camera: Camera, background: Background, figure: Figure | None, noise: float, seed: int
+) -> tuple[Frame, ...]:
     """Four frames of the background with independent sensor noise, so that no two neighbouring frames
     are equal in every pixel."""
     rng = np.random.default_rng(seed)
-    base = _background(background, camera.plane_xy)
+    base = _level(background, figure, camera.plane_xy)
     noisy = [base + rng.normal(0.0, noise, base.shape) if noise else base for _ in range(4)]
     return tuple(np.clip(np.rint(n), 0, 255).astype(np.uint8) for n in noisy)
 
@@ -255,6 +264,9 @@ class Scene:
     seed: int = 0
     led: Region = LED
     readout: ReadoutDirection = ReadoutDirection.TOP_FIRST
+    figure: Figure | None = None
+    """A shape on the background, such as a stimulus figure or a UI line on the lit screen: the grey
+    level that it adds at plane points."""
 
     def _row_times(self, t0: float, rows: FloatArray) -> FloatArray:
         first = rows if self.readout is ReadoutDirection.TOP_FIRST else self.camera.size[1] - 1 - rows
@@ -288,7 +300,7 @@ class Scene:
         d = np.linalg.norm(q - marker[:, None, :], axis=2)
         field_cover = np.clip(0.5 - (d - FIELD_RADIUS_MM * scale[:, None]) / pixel, 0.0, 1.0)
         dot_cover = np.clip(0.5 - (d - DOT_RADIUS_MM * scale[:, None]) / pixel, 0.0, 1.0) if dot else 0.0
-        level = _background(self.background, q) * (1 - field_cover) + _FIELD * field_cover
+        level = _level(self.background, self.figure, q) * (1 - field_cover) + _FIELD * field_cover
         level = level * (1 - dot_cover) + _DOT * dot_cover
         if self.noise:
             level = level + rng.normal(0.0, self.noise, level.shape)
@@ -317,7 +329,7 @@ class Scene:
         in `missing` has the black field without the dot. A frame in `duplicates` repeats the previous frame
         in every pixel."""
         rng = np.random.default_rng(self.seed + 1)
-        bank = _bank(self.camera, self.background, self.noise, self.seed)
+        bank = _bank(self.camera, self.background, self.figure, self.noise, self.seed)
         previous: Frame | None = None
         for k in range(count):
             if k in duplicates and previous is not None:
