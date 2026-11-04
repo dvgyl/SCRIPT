@@ -8,7 +8,7 @@ BUILD=${SCRIPT_BUILD:-"$HOME/Library/Caches/SCRIPT/$(basename "$ROOT")-$(printf 
 mkdir -p "$BUILD"
 DESTINATION=${SCRIPT_DESTINATION:-'platform=iOS Simulator,name=iPad Pro 11-inch (M5),OS=latest'}
 export UV_PROJECT_ENVIRONMENT="$BUILD/venv"
-UV=(uv run --project "$ROOT/python" --frozen --quiet)
+UV=(uv run --project "$ROOT/python" --frozen --quiet --extra camera)
 
 step() { printf '\n== %s\n' "$1"; }
 
@@ -146,7 +146,8 @@ PY
 
 APP_RAN=
 BENCH_RAN=
-uv sync --project "$ROOT/python" --frozen --quiet
+# The camera extra installs OpenCV, so that the tracker tests run in every check.
+uv sync --project "$ROOT/python" --frozen --quiet --extra camera
 sections=("$@")
 [ ${#sections[@]} -eq 0 ] && sections=(contract core bench app python)
 for section in "${sections[@]}"; do

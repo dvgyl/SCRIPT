@@ -1,5 +1,5 @@
 """Command line: `scriptkin contract`, `evaluate`, `plan-digest`, `plan-size`, `intake`, `qc-report`,
-and `config`."""
+`config`, and `bench`."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import argparse
 import getpass
 import hashlib
 import json
+import math
 import re
 import sys
 from collections.abc import Mapping
@@ -224,6 +225,207 @@ def _config_check(args: argparse.Namespace) -> int:
     return 0
 
 
+FFPROBE_COMMAND = "ffprobe -v error -select_streams v:0 -show_frames -of json CLIP > CLIP_STEM.frames.json"
+_FRAMES_HELP = f"The frames file must sit beside the clip. Make it with:\n  {FFPROBE_COMMAND}"
+
+
+def _pattern(text: str) -> tuple[int, int]:
+    match = re.fullmatch(r"(\d+)x(\d+)", text)
+    if not match or min(int(match[1]), int(match[2])) < 3:
+        raise argparse.ArgumentTypeError("a board pattern is COLSxROWS inner corners, 3 or more each, as 9x6")
+    return int(match[1]), int(match[2])
+
+
+def _finite(text: str) -> float:
+    value = float(text)
+    if not math.isfinite(value):
+        raise argparse.ArgumentTypeError("expected a finite number")
+    return value
+
+
+def _positive(text: str) -> float:
+    value = _finite(text)
+    if value <= 0:
+        raise argparse.ArgumentTypeError("expected a positive number")
+    return value
+
+
+def _bench_lens(args: argparse.Namespace) -> tuple[Any, list[Path]]:
+    from scriptkin.bench.calibration import calibrate_lens, read_image
+
+    return calibrate_lens((read_image(p) for p in args.views), args.pattern, args.pitch_mm), args.views
+
+
+def _bench_plane(args: argparse.Namespace) -> tuple[Any, list[Path]]:
+    from scriptkin.bench.calibration import calibrate_plane, read_image
+    from scriptkin.bench.camerafiles import Lens, read_camera_file
+
+    lens = read_camera_file(Lens, args.lens)
+    plane = calibrate_plane(read_image(args.board), lens, args.pattern, args.pitch_mm, args.x_direction)
+    return plane, [args.lens, args.board]
+
+
+def _bench_marker_offset(args: argparse.Namespace) -> tuple[Any, list[Path]]:
+    from scriptkin.bench.calibration import read_image
+    from scriptkin.bench.camerafiles import Plane, Region, read_camera_file
+    from scriptkin.bench.tracker import measure_marker_offset
+
+    plane = read_camera_file(Plane, args.plane)
+    calibration = measure_marker_offset(read_image(args.still), plane, tuple(args.near_mm), Region(*args.led))
+    return calibration, [args.plane, args.still]
+
+
+def _bench_clock(args: argparse.Namespace) -> tuple[Any, list[Path]]:
+    from scriptkin.bench.camerafiles import Region, frames_path, read_frame_times
+    from scriptkin.bench.clock import led_levels, measure_clock
+    from scriptkin.bench.tracker import read_video
+
+    frames = frames_path(args.clip)
+    levels = led_levels(read_video(args.clip), Region(*args.led))
+    clock = measure_clock(levels, read_frame_times(frames), led_hz=args.led_hz, nominal_hz=args.nominal_hz)
+    return clock, [args.clip, frames]
+
+
+def _bench_readout(args: argparse.Namespace) -> tuple[Any, list[Path]]:
+    from scriptkin.bench.camerafiles import Region
+    from scriptkin.bench.clock import measure_readout
+    from scriptkin.bench.tracker import read_video
+
+    return measure_readout(read_video(args.clip), Region(*args.region), led_hz=args.led_hz), [args.clip]
+
+
+def _bench(args: argparse.Namespace) -> int:
+    from scriptkin.bench.camerafiles import write_camera_file
+    from scriptkin.formats import FormatError
+    from scriptkin.quality import Refusal
+
+    try:
+        if args.action == "track":
+            from scriptkin.bench.tracker import track_clip
+
+            written = track_clip(
+                args.clip,
+                calibration=args.calibration,
+                clock=args.clock,
+                readout=args.readout,
+                start_mm=tuple(args.start_mm),
+                out_dir=args.out_dir,
+            )
+        else:
+            value, sources = args.step(args)
+            if isinstance(value, Refusal):
+                print(f"bench {args.action}: refused. {value.detail}", file=sys.stderr)
+                return 1
+            written = (write_camera_file(value, args.out, sources),)
+    except (OSError, FormatError, ValueError) as e:
+        print(f"bench {args.action}: {e}", file=sys.stderr)
+        return 2
+    for path in written:
+        print(f"bench {args.action}: wrote {path}")
+    return 0
+
+
+def _add_bench(sub: Any) -> None:
+    b = sub.add_parser("bench", help="the camera steps of the bench protocol, section 7")
+    steps = b.add_subparsers(dest="action", required=True)
+
+    def step(name: str, help: str, run: Any = None, frames: bool = False) -> argparse.ArgumentParser:
+        p = steps.add_parser(
+            name,
+            help=help,
+            description=f"{help[0].upper()}{help[1:]}.",
+            epilog=_FRAMES_HELP if frames else None,
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+        )
+        p.set_defaults(run=_bench, step=run)
+        if name != "track":
+            p.add_argument("--out", type=Path, required=True, help="the file to write")
+        return p
+
+    lens = step("lens", "calibrate the lens from 20 or more views of the board", _bench_lens)
+    lens.add_argument("views", type=Path, nargs="+", help="still images in the video mode of the clips")
+    plane = step(
+        "plane", "calibrate the marker plane of one mounting from one view of the board", _bench_plane
+    )
+    plane.add_argument("board", type=Path, help="a still image of the board on the spacer")
+    plane.add_argument("--lens", type=Path, required=True, help="the lens file")
+    plane.add_argument(
+        "--x-direction",
+        choices=["right", "left", "up", "down"],
+        default="right",
+        help="the image direction of device +x, within 45 degrees (default: right)",
+    )
+    for p in (lens, plane):
+        p.add_argument("--pattern", type=_pattern, required=True, help="inner corners along x and y, as 9x6")
+        p.add_argument("--pitch-mm", type=_positive, required=True, help="the measured pitch of the board")
+    offset = step(
+        "marker-offset",
+        "measure the marker offset of one mounting and write its calibration",
+        _bench_marker_offset,
+    )
+    offset.add_argument("still", type=Path, help="a still image with the stylus tip on the marked grid point")
+    offset.add_argument("--plane", type=Path, required=True, help="the plane file of the mounting")
+    offset.add_argument(
+        "--near-mm",
+        nargs=2,
+        type=_finite,
+        required=True,
+        metavar=("X", "Y"),
+        help="the marker position within 3.5 mm, in plane millimetres",
+    )
+    offset.add_argument(
+        "--led",
+        nargs=4,
+        type=int,
+        required=True,
+        metavar=("LEFT", "TOP", "WIDTH", "HEIGHT"),
+        help="the pixel rectangle of the clock LED",
+    )
+    clock = step(
+        "clock", "measure the frame clock from a 60 s clip of the 1 Hz LED", _bench_clock, frames=True
+    )
+    clock.add_argument("clip", type=Path)
+    clock.add_argument(
+        "--led",
+        nargs=4,
+        type=int,
+        required=True,
+        metavar=("LEFT", "TOP", "WIDTH", "HEIGHT"),
+        help="the pixel rectangle of the clock LED",
+    )
+    clock.add_argument("--led-hz", type=_positive, default=1.0)
+    clock.add_argument("--nominal-hz", type=_positive, default=240.0)
+    readout = step("readout", "measure the row time from a clip of the 1 kHz LED", _bench_readout)
+    readout.add_argument("clip", type=Path, help="a clip recorded with an exposure of 1/4000 s or shorter")
+    readout.add_argument(
+        "--region",
+        nargs=4,
+        type=int,
+        required=True,
+        metavar=("LEFT", "TOP", "WIDTH", "HEIGHT"),
+        help="the pixel rectangle where the bands show",
+    )
+    readout.add_argument("--led-hz", type=_positive, default=1000.0)
+    track = step("track", "track the marker in one clip and write its track files", frames=True)
+    track.add_argument("clip", type=Path, help="the clip, named <run id> with its suffix")
+    track.add_argument("--calibration", type=Path, required=True, help="the calibration file of the mounting")
+    track.add_argument("--clock", type=Path, required=True, help="the clock file")
+    shutter = track.add_mutually_exclusive_group(required=True)
+    shutter.add_argument("--readout", type=Path, help="the readout file of a rolling shutter")
+    shutter.add_argument("--global-shutter", action="store_true", help="the camera has a global shutter")
+    track.add_argument(
+        "--start-mm",
+        nargs=2,
+        type=_finite,
+        required=True,
+        metavar=("X", "Y"),
+        help="the commanded start point of the stylus tip, in plane millimetres",
+    )
+    track.add_argument(
+        "--out-dir", type=Path, help="the folder for the track files (default: beside the clip)"
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="scriptkin")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -301,6 +503,8 @@ def main(argv: list[str] | None = None) -> int:
     v = actions.add_parser("check", help="check a configuration against the schema and the rules")
     v.add_argument("file", type=Path)
     v.set_defaults(run=_config_check)
+
+    _add_bench(sub)
 
     args = parser.parse_args(argv)
     return args.run(args)
