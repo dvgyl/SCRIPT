@@ -11,6 +11,9 @@ dependencies = [
     "jsonschema>=4.23",
 ]
 
+[project.optional-dependencies]
+camera = ["opencv-python-headless>=5.0"]
+
 [project.scripts]
 scriptkin = "scriptkin.cli:main"
 
