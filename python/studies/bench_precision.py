@@ -15,31 +15,30 @@ Model. Every quantity is in units of the equivalence limit L of one feature on i
 one table serves every feature. A run value is mu_d + b_dmp + e_dmpr: the device mean, a mounting
 effect b ~ N(0, sigma_mount^2), and run noise e ~ N(0, sigma_run^2). The mounting effect is either
 shared by all programs of one mounting (structure `shared`) or drawn per program (structure
-`specific`). Device P has mu_P = mu_W + bias in every program. The analysis takes the mounting means
-per program, forms the Welch interval of the P minus W difference, and tests equivalence by the two
-one-sided tests (TOST), as protocol sections 11.2 and 11.3 define.
+`specific`). Device P has mu_P = mu_W + bias in every program. The script simulates the data only. Every
+statistic comes from `scriptkin.bench.stats`, the module of the analysis: the mounting means, the bias
+with its Welch interval, the two one-sided tests (TOST), the feature p-value, and the correction.
 
 Decisions. A program is equivalent at level alpha when its TOST p-value is at most alpha, which is the
-(1 - 2 alpha) interval inside [-L, L]. A feature is equivalent when every program of its set is
-estimable and equivalent. The sets are every main program, the loops programs, and the oscillation
-programs, read from `bench_programs.py`. The table gives each feature decision at alpha 0.05 and at
-alpha 0.05 / 6, the first Holm step across the six features of the equivalence set, so the two
-columns bound the power of the Holm procedure.
+(1 - 2 alpha) interval inside [-L, L]. A feature is equivalent when its p-value, the largest over the
+programs of its set, is at most alpha. A program that is not estimable has p = 1. The sets are every main
+program, the loops programs, and the oscillation programs, read from `bench_programs.py`. The table
+gives each feature decision at alpha 0.05 and at the first Holm level across the six features of the
+equivalence set, 0.05 / 6, so the two columns bound the power of the Holm procedure.
 
 Failed runs. With a fail share q, each planned run fails independently with probability q. A failed run
 gets one rerun, with at most RERUN_CAP reruns per mounting and program, and a rerun fails with the
-same probability. A program is estimable when every mounting keeps at least MIN_VALID_RUNS valid runs.
+same probability. A program is estimable when every mounting keeps at least `stats.MIN_VALID_RUNS` valid
+runs.
 
 Correction. The correction table simulates the correction of protocol section 11.5 with
 leave-one-mounting-out validation on the main programs. The W truth of a program is a function of its
 covariates u = ln(speed / 20 mm/s) and v = ln(scale). The P truth is alpha + beta W + gamma u +
 delta_p with three truths: `linear` (gamma 0, delta 0), `speed` (gamma 0.5 / ln 2, a difference that
 grows by 0.5 L per doubling of the speed), and `program` (delta_p alternating +/- 0.5 L, which no
-covariate explains). The fit removes the covariates from both devices by least squares, fits the
-Deming slope on the residuals with lambda from the variance components, and predicts the held-out
-mounting. The table reports the share of datasets whose held-out residual interval lies inside the
-limit for every program, the largest true residual bias of the fit on all mountings, and the
-jackknife standard error of the slope over the folds.
+covariate explains). The table reports the share of datasets whose held-out residual interval lies
+inside the limit for every program, the largest true residual bias of the fit on all mountings, and
+the jackknife standard error of the slope over the folds.
 
 Seeds. `numpy.random.SeedSequence(seed)` spawns one child per cell in the order of the loops below, so
 a cell gives the same numbers whichever cells run with it.
@@ -60,24 +59,23 @@ from types import ModuleType
 from typing import Any
 
 import numpy as np
-from scipy.stats import t as t_distribution
 
+from scriptkin.bench import stats
 from scriptkin.recording import FloatArray
 
+LIMIT = 1.0
 SIGMA_RUN = (0.25, 0.5)
 SIGMA_MOUNT = (0.1, 0.25, 0.5)
 BIAS = (0.0, 0.5, 1.0)
 DESIGNS = ((6, 5), (8, 5))
 STRUCTURES = ("shared", "specific")
 FEATURES = 6
-ALPHAS = {"alpha": 0.05, "holm": 0.05 / FEATURES}
+ALPHAS = {"alpha": stats.ALPHA, "holm": float(stats.holm_thresholds(stats.ALPHA, FEATURES)[0])}
 FAIL_SHARES = (0.05, 0.1)
-MIN_VALID_RUNS = 4
 RERUN_CAP = 2
 ALPHA_TRUE, BETA_TRUE = 0.5, 1.05
 TRUTHS = {"linear": (0.0, 0.0), "speed": (0.5 / math.log(2), 0.0), "program": (0.0, 0.5)}
 CORRECTION_SIGMA_MOUNT = (0.1, 0.25, 0.5)
-VARIANCE_FLOOR = 1e-6
 
 
 def _load_programs() -> ModuleType:
@@ -92,8 +90,7 @@ def _load_programs() -> ModuleType:
 
 
 PROGRAMS = _load_programs().MAIN
-COVARIATE_U = np.array([math.log(d.speed_mm_s / 20.0) for d in PROGRAMS])
-COVARIATE_V = np.array([math.log(d.scale) for d in PROGRAMS])
+COVARIATE_U, COVARIATE_V = stats.covariates(PROGRAMS)
 GEOMETRY_OFFSET = {"loops": 0.0, "spiral": 1.0, "line": -1.0}
 TRUTH_W = 8 * COVARIATE_U - 6 * COVARIATE_V + np.array([GEOMETRY_OFFSET[d.geometry] for d in PROGRAMS])
 FEATURE_SETS = {
@@ -131,16 +128,6 @@ class CorrectionCell:
     slope_jackknife_se_median: float
 
 
-@dataclass(frozen=True)
-class Draw:
-    """Mounting means (n, m, P), valid run counts (n, m, P), runs (n, m, P, r), and their validity."""
-
-    means: FloatArray
-    counts: FloatArray
-    runs: FloatArray
-    valid: FloatArray
-
-
 def draw(
     rng: np.random.Generator,
     n: int,
@@ -151,42 +138,21 @@ def draw(
     shift: FloatArray | float,
     structure: str,
     fail_share: float,
-) -> Draw:
+) -> FloatArray:
+    """The run values (n, P, m, r + RERUN_CAP) of one device, NaN for a failed run or an unused rerun."""
     programs = len(PROGRAMS)
     effects = rng.normal(0.0, sigma_mount, (n, m, 1 if structure == "shared" else programs))
-    runs = rng.normal(0.0, sigma_run, (n, m, programs, r + RERUN_CAP))
+    noise = rng.normal(0.0, sigma_run, (n, m, programs, r + RERUN_CAP))
     if fail_share > 0:
-        fails = rng.random(runs.shape) < fail_share
+        fails = rng.random(noise.shape) < fail_share
         planned = ~fails[..., :r]
         failed = r - planned.sum(axis=-1)
         rerun = np.arange(RERUN_CAP) < np.minimum(failed, RERUN_CAP)[..., None]
         valid = np.concatenate((planned, rerun & ~fails[..., r:]), axis=-1)
     else:
-        valid = np.concatenate(
-            (np.ones((n, m, programs, r), bool), np.zeros((n, m, programs, RERUN_CAP), bool)), axis=-1
-        )
-    counts = valid.sum(axis=-1)
-    total = (runs * valid).sum(axis=-1)
-    means = np.where(counts > 0, total / np.maximum(counts, 1), np.nan) + effects + shift
-    return Draw(means, counts.astype(float), runs, valid.astype(float))
-
-
-def welch(p: FloatArray, w: FloatArray) -> tuple[FloatArray, FloatArray, FloatArray]:
-    """Difference of means, its standard error, and the Welch degrees of freedom over axis 1."""
-    m = p.shape[1]
-    vp, vw = np.var(p, axis=1, ddof=1) / m, np.var(w, axis=1, ddof=1) / m
-    se = np.sqrt(vp + vw)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        df = (vp + vw) ** 2 / (vp**2 / (m - 1) + vw**2 / (m - 1))
-    return p.mean(axis=1) - w.mean(axis=1), se, np.where(np.isfinite(df), df, 2 * (m - 1))
-
-
-def tost_p(diff: FloatArray, se: FloatArray, df: FloatArray) -> FloatArray:
-    """The TOST p-value against the limits -1 and 1: the larger of the two one-sided p-values."""
-    with np.errstate(divide="ignore", invalid="ignore"):
-        lower = np.asarray(t_distribution.sf((diff + 1.0) / se, df))
-        upper = np.asarray(t_distribution.sf((1.0 - diff) / se, df))
-    return np.maximum(lower, upper)
+        valid = np.arange(r + RERUN_CAP) < r
+    values = noise + effects[..., None] + np.asarray(shift)[..., None]
+    return np.where(valid, values, np.nan).transpose(0, 2, 1, 3)
 
 
 def equivalence_cell(
@@ -203,18 +169,16 @@ def equivalence_cell(
     rng = np.random.default_rng(seed)
     w = draw(rng, n, m, r, sigma_run, sigma_mount, 0.0, structure, fail_share)
     p = draw(rng, n, m, r, sigma_run, sigma_mount, bias, structure, fail_share)
-    estimable = ((w.counts >= MIN_VALID_RUNS) & (p.counts >= MIN_VALID_RUNS)).all(axis=1)
-    diff, se, df = welch(np.nan_to_num(p.means), np.nan_to_num(w.means))
-    pvalue = tost_p(diff, se, df)
-    half = np.asarray(t_distribution.ppf(0.95, df)) * se
+    difference = stats.bias(p, w)
+    pvalue = stats.tost_p(difference, LIMIT)
     decisions = {
         name: {
-            level: float(np.mean(np.all((pvalue[:, members] <= alpha) & estimable[:, members], axis=1)))
+            level: float(np.mean(stats.feature_p(pvalue[:, members]) <= alpha))
             for level, alpha in ALPHAS.items()
         }
         for name, members in FEATURE_SETS.items()
     }
-    per_program = float(np.mean((pvalue[:, 0] <= ALPHAS["alpha"]) & estimable[:, 0]))
+    estimable = difference.estimable
     return Cell(
         m,
         r,
@@ -223,50 +187,11 @@ def equivalence_cell(
         bias,
         structure,
         fail_share,
-        float(np.median(half[estimable[:, 0], 0])),
-        per_program,
+        float(np.median(difference.half_width[estimable[:, 0], 0])),
+        float(np.mean(pvalue[:, 0] <= ALPHAS["alpha"])),
         float(np.mean(estimable.all(axis=1))),
         decisions,
     )
-
-
-def error_variance(runs: FloatArray, means: FloatArray, r: int) -> FloatArray:
-    """The variance of a mounting mean, sigma_mount^2 + sigma_run^2 / r, from the one-way ANOVA."""
-    ms_within = runs.var(axis=3, ddof=1).mean(axis=(1, 2))
-    ms_between = (r * means.var(axis=1, ddof=1)).mean(axis=1)
-    sigma_mount2 = np.maximum(0.0, (ms_between - ms_within) / r)
-    return sigma_mount2 + ms_within / r
-
-
-@dataclass(frozen=True)
-class Fit:
-    """Covariate coefficients of each device (n, 3) and the Deming slope (n,)."""
-
-    cw: FloatArray
-    cp: FloatArray
-    slope: FloatArray
-
-
-def fit_correction(w: Draw, p: Draw, keep: list[int], r: int, z: FloatArray) -> Fit:
-    """Partial the covariates out of both devices, then fit the Deming slope on the residuals."""
-    n = w.means.shape[0]
-    design = np.tile(z, (len(keep), 1))
-    pseudo_inverse = np.linalg.pinv(design)
-    wm, pm = w.means[:, keep].reshape(n, -1), p.means[:, keep].reshape(n, -1)
-    cw, cp = wm @ pseudo_inverse.T, pm @ pseudo_inverse.T
-    ew, ep = wm - cw @ design.T, pm - cp @ design.T
-    lam = np.maximum(
-        error_variance(p.runs[:, keep, :, :r], p.means[:, keep], r), VARIANCE_FLOOR
-    ) / np.maximum(error_variance(w.runs[:, keep, :, :r], w.means[:, keep], r), VARIANCE_FLOOR)
-    sxx, syy = np.sum(ew**2, axis=1), np.sum(ep**2, axis=1)
-    sxy = np.sum(ew * ep, axis=1)
-    d = syy - lam * sxx
-    return Fit(cw, cp, (d + np.sqrt(d**2 + 4 * lam * sxy**2)) / (2 * sxy))
-
-
-def predict(fit: Fit, w: FloatArray, z: FloatArray) -> FloatArray:
-    """The corrected value of W values (n, P) at the covariates z (P, 3)."""
-    return fit.cp @ z.T + fit.slope[:, None] * (w - fit.cw @ z.T)
 
 
 def correction_cell(
@@ -280,18 +205,8 @@ def correction_cell(
     )
     w = draw(rng, n, m, r, sigma_run, sigma_mount, TRUTH_W, "shared", 0.0)
     p = draw(rng, n, m, r, sigma_run, sigma_mount, truth_p, "shared", 0.0)
-    z = np.column_stack((np.ones(programs), COVARIATE_U, COVARIATE_V))
-    residuals, slopes = np.empty((n, m, programs)), np.empty((n, m))
-    for k in range(m):
-        fit = fit_correction(w, p, [i for i in range(m) if i != k], r, z)
-        residuals[:, k] = p.means[:, k] - predict(fit, w.means[:, k], z)
-        slopes[:, k] = fit.slope
-    mean = residuals.mean(axis=1)
-    half = float(t_distribution.ppf(0.95, m - 1)) * residuals.std(axis=1, ddof=1) / math.sqrt(m)
-    inside = np.all((mean - half >= -1.0) & (mean + half <= 1.0), axis=1)
-    full = fit_correction(w, p, list(range(m)), r, z)
-    true_residual = truth_p - predict(full, np.broadcast_to(TRUTH_W, (n, programs)), z)
-    jackknife = np.sqrt((m - 1) / m * np.sum((slopes - slopes.mean(axis=1, keepdims=True)) ** 2, axis=1))
+    correction = stats.correction(p, w, COVARIATE_U, COVARIATE_V)
+    true_residual = truth_p - correction.fit.corrected(TRUTH_W, COVARIATE_U, COVARIATE_V)
     return CorrectionCell(
         m,
         r,
@@ -299,9 +214,9 @@ def correction_cell(
         sigma_mount,
         truth,
         float(np.max(np.abs(truth_p - TRUTH_W))),
-        float(np.mean(inside)),
+        float(np.mean(correction.residual.within(LIMIT).all(axis=-1))),
         float(np.median(np.max(np.abs(true_residual), axis=1))),
-        float(np.median(jackknife)),
+        float(np.median(correction.se.beta)),
     )
 
 

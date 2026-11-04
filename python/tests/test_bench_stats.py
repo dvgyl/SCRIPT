@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import importlib.util
+import inspect
 import math
+import sys
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -296,3 +300,37 @@ def test_clopper_pearson_matches_scipy(successes: int, total: int) -> None:
 def test_eighteen_of_eighteen_gives_the_lower_bound_of_the_protocol() -> None:
     # Detects an interval that differs from the value that protocol section 11.7 quotes.
     assert round(float(stats.clopper_pearson(18, 18).lower), 3) == 0.815
+
+
+def _precision_script(monkeypatch: pytest.MonkeyPatch) -> Any:
+    path = Path(__file__).resolve().parents[1] / "studies" / "bench_precision.py"
+    spec = importlib.util.spec_from_file_location("bench_precision_study", path)
+    assert spec is not None and spec.loader is not None
+    script = importlib.util.module_from_spec(spec)
+    # The script's dataclasses resolve their string annotations through sys.modules.
+    monkeypatch.setitem(sys.modules, spec.name, script)
+    spec.loader.exec_module(script)
+    return script
+
+
+def test_the_precision_study_takes_its_statistics_from_this_module(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Detects a statistic computed in bench_precision.py itself, so that the precision study of protocol
+    # section 11.8 simulates other statistics than the analysis computes.
+    script = _precision_script(monkeypatch)
+    public = {
+        name
+        for name, value in vars(stats).items()
+        if inspect.isfunction(value) and value.__module__ == stats.__name__ and not name.startswith("_")
+    }
+    own = {
+        name
+        for name, value in vars(script).items()
+        if inspect.isfunction(value) and value.__module__ == script.__name__
+    }
+    assert not public & own
+    origins = {
+        getattr(value, "__module__", None) or getattr(value, "__name__", "")
+        for value in vars(script).values()
+    }
+    assert not [origin for origin in origins if isinstance(origin, str) and origin.startswith("scipy")]
+    assert script.stats is stats
