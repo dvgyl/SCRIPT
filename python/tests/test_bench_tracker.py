@@ -4,6 +4,7 @@ import functools
 import importlib.util
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +27,7 @@ from scriptkin.bench.camerafiles import (
     write_camera_file,
 )
 from scriptkin.bench.clock import led_levels, measure_clock, measure_readout
-from scriptkin.bench.track import FrameTimes, Track, TrackFacts, read_track
+from scriptkin.bench.track import FrameTimes, ReadoutDirection, Track, TrackFacts, read_track
 from scriptkin.bench.tracker import TRACKER_VERSION, find_marker, read_video, track_frames
 from scriptkin.cli import main
 from scriptkin.quality import Refusal, RefusalCode
@@ -65,8 +66,14 @@ def _program(program_id: str) -> tuple[render.Motion, float]:
     return render.sampled(times, xy - (xy.min(axis=0) + xy.max(axis=0)) / 2 + (40.0, 40.0))
 
 
-def _track(background: render.Background, motion: render.Motion, duration: float, **frames: Any) -> Track:
-    scene = render.Scene(render.main_camera(), background)
+def _track(
+    background: render.Background,
+    motion: render.Motion,
+    duration: float,
+    readout: ReadoutDirection = ReadoutDirection.TOP_FIRST,
+    **frames: Any,
+) -> Track:
+    scene = render.Scene(render.main_camera(), background, readout=readout)
     n = round(duration * render.RATE_HZ)
     start = motion(np.zeros(1))[0]
     return track_frames(
@@ -74,7 +81,7 @@ def _track(background: render.Background, motion: render.Motion, duration: float
         np.arange(n) / render.RATE_HZ,
         render.estimated_calibration(background),
         (float(start[0]), float(start[1])),
-        FACTS,
+        replace(FACTS, readout_direction=readout),
     )
 
 
@@ -138,12 +145,38 @@ def test_registered_program_path_is_reproduced(background: render.Background) ->
     assert errors.max() <= 0.1
 
 
-def test_row_correction_reduces_the_error_on_the_fast_program() -> None:
-    # Detects a tracker that ignores the row time of a rolling shutter or applies it with the wrong sign.
+def _placed(program_id: str) -> tuple[render.Motion, float]:
+    """The registered path of a program in the plane, with the nadir of the camera at the centre of the
+    largest frame, 132 x 104 mm (protocol section 7.1)."""
+    times, xy, _ = _study().timed_path(program(program_id))
+    origin = render.main_camera().centre[:2] + np.array([-66.0, 52.0])
+    return render.sampled(times, origin + xy * (1.0, -1.0), hold_s=0.0)
+
+
+@pytest.mark.parametrize("lift_mm", [10.0, 17.0])
+@pytest.mark.parametrize(("program_id", "background"), [("loops-l-v20", "wacom"), ("line-osc5", "ipad")])
+def test_marker_is_followed_from_the_lift_height_through_the_run(
+    program_id: str, background: render.Background, lift_mm: float
+) -> None:
+    # Detects a first-frame search that misses the marker, which the perspective of the lift height moves
+    # away from the start point (protocol section 5.2 step 3), or a tracker that loses it on the way down.
+    motion, duration = _placed(program_id)
+    tip, height, total = render.bench_run(motion, duration, lift_mm)
+    track = _track(background, tip, total, height=height)
+    assert int((~track.found).sum()) == 0
+    offset = np.array(render.MARKER_OFFSET_MM)
+    seen = render.main_camera().seen(tip(track.t) + offset, height(track.t))[0] - offset
+    assert np.linalg.norm(track.xy - seen, axis=1).max() <= 0.1
+
+
+@pytest.mark.parametrize("readout", list(ReadoutDirection))
+def test_row_correction_reduces_the_error_on_the_fast_program(readout: ReadoutDirection) -> None:
+    # Detects a tracker that ignores the row time of a rolling shutter, applies it with the wrong sign, or
+    # ignores the readout direction, which doubles the error of a bottom-first sensor (protocol 7.3).
     motion, duration = _program("loops-l-v80")
-    track = _track("wacom", motion, duration)
+    track = _track("wacom", motion, duration, readout)
     corrected = _rms(_errors(track, motion, track.t))
-    assert corrected <= 0.02
+    assert corrected <= 0.01
     assert _rms(_errors(track, motion, track.t_frame)) > 5 * corrected
     assert _best_lag_rms(track, motion) > 2 * corrected
 
@@ -239,7 +272,12 @@ def test_clock_refuses_a_rate_off_the_nominal_rate_and_a_short_clip() -> None:
     assert isinstance(refused, Refusal) and refused.code is RefusalCode.TOO_FEW_VALUES
 
 
-def _band_frames(row_time: float, exposure: float, count: int = 20) -> list[Frame]:
+def _band_frames(
+    row_time: float,
+    exposure: float,
+    count: int = 20,
+    readout: ReadoutDirection = ReadoutDirection.TOP_FIRST,
+) -> list[Frame]:
     """Frames of an LED at 1 kHz with a 50 percent duty cycle that lights every row."""
 
     def lit(t: FloatArray) -> FloatArray:
@@ -247,34 +285,51 @@ def _band_frames(row_time: float, exposure: float, count: int = 20) -> list[Fram
         return (np.floor(cycles) * 0.5 + np.minimum(cycles - np.floor(cycles), 0.5)) / 1000.0
 
     rng = np.random.default_rng(9)
+    rows = np.arange(1080, dtype=np.float64)
+    first = rows if readout is ReadoutDirection.TOP_FIRST else 1079 - rows
     frames: list[Frame] = []
     for k in range(count):
-        start = k / render.RATE_HZ + np.arange(1080, dtype=np.float64) * row_time
+        start = k / render.RATE_HZ + first * row_time
         share = (lit(start + exposure) - lit(start)) / exposure
         level = 20.0 + 200.0 * share[:, None] + rng.normal(0.0, 2.0, (1080, 32))
         frames.append(np.clip(np.rint(level), 0, 255).astype(np.uint8))
     return frames
 
 
-def test_readout_recovers_the_row_time() -> None:
-    # Detects a readout that misreads the band pitch, so that the row correction uses a wrong row time.
-    readout = measure_readout(_band_frames(render.ROW_TIME_S, 1e-4), Region(0, 0, 32, 1080), led_hz=1000.0)
+BAND_REGION = Region(0, 0, 32, 1080)
+
+
+@pytest.mark.parametrize("direction", list(ReadoutDirection))
+def test_readout_recovers_the_row_time_and_the_direction(direction: ReadoutDirection) -> None:
+    # Detects a readout that misreads the band pitch or the direction of the bands between frames, so that
+    # the row correction uses a wrong row time or reads the rows the wrong way.
+    frames = _band_frames(render.ROW_TIME_S, 1e-4, readout=direction)
+    readout = measure_readout(frames, BAND_REGION, led_hz=1000.0, nominal_hz=240.0)
     assert not isinstance(readout, Refusal)
     assert abs(readout.row_time_s / render.ROW_TIME_S - 1) < 2e-3
+    assert readout.direction is direction
     assert readout.frames == 20
 
 
 @pytest.mark.parametrize(("row_time", "exposure"), [(0.0, 1e-4), (render.ROW_TIME_S, 1e-3)])
 def test_readout_refuses_frames_without_bands(row_time: float, exposure: float) -> None:
     # Detects a readout that reports a row time for a global shutter or for an exposure of one LED period.
-    readout = measure_readout(_band_frames(row_time, exposure), Region(0, 0, 32, 1080), led_hz=1000.0)
+    readout = measure_readout(_band_frames(row_time, exposure), BAND_REGION, led_hz=1000.0, nominal_hz=240.0)
     assert isinstance(readout, Refusal) and readout.code is RefusalCode.TOO_FEW_VALUES
+
+
+def test_readout_refuses_a_frame_rate_at_which_the_bands_stand_still() -> None:
+    # Detects a readout that names a direction when the LED phase moves by a whole period per frame.
+    frames = _band_frames(render.ROW_TIME_S, 1e-4)
+    readout = measure_readout(frames, BAND_REGION, led_hz=1000.0, nominal_hz=250.0)
+    assert isinstance(readout, Refusal) and readout.code is RefusalCode.OUT_OF_RANGE
 
 
 def test_clock_and_readout_commands_read_their_clips(tmp_path: Path) -> None:
     # Detects a clock or readout command that misreads its clip, its frames file, or its region.
     _write_clip(tmp_path / "clock.avi", _led_clip(239.8, 60.5), playback_hz=30.0)
-    _write_clip(tmp_path / "bands.avi", _band_frames(render.ROW_TIME_S, 1e-4), playback_hz=30.0)
+    bands = _band_frames(render.ROW_TIME_S, 1e-4, readout=ReadoutDirection.BOTTOM_FIRST)
+    _write_clip(tmp_path / "bands.avi", bands, playback_hz=30.0)
     clock, readout = tmp_path / "clock.json", tmp_path / "readout.json"
     led = ["--led", "0", "0", "16", "16"]
     assert main(["bench", "clock", *led, "--out", str(clock), str(tmp_path / "clock.avi")]) == 0
@@ -283,7 +338,9 @@ def test_clock_and_readout_commands_read_their_clips(tmp_path: Path) -> None:
     measured = read_camera_file(Clock, clock)
     assert measured.frame_times is FrameTimes.PLAYBACK
     assert abs(measured.frame_rate_hz / 239.8 - 1) < 1 / (59 * 240)
-    assert abs(read_camera_file(Readout, readout).row_time_s / render.ROW_TIME_S - 1) < 2e-3
+    measured_readout = read_camera_file(Readout, readout)
+    assert abs(measured_readout.row_time_s / render.ROW_TIME_S - 1) < 2e-3
+    assert measured_readout.direction is ReadoutDirection.BOTTOM_FIRST
     names = [s["name"] for s in json.loads(clock.read_text())["sources"]]
     assert names == ["clock.avi", "clock.frames.json"]
 
@@ -317,6 +374,18 @@ def test_video_boundary_decodes_every_frame_of_the_real_clip_unchanged() -> None
     assert all(np.array_equal(a, b) for a, b in zip(decoded, expected, strict=True))
 
 
+def test_video_boundary_does_not_turn_a_clip_with_rotation_metadata() -> None:
+    # Detects a video boundary that turns the frames by the rotation metadata of the clip, so that they
+    # leave the pixel frame of the plane calibration and the readout direction.
+    clip = FIXTURES / f"{render.FIXTURE_RUN}-turned.mov"
+    capture = cv2.VideoCapture(str(clip), cv2.CAP_FFMPEG)
+    assert capture.get(cv2.CAP_PROP_ORIENTATION_META) == 180
+    capture.release()
+    stored = render.fixture_frames()[: render.FIXTURE_TURNED_FRAMES]
+    decoded = list(read_video(clip))
+    assert [np.array_equal(a, b) for a, b in zip(decoded, stored, strict=True)] == [True] * len(stored)
+
+
 def test_track_command_tracks_the_real_clip(tmp_path: Path) -> None:
     # Detects a track command that loses a frame observation of a real clip or names the wrong input files.
     camera = render.fixture_camera()
@@ -338,3 +407,27 @@ def test_track_command_tracks_the_real_clip(tmp_path: Path) -> None:
     assert np.flatnonzero(~track.found).tolist() == [render.FIXTURE_MISSING]
     assert np.array_equal(track.led, np.arange(render.FIXTURE_FRAMES) < render.FIXTURE_LED_FRAMES)
     assert _errors(track, render.fixture_motion, track.t).max() < 0.01
+
+
+def test_track_command_applies_the_direction_of_the_readout_file(tmp_path: Path) -> None:
+    # Detects a track command that drops the readout direction from the row correction or the track facts.
+    camera = render.fixture_camera()
+    calibration = write_camera_file(
+        Calibration(camera.plane(), (0.0, 0.0), render.FIXTURE_LED), tmp_path / "c.json"
+    )
+    clock = write_camera_file(Clock(240.0, FrameTimes.CAPTURE, 1.0, 59, 1.0, 240.0), tmp_path / "clock.json")
+    row_time = 1e-5
+    readout = write_camera_file(
+        Readout(row_time, ReadoutDirection.BOTTOM_FIRST, 1 / (row_time * 1000.0), 1000.0, 10),
+        tmp_path / "readout.json",
+    )
+    files = ["--calibration", str(calibration), "--clock", str(clock), "--readout", str(readout)]
+    command = ["bench", "track", str(CLIP), *files, "--start-mm", "-2.5", "0.4", "--out-dir", str(tmp_path)]
+    assert main(command) == 0
+    track = read_track(tmp_path / f"{render.FIXTURE_RUN}.track.csv")
+    assert track.facts.readout_direction is ReadoutDirection.BOTTOM_FIRST
+    assert track.facts.row_time_s == row_time
+    found = track.found
+    rows = camera.project(render.fixture_motion(track.t_frame[found]))[:, 1]
+    rows_before = (track.t - track.t_frame)[found] / row_time
+    np.testing.assert_allclose(rows_before, camera.size[1] - 1 - rows, atol=0.05)

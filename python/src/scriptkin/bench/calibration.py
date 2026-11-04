@@ -50,8 +50,9 @@ def grey(frame: Frame) -> Frame:
 
 
 def read_image(path: str | Path) -> Frame:
-    """A still image as grey levels."""
-    image = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+    """A still image as grey levels, as the file stores it. The Exif orientation does not turn it, as the
+    rotation metadata does not turn a clip (`read_video`)."""
+    image = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE | cv2.IMREAD_IGNORE_ORIENTATION)
     if image is None:
         raise CameraFileError(f"{Path(path).name}: OpenCV cannot read the image.")
     return np.asarray(image, dtype=np.uint8)

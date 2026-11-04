@@ -8,7 +8,9 @@ import numpy as np
 import pytest
 
 from scriptkin.bench.track import (
+    TRACK_VERSION,
     FrameTimes,
+    ReadoutDirection,
     Track,
     TrackError,
     TrackFacts,
@@ -30,6 +32,7 @@ def _facts(**changes: Any) -> TrackFacts:
         frame_rate_hz=239.987,
         row_time_s=1.7e-5,
         tracker_version="1",
+        readout_direction=ReadoutDirection.BOTTOM_FIRST,
     )
     return replace(facts, **changes)
 
@@ -48,7 +51,7 @@ def _track() -> Track:
 
 
 def test_round_trip_keeps_every_value_and_the_missing_frame(tmp_path: Path) -> None:
-    # Detects a lossy number format, or a missing marker read back as a position.
+    # Detects a lossy number format, a missing marker read back as a position, or a lost readout direction.
     track = _track()
     rows_path, _ = write_track(track, tmp_path)
     back = read_track(rows_path)
@@ -121,9 +124,11 @@ def test_invalid_facts_are_refused(changes: dict[str, Any]) -> None:
         _facts(**changes)
 
 
-def test_a_facts_file_of_another_version_is_refused(tmp_path: Path) -> None:
-    # Detects a reader that reads a later track format with the rules of version 1.
+@pytest.mark.parametrize("version", [TRACK_VERSION - 1, TRACK_VERSION + 1])
+def test_a_facts_file_of_another_version_is_refused(tmp_path: Path, version: int) -> None:
+    # Detects a reader that reads an earlier or a later track format with the rules of this version.
     rows_path, facts_path = write_track(_track(), tmp_path)
-    facts_path.write_text(facts_path.read_text(encoding="utf-8").replace('"version": 1', '"version": 2'))
-    with pytest.raises(TrackError, match="version 1"):
+    text = facts_path.read_text(encoding="utf-8")
+    facts_path.write_text(text.replace(f'"version": {TRACK_VERSION}', f'"version": {version}'))
+    with pytest.raises(TrackError, match=f"version {TRACK_VERSION}"):
         read_track(rows_path)

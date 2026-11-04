@@ -24,7 +24,7 @@ from typing import Any, ClassVar, Protocol, Self
 import numpy as np
 from numpy.typing import NDArray
 
-from scriptkin.bench.track import FrameTimes
+from scriptkin.bench.track import FrameTimes, ReadoutDirection
 from scriptkin.formats import FormatError
 from scriptkin.recording import FloatArray
 
@@ -287,6 +287,7 @@ class Readout:
 
     FORMAT: ClassVar[str] = "script-bench-readout"
     row_time_s: float
+    direction: ReadoutDirection
     band_pitch_rows: float
     led_hz: float
     frames: int
@@ -306,6 +307,7 @@ class Readout:
     def to_json(self) -> dict[str, Any]:
         return {
             "row_time_s": self.row_time_s,
+            "direction": self.direction.value,
             "band_pitch_rows": self.band_pitch_rows,
             "led_hz": self.led_hz,
             "frames": self.frames,
@@ -314,7 +316,11 @@ class Readout:
     @classmethod
     def from_json(cls, raw: Mapping[str, Any]) -> Self:
         return cls(
-            float(raw["row_time_s"]), float(raw["band_pitch_rows"]), float(raw["led_hz"]), int(raw["frames"])
+            float(raw["row_time_s"]),
+            ReadoutDirection(raw["direction"]),
+            float(raw["band_pitch_rows"]),
+            float(raw["led_hz"]),
+            int(raw["frames"]),
         )
 
 
