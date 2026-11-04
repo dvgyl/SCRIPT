@@ -46,7 +46,7 @@ from scriptkin.bench.track import Track
 from scriptkin.features import CATALOG as LIBRARY_CATALOG
 from scriptkin.features import Cell, extract
 from scriptkin.quality import DEFAULT_QC, Accepted, QcPolicy, Refusal, RefusalCode, Rejected, assess
-from scriptkin.recording import BenchRunContext, Trial
+from scriptkin.recording import BenchRunContext, PenState, Trial
 from scriptkin.signal import DEFAULT_PREPROCESSING, Preprocessing
 
 FEATURE_SET = tuple(f.name for f in BENCH_CATALOG if f.decided_on)
@@ -252,14 +252,22 @@ def _within(value: Cell, target: float, tolerance: float) -> bool:
 
 
 def fault_detected(run: Evaluated, clean: CleanMedians, *, gaps_on_p: bool) -> tuple[bool, str]:
-    """Section 5.3: whether every expected result of the fault program holds, with the reason when not."""
+    """Section 5.3: whether every expected result of the fault program holds, with the reason when not.
+
+    The dwell rule reads the contact strokes only. A bench journal also holds the hover strokes of the
+    lowering and the lift, which the library counts as segments and checks for gaps. A contact gap is
+    a contact sample interval above `max_gap_s`, the interval that gives the `gaps` finding.
+    """
     program = bench.program(run.row.program)
     motion = run.device_value("bench.motion_s")
     if program.fault == "dwell":
-        findings = [r.code for r in run.qc.report.findings]
-        gaps = RefusalCode.GAPS in findings
+        gap_share = run.device_value("sampling.share_above_max_gap")
+        gaps = not isinstance(gap_share, Refusal) and gap_share > 0
+        segments = (
+            sum(s.state == PenState.CONTACT for s in run.qc.segments) if isinstance(run.qc, Accepted) else 0
+        )
         expect_gaps = gaps_on_p and run.row.device == "P"
-        if expect_gaps and not (gaps and run.qc.report.segment_count == 2):
+        if expect_gaps and not (gaps and segments == 2):
             return False, "no gaps finding with two contact segments"
         if not expect_gaps and gaps:
             return False, "a gaps finding"
