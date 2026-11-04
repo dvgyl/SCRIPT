@@ -439,7 +439,7 @@ Frame times, every clip. Read the presentation timestamps with `ffprobe`. When t
 Tracking, every clip:
 
 - Until the tracker first finds the marker, it searches a 24 mm square in the marker plane. The square is centred on the commanded start point plus the marker offset. A bright region counts only when it lies completely inside the square. The clip starts with the stylus at the lift height. The camera sees a marker raised by z at a shift of X z / (D − z) in the plane. X is its distance from the nadir, and D is the camera height. At a lift of 17 mm, the shift is up to about 9.4 mm. A 10 mm square holds a shift of only about 3.4 mm on each axis.
-- After the first find, each frame searches a 10 mm square, centred on the last position where the marker was found. Separate the marker with Otsu thresholding and take the intensity-weighted centroid of the largest bright region. A bright region counts only when it lies completely inside the square and its area is at least half the area of the marker dot. The two Otsu classes must differ by 32 grey levels or more.
+- After the first find, each frame searches a 10 mm square, centred on the last position where the marker was found. Separate the marker with Otsu thresholding and take the intensity-weighted centroid of the largest bright region. A bright region counts only when it lies completely inside the square. Its area must be 0.5 to 2 times the area of the marker dot. The two Otsu classes must differ by 32 grey levels or more.
 - Remove the lens distortion from the centroid and map it through the homography. Subtract the marker offset. Apply the row correction when the shutter is rolling.
 - The record is invalid when more than 2 percent of the frames have no marker.
 
@@ -453,7 +453,7 @@ The camera and the devices share no clock. One rule finds the motion interval on
 
 The bench module implements the rule once, and the lock hashes it. A run of 6 grid samples lies inside one segment. The ramps of section 5.1 cross 2 mm/s within 0.03 s of the command start, plus one grid step. The loops at 20 mm/s take the longest, because their ramp ends at the curvature speed of the start point. The motion interval is therefore the commanded motion within this tolerance.
 
-A camera record also holds the stylus at the lift height, the lowering, and the lift. The camera sees a raised marker shifted by perspective, so a lowering at 10 mm/s appears as a movement of 2 to 5 mm/s. The rule therefore searches a camera record only inside a window. A coarse alignment slides the speed profile of the device record, inside its motion interval, over the whole clip. It takes the lag with the largest correlation coefficient. The window is the device motion interval at this lag, widened by 0.2 s before and by 0.15 s after. Both margins are shorter than the dwells of section 5.2. When `assess` rejects the device record, the commanded motion takes its place. The fine alignment below then refines the lag.
+A camera record also holds the stylus at the lift height, the lowering, and the lift. The camera sees a raised marker shifted by perspective, so a lowering at 10 mm/s appears as a movement of 2 to 5 mm/s. The rule therefore searches a camera record only inside a window. A coarse alignment slides the speed profile of the commanded motion of the program, inside its motion interval, over the whole clip. It takes the lag with the largest correlation coefficient. The window is the commanded motion interval at this lag, widened by 0.2 s before and by 0.15 s after. Both margins are shorter than the dwells of section 5.2. For this coarse alignment only, a moving average of 0.2 s smooths both speed profiles, which removes the oscillation of the line programs. The camera reference therefore never depends on the device under test. A camera motion interval that touches an edge of its window is a motion failure (section 7.6), because the movement then continues outside the window. The fine alignment below then refines the lag.
 
 The spatial comparison of section 8.2 aligns a camera track to its device record in time. At each lag up to 0.5 s, compute the correlation coefficient of the two grid speed profiles over their overlap inside the motion intervals. Take the lag with the largest correlation and refine it with a parabolic fit through that value and its two neighbours. The alignment is sub-frame. Report the lag per run. A plain cross-correlation sum is not used, because it pulled the lag towards zero by 3.7 ms in a test.
 
@@ -473,7 +473,7 @@ For every run with a valid camera record:
 
 1. Align the camera track to the commanded path of its program with the path fit below.
 2. Compute the distance from each camera sample to the nearest point of the commanded path.
-3. The run is a motion failure when the largest distance is above 0.2 mm. It is also a motion failure when its motion duration differs from the commanded one by more than 1 percent. The rule of section 7.4 on the commanded path gives the commanded motion duration.
+3. The run is a motion failure when the largest distance is above 0.2 mm. It is also a motion failure when its motion duration differs from the commanded one by more than 1 percent. The rule of section 7.4 on the commanded path gives the commanded motion duration. A camera motion interval that touches an edge of its window (section 7.4) is also a motion failure. Its reason in `run_status.csv` is `window_edge`.
 
 The path fit. The commanded path is in the stimulus frame with y down, and every record has y up. The fit therefore mirrors the commanded path first, because a rotation cannot undo a reflection. The fit aligns the record to the commanded motion in time, as in section 7.4. Each sample then pairs with the commanded position at its commanded time, which gives the first rigid fit. An iterative closest point fit to the commanded polyline repeats the rigid fit with nearest points. It stops when the root mean square changes by less than 10⁻⁶ mm, or after 100 iterations. The time pairs keep the fit from a neighbouring loop, and they fix the position along a straight line.
 
@@ -483,7 +483,7 @@ A motion failure is a failed run (section 6.4). Report the main analysis also wi
 
 The run stays in the device comparison of the features that the camera does not reference. The run leaves the accuracy analysis and the camera-referenced comparison. Report the count per device and program.
 
-A camera record is also invalid when its coarse alignment of section 7.4 fails. This is the case without a reference record, with a clip shorter than the motion, or with a best correlation coefficient below 0.5. A camera record whose executed movement check of section 7.6 cannot be computed is invalid too.
+A camera record is also invalid when its coarse alignment of section 7.4 fails. This is the case with a clip shorter than the commanded motion, or with a best correlation coefficient below 0.5. A camera record whose executed movement check of section 7.6 cannot be computed is invalid too.
 
 ## 8. Measures
 
@@ -770,8 +770,10 @@ Report the analysis of sections 11.2 to 11.5 also:
 
 - without the motion failure exclusions of section 7.6,
 - on the raw device values of the four camera-referenced features,
-- per task, per scale, and per speed, pooled over the other factors, where a pooled group averages the per-program mounting means,
+- per task, per scale, and per speed, pooled over the other factors,
 - with the mounting means replaced by the medians of the runs.
+
+A pooled group averages the per-program mounting means. Its run variance has N − k P degrees of freedom for P programs.
 
 ## 12. Deliverables for the consequence experiment
 
@@ -807,7 +809,7 @@ Stop a block after the lock, remount, and record a deviation when any of these h
 - Three consecutive runs fail.
 - The stylus altitude or the load is outside its tolerance.
 
-No person and no script compares the feature values of the two devices before the last block. `scriptkin bench analyse` refuses to run until the registry holds the complete design of section 6.3 and every block is recorded. The interim check of section 6.6 prints variance components only. Every access to the feature values during the main runs is a row in `bench/DEVIATIONS.md`. The row gives the person, the date, the script, and what it printed.
+No person and no script compares the feature values of the two devices before the last block. `scriptkin bench analyse` refuses to run until the registry holds the complete design of section 6.3. Every block must also hold each run label of its order file, as a recorded or a void row. The interim check of section 6.6 prints variance components only. Every access to the feature values during the main runs is a row in `bench/DEVIATIONS.md`. The row gives the person, the date, the script, and what it printed.
 
 A deviation is any departure from this protocol after the lock. Record every deviation as a table row in `bench/DEVIATIONS.md`. The row has the date and time, the runs affected, the departure, the cause, the decision, and the person. Commit each row when it is written, so that the Git history dates the row. Analysis changes after the lock are deviations and are reported in the paper as post hoc.
 
@@ -825,7 +827,7 @@ The lock registers everything that the main runs depend on. Do it after the pilo
    - every file under `bench/programs/` and `bench/order/`
    - `contract/bench_programs.json`
    - `python/uv.lock`
-   - every file under `python/src/scriptkin/`
+   - every file under `python/src/scriptkin/`, without `.DS_Store` and `._` files
    - `python/studies/bench_programs.py`, `python/studies/bench_limits.py`, and `python/studies/bench_precision.py`
    - the translation script of section 4.1
    - the precision report `bench/results/bench_precision.json`
@@ -836,6 +838,8 @@ The lock registers everything that the main runs depend on. Do it after the pilo
 8. An independent reviewer checks the lock file against the files, the builds, and the commit before the first main run. The reviewer records the check as the second row of `bench/DEVIATIONS.md`.
 
 The lock file does not contain its own digest. The paper and the supplement cite the lock commit.
+
+`scriptkin bench analyse` refuses to run when the `scriptkin` package that runs is not the folder `python/src/scriptkin/` of the repository, or when a locked file changed. With `--post-hoc`, it runs with changed, added, or removed code files. Every output then says that the analysis is post hoc and names the changed files (section 13).
 
 ## 15. Data and file naming
 
