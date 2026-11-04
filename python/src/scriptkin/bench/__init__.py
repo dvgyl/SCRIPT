@@ -22,6 +22,8 @@ from typing import Any, Literal
 PROTOCOL_VERSION = "1.2"
 # Provisional. At the protocol lock, this becomes the SHA-256 of docs/BENCH_PROTOCOL.md.
 PROTOCOL_SHA256 = "0" * 64
+CONTROLLER_SUFFIX = ".ebb"
+"""The controller file of a program is `<program>.ebb` beside its move list `<program>.json`."""
 
 Geometry = Literal["loops", "spiral", "line"]
 SCALES = {"l": 1.0, "s": 0.7}

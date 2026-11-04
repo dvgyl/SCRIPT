@@ -30,8 +30,8 @@ pass section 6.5, `excludedPrograms`, the main programs that section 4.2 step 7 
 
 `bench/BENCH_LOCK.json` holds the protocol version, the lock commit, the `app.build` and
 `app.sourceRevision` of each capture tool by device role, and the SHA-256 of each locked file by its path
-relative to the root. `write_lock` hashes the files of section 14 step 5, every file of the analysis code
-under `LOCK_CODE`, and any extra file, such as the translation script. The analysis code is the
+relative to the root. `write_lock` hashes the files of section 14 step 5, with the translation script of
+section 4.1, every file of the analysis code under `LOCK_CODE`, and any extra file. The analysis code is the
 `scriptkin` package that runs, which must be the one under the root (`code_folder`). `check_lock` refuses
 a lock that does not hold every file that it must hold, and a changed or missing file. `check_build`
 refuses a journal whose build is not the build of its device. The lock skips the `._` files that macOS
@@ -69,6 +69,7 @@ LOCK_FILES = (
     "python/studies/bench_programs.py",
     "python/studies/bench_limits.py",
     "python/studies/bench_precision.py",
+    "python/studies/bench_controller.py",
     "bench/results/bench_precision.json",
 )
 LOCK_FOLDERS = ("bench/programs", "bench/order")

@@ -472,7 +472,7 @@ def _add_bench_analysis(steps: Any) -> None:
         type=Path,
         action="append",
         default=[],
-        help="an extra file to lock, as the translation script",
+        help="an extra file to lock beyond the files of section 14 step 5",
     )
     lock.add_argument("--out", type=Path, required=True, help="the lock file to write")
     lock.set_defaults(run=_bench_lock)
