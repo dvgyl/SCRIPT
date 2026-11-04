@@ -5,6 +5,10 @@ pixel knows the plane point that it sees, so the renderer draws the marker, the 
 backgrounds as functions of plane millimetres. A rolling shutter exposes row r of frame k at
 `k / rate + r * row_time`, and the renderer moves the marker to that time on every row.
 
+A marker at a height z above the marker plane lies on the ray of the plane point
+`nadir + (xy - nadir) * D / (D - z)`, where D is the camera height. So the renderer draws a raised
+marker there, with its radii scaled by D / (D - z).
+
 Run this file to write the fixture clip of `fixtures/bench_camera/`:
 
     python -I python/tests/bench_camera_render.py python/tests/fixtures/bench_camera
@@ -32,6 +36,8 @@ from scriptkin.recording import FloatArray
 Background = Literal["ipad", "wacom"]
 Motion = Callable[[FloatArray], FloatArray]
 """The stylus tip position in plane millimetres, as (n, 2), at each of n times."""
+Height = Callable[[FloatArray], FloatArray]
+"""The height of the marker above the marker plane in millimetres, as (n,), at each of n times."""
 
 RATE_HZ = 239.987
 ROW_TIME_S = 3.5e-6
@@ -114,6 +120,13 @@ class Camera:
     ) -> Calibration:
         return Calibration(self.plane(), offset_mm, led)
 
+    def seen(self, xy_mm: FloatArray, z_mm: FloatArray) -> tuple[FloatArray, FloatArray]:
+        """The plane point that shows a marker at the plane position `xy_mm` and the height `z_mm`, and the
+        scale of its radii."""
+        nadir, height = self.centre[:2], self.centre[2]
+        scale = height / (height - z_mm)
+        return np.where(z_mm[:, None] == 0, xy_mm, nadir + (xy_mm - nadir) * scale[:, None]), scale
+
 
 @functools.cache
 def main_camera(turned: bool = False) -> Camera:
@@ -194,6 +207,27 @@ def still(point: tuple[float, float]) -> Motion:
     return lambda t: np.tile(np.asarray(point, dtype=np.float64), (len(np.atleast_1d(t)), 1))
 
 
+def bench_run(
+    motion: Motion, duration: float, lift_mm: float, *, lower_mm_s: float = 10.0, hold_s: float = 0.2
+) -> tuple[Motion, Height, float]:
+    """The run sequence of protocol section 5.2 around a motion of the tip: a hold at the lift height, the
+    lowering, the dwell of 0.5 s, the motion, the dwell of 0.3 s, the lift, and a hold. Returns the tip
+    motion, the marker height, and the duration."""
+    lower_s = lift_mm / lower_mm_s
+    start = hold_s + lower_s + 0.5
+    lift_at = start + duration + 0.3
+
+    def tip(t: FloatArray) -> FloatArray:
+        return motion(np.clip(np.asarray(t, dtype=np.float64) - start, 0.0, duration))
+
+    def height(t: FloatArray) -> FloatArray:
+        t = np.asarray(t, dtype=np.float64)
+        down = np.clip((t - hold_s) * lower_mm_s, 0.0, lift_mm)
+        return lift_mm - down + np.clip((t - lift_at) * lower_mm_s, 0.0, lift_mm)
+
+    return tip, height, lift_at + lower_s + hold_s
+
+
 def led_on(t: FloatArray) -> np.ndarray:
     return ((np.asarray(t) - LED_PHASE_S) % 1.0) < 0.5
 
@@ -219,10 +253,23 @@ class Scene:
     seed: int = 0
     led: Region = LED
 
-    def _marker(self, frame: Frame, t0: float, motion: Motion, dot: bool, rng: np.random.Generator) -> None:
+    def _seen(self, motion: Motion, height: Height | None, t: FloatArray) -> tuple[FloatArray, FloatArray]:
+        z = np.zeros(len(t)) if height is None else height(t)
+        return self.camera.seen(motion(t) + self.offset_mm, z)
+
+    def _marker(
+        self,
+        frame: Frame,
+        t0: float,
+        motion: Motion,
+        height: Height | None,
+        dot: bool,
+        rng: np.random.Generator,
+    ) -> None:
         w, h = self.camera.size
-        centre = self.camera.project(motion(np.array([t0])) + self.offset_mm)[0]
-        half = int(FIELD_RADIUS_MM / 0.1 + 8)
+        first, scale = self._seen(motion, height, np.array([t0]))
+        centre = self.camera.project(first)[0]
+        half = int(FIELD_RADIUS_MM * scale[0] / 0.1 + 8)
         c0, c1 = max(int(centre[0]) - half, 0), min(int(centre[0]) + half, w)
         r0, r1 = max(int(centre[1]) - half, 0), min(int(centre[1]) + half, h)
         if c1 <= c0 or r1 <= r0:
@@ -230,10 +277,10 @@ class Scene:
         q = self.camera.plane_xy[r0:r1, c0:c1]
         pixel = float(np.linalg.norm(q[q.shape[0] // 2, 1] - q[q.shape[0] // 2, 0]))
         rows = np.arange(r0, r1, dtype=np.float64)
-        marker = motion(t0 + rows * self.row_time_s) + self.offset_mm
+        marker, scale = self._seen(motion, height, t0 + rows * self.row_time_s)
         d = np.linalg.norm(q - marker[:, None, :], axis=2)
-        field_cover = np.clip(0.5 - (d - FIELD_RADIUS_MM) / pixel, 0.0, 1.0)
-        dot_cover = np.clip(0.5 - (d - DOT_RADIUS_MM) / pixel, 0.0, 1.0) if dot else 0.0
+        field_cover = np.clip(0.5 - (d - FIELD_RADIUS_MM * scale[:, None]) / pixel, 0.0, 1.0)
+        dot_cover = np.clip(0.5 - (d - DOT_RADIUS_MM * scale[:, None]) / pixel, 0.0, 1.0) if dot else 0.0
         level = _background(self.background, q) * (1 - field_cover) + _FIELD * field_cover
         level = level * (1 - dot_cover) + _DOT * dot_cover
         if self.noise:
@@ -257,9 +304,11 @@ class Scene:
         *,
         missing: frozenset[int] = frozenset(),
         duplicates: frozenset[int] = frozenset(),
+        height: Height | None = None,
     ) -> Iterator[Frame]:
-        """`count` frames of the marker on `motion`. A frame in `missing` has the black field without the
-        dot. A frame in `duplicates` repeats the previous frame in every pixel."""
+        """`count` frames of the marker on `motion`, in the marker plane unless `height` raises it. A frame
+        in `missing` has the black field without the dot. A frame in `duplicates` repeats the previous frame
+        in every pixel."""
         rng = np.random.default_rng(self.seed + 1)
         bank = _bank(self.camera, self.background, self.noise, self.seed)
         previous: Frame | None = None
@@ -269,7 +318,7 @@ class Scene:
                 continue
             frame = bank[k % len(bank)].copy()
             t0 = k / self.rate_hz
-            self._marker(frame, t0, motion, k not in missing, rng)
+            self._marker(frame, t0, motion, height, k not in missing, rng)
             self._led(frame, t0)
             previous = frame
             yield frame

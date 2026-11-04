@@ -138,6 +138,30 @@ def test_registered_program_path_is_reproduced(background: render.Background) ->
     assert errors.max() <= 0.1
 
 
+def _placed(program_id: str) -> tuple[render.Motion, float]:
+    """The registered path of a program in the plane, with the nadir of the camera at the centre of the
+    largest frame, 132 x 104 mm (protocol section 7.1)."""
+    times, xy, _ = _study().timed_path(program(program_id))
+    origin = render.main_camera().centre[:2] + np.array([-66.0, 52.0])
+    return render.sampled(times, origin + xy * (1.0, -1.0), hold_s=0.0)
+
+
+@pytest.mark.parametrize("lift_mm", [10.0, 17.0])
+@pytest.mark.parametrize(("program_id", "background"), [("loops-l-v20", "wacom"), ("line-osc5", "ipad")])
+def test_marker_is_followed_from_the_lift_height_through_the_run(
+    program_id: str, background: render.Background, lift_mm: float
+) -> None:
+    # Detects a first-frame search that misses the marker, which the perspective of the lift height moves
+    # away from the start point (protocol section 5.2 step 3), or a tracker that loses it on the way down.
+    motion, duration = _placed(program_id)
+    tip, height, total = render.bench_run(motion, duration, lift_mm)
+    track = _track(background, tip, total, height=height)
+    assert int((~track.found).sum()) == 0
+    offset = np.array(render.MARKER_OFFSET_MM)
+    seen = render.main_camera().seen(tip(track.t) + offset, height(track.t))[0] - offset
+    assert np.linalg.norm(track.xy - seen, axis=1).max() <= 0.1
+
+
 def test_row_correction_reduces_the_error_on_the_fast_program() -> None:
     # Detects a tracker that ignores the row time of a rolling shutter or applies it with the wrong sign.
     motion, duration = _program("loops-l-v80")
