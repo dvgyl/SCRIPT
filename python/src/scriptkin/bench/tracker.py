@@ -21,7 +21,9 @@ marker, and the tracker records NaN. The marker is the largest region that count
 the intensity-weighted centroid of its pixels.
 
 The row of a centroid is its raw image row, before the distortion is removed, because the sensor reads
-raw rows. The time of the centroid is `t_frame + row * row_time` (protocol section 7.3).
+raw rows. The time of the centroid is `t_frame + row * row_time` when the sensor reads row 0 first, and
+`t_frame + (height - 1 - row) * row_time` when it reads the last row first (protocol section 7.3). So
+`t_frame` is the time of the first row that the sensor reads.
 
 The tracker reports observations only. It keeps every decoded frame, in order, and the analysis applies
 the validity rules.
@@ -51,7 +53,7 @@ from scriptkin.bench.camerafiles import (
     sha256_file,
 )
 from scriptkin.bench.clock import led_level, led_states
-from scriptkin.bench.track import FrameTimes, Track, TrackFacts, write_track
+from scriptkin.bench.track import FrameTimes, ReadoutDirection, Track, TrackFacts, write_track
 from scriptkin.quality import Refusal, RefusalCode
 from scriptkin.recording import FloatArray
 
@@ -147,11 +149,15 @@ def frame_times(clock: Clock, pts_s: FloatArray) -> FloatArray:
     return np.arange(len(pts_s)) / clock.frame_rate_hz
 
 
+def _rows_read_before(row: FloatArray, height: int, direction: ReadoutDirection) -> FloatArray:
+    return row if direction is ReadoutDirection.TOP_FIRST else height - 1 - row
+
+
 def track_frames(
     frames: Iterable[Frame], t_frame: FloatArray, calibration: Calibration, start_mm: Point, facts: TrackFacts
 ) -> Track:
     """Track the marker in every frame. `start_mm` is the commanded start point of the stylus tip, in plane
-    millimetres. The row correction uses `facts.row_time_s`."""
+    millimetres. The row correction uses `facts.row_time_s` and `facts.readout_direction`."""
     plane = calibration.plane
     offset = np.array(calibration.marker_offset_mm)
     centre = np.array(start_mm, dtype=np.float64) + offset
@@ -179,11 +185,12 @@ def track_frames(
         decoded = k + 1
     if decoded != n:
         raise ValueError(f"The clip has {decoded} frames and its frames file lists {n}.")
+    rows_before = _rows_read_before(row, plane.lens.image_size[1], facts.readout_direction)
     return Track(
         facts,
         np.arange(n, dtype=np.int64),
         t_frame,
-        t_frame + row * facts.row_time_s,
+        t_frame + rows_before * facts.row_time_s,
         marker - offset,
         duplicate,
         led_states(levels),
@@ -223,7 +230,7 @@ def track_clip(
     frames_file = frames_path(clip)
     mounting = read_camera_file(Calibration, calibration)
     camera_clock = read_camera_file(Clock, clock)
-    row_time = 0.0 if readout is None else read_camera_file(Readout, readout).row_time_s
+    shutter = None if readout is None else read_camera_file(Readout, readout)
     pts = read_frame_times(frames_file)
     facts = TrackFacts(
         run_id=clip.stem,
@@ -232,8 +239,9 @@ def track_clip(
         calibration_sha256=sha256_file(calibration),
         frame_times=camera_clock.frame_times,
         frame_rate_hz=camera_clock.frame_rate_hz,
-        row_time_s=row_time,
+        row_time_s=0.0 if shutter is None else shutter.row_time_s,
         tracker_version=TRACKER_VERSION,
+        readout_direction=ReadoutDirection.TOP_FIRST if shutter is None else shutter.direction,
     )
     track = track_frames(read_video(clip), frame_times(camera_clock, pts), mounting, start_mm, facts)
     return write_track(track, clip.parent if out_dir is None else out_dir)

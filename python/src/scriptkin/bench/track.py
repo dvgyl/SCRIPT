@@ -28,7 +28,7 @@ from scriptkin.recording import FloatArray, IntArray
 BoolArray = NDArray[np.bool_]
 
 TRACK_FORMAT = "script-bench-track"
-TRACK_VERSION = 1
+TRACK_VERSION = 2
 COLUMNS = ("frame", "t_frame_s", "t_s", "x_mm", "y_mm", "duplicate", "led")
 _SHA256_LENGTH = 64
 
@@ -42,6 +42,14 @@ class FrameTimes(StrEnum):
     """The presentation timestamps of the file are capture times, and `t_frame_s` comes from them."""
     PLAYBACK = "playback"
     """The file holds playback times, so `t_frame_s` is the frame index divided by the measured rate."""
+
+
+class ReadoutDirection(StrEnum):
+    """The row of the decoded frame that a rolling shutter reads first (protocol section 7.3)."""
+
+    TOP_FIRST = "top-first"
+    BOTTOM_FIRST = "bottom-first"
+    """The last row comes first, as in a clip that the camera stores turned by a half turn."""
 
 
 @dataclass(frozen=True)
@@ -58,6 +66,8 @@ class TrackFacts:
     row_time_s: float
     """The row readout time of a rolling shutter. It is 0 for a global shutter."""
     tracker_version: str
+    readout_direction: ReadoutDirection = ReadoutDirection.TOP_FIRST
+    """A global shutter records top-first, which has no effect with a row time of 0."""
 
     def __post_init__(self) -> None:
         for name in ("video_sha256", "frames_sha256", "calibration_sha256"):
@@ -170,7 +180,11 @@ def read_track(rows_path: str | Path) -> Track:
         raw = json.loads(facts_path.read_text(encoding="utf-8"))
         if raw.pop("format") != TRACK_FORMAT or raw.pop("version") != TRACK_VERSION:
             raise TrackError(f"{facts_path.name}: not a {TRACK_FORMAT} file of version {TRACK_VERSION}.")
-        fields: dict[str, Any] = {**raw, "frame_times": FrameTimes(raw["frame_times"])}
+        fields: dict[str, Any] = {
+            **raw,
+            "frame_times": FrameTimes(raw["frame_times"]),
+            "readout_direction": ReadoutDirection(raw["readout_direction"]),
+        }
         facts = TrackFacts(**fields)
     except TrackError:
         raise

@@ -3,7 +3,8 @@
 The camera is a pinhole with a known lens distortion and a known pose above the marker plane. Each raw
 pixel knows the plane point that it sees, so the renderer draws the marker, the board, and the
 backgrounds as functions of plane millimetres. A rolling shutter exposes row r of frame k at
-`k / rate + r * row_time`, and the renderer moves the marker to that time on every row.
+`k / rate + r * row_time`, or at `k / rate + (height - 1 - r) * row_time` when it reads the last row
+first. The renderer moves the marker to that time on every row.
 
 A marker at a height z above the marker plane lies on the ray of the plane point
 `nadir + (xy - nadir) * D / (D - z)`, where D is the camera height. So the renderer draws a raised
@@ -29,6 +30,7 @@ import numpy as np
 
 from scriptkin.bench.calibration import calibrate_lens, calibrate_plane
 from scriptkin.bench.camerafiles import MIN_LENS_VIEWS, Calibration, Frame, Lens, Plane, Region
+from scriptkin.bench.track import ReadoutDirection
 from scriptkin.bench.tracker import measure_marker_offset
 from scriptkin.quality import Refusal
 from scriptkin.recording import FloatArray
@@ -252,6 +254,11 @@ class Scene:
     noise: float = 2.0
     seed: int = 0
     led: Region = LED
+    readout: ReadoutDirection = ReadoutDirection.TOP_FIRST
+
+    def _row_times(self, t0: float, rows: FloatArray) -> FloatArray:
+        first = rows if self.readout is ReadoutDirection.TOP_FIRST else self.camera.size[1] - 1 - rows
+        return t0 + first * self.row_time_s
 
     def _seen(self, motion: Motion, height: Height | None, t: FloatArray) -> tuple[FloatArray, FloatArray]:
         z = np.zeros(len(t)) if height is None else height(t)
@@ -277,7 +284,7 @@ class Scene:
         q = self.camera.plane_xy[r0:r1, c0:c1]
         pixel = float(np.linalg.norm(q[q.shape[0] // 2, 1] - q[q.shape[0] // 2, 0]))
         rows = np.arange(r0, r1, dtype=np.float64)
-        marker, scale = self._seen(motion, height, t0 + rows * self.row_time_s)
+        marker, scale = self._seen(motion, height, self._row_times(t0, rows))
         d = np.linalg.norm(q - marker[:, None, :], axis=2)
         field_cover = np.clip(0.5 - (d - FIELD_RADIUS_MM * scale[:, None]) / pixel, 0.0, 1.0)
         dot_cover = np.clip(0.5 - (d - DOT_RADIUS_MM * scale[:, None]) / pixel, 0.0, 1.0) if dot else 0.0
@@ -290,7 +297,7 @@ class Scene:
     def _led(self, frame: Frame, t0: float) -> None:
         r = self.led
         rows = np.arange(r.top, r.top + r.height, dtype=np.float64)
-        on = led_on(t0 + rows * self.row_time_s)
+        on = led_on(self._row_times(t0, rows))
         cy, cx = r.top + r.height / 2 - 0.5, r.left + r.width / 2 - 0.5
         yy, xx = np.mgrid[r.top : r.top + r.height, r.left : r.left + r.width]
         disc = (yy - cy) ** 2 + (xx - cx) ** 2 <= (r.width / 2 - 2) ** 2

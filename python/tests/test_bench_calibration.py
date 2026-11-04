@@ -27,7 +27,7 @@ from scriptkin.bench.camerafiles import (
     sha256_file,
     write_camera_file,
 )
-from scriptkin.bench.track import FrameTimes
+from scriptkin.bench.track import FrameTimes, ReadoutDirection
 from scriptkin.bench.tracker import measure_marker_offset
 from scriptkin.cli import main
 from scriptkin.quality import Refusal, RefusalCode
@@ -129,7 +129,7 @@ def _files() -> list[Lens | Plane | Calibration | Clock | Readout]:
         plane,
         Calibration(plane, (-8.25, 0.5), Region(10, 20, 30, 40)),
         Clock(239.987, FrameTimes.PLAYBACK, 0.125, 59, 1.0, 240.0),
-        Readout(3.5e-6, 1 / (3.5e-6 * 1000.0), 1000.0, 12),
+        Readout(3.5e-6, ReadoutDirection.BOTTOM_FIRST, 1 / (3.5e-6 * 1000.0), 1000.0, 12),
     ]
 
 

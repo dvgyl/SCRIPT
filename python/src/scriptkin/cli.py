@@ -291,7 +291,10 @@ def _bench_readout(args: argparse.Namespace) -> tuple[Any, list[Path]]:
     from scriptkin.bench.clock import measure_readout
     from scriptkin.bench.tracker import read_video
 
-    return measure_readout(read_video(args.clip), Region(*args.region), led_hz=args.led_hz), [args.clip]
+    readout = measure_readout(
+        read_video(args.clip), Region(*args.region), led_hz=args.led_hz, nominal_hz=args.nominal_hz
+    )
+    return readout, [args.clip]
 
 
 def _bench(args: argparse.Namespace) -> int:
@@ -552,6 +555,7 @@ def _add_bench(sub: Any) -> None:
         help="the pixel rectangle where the bands show",
     )
     readout.add_argument("--led-hz", type=_positive, default=1000.0)
+    readout.add_argument("--nominal-hz", type=_positive, default=240.0)
     track = step("track", "track the marker in one clip and write its track files", frames=True)
     track.add_argument("clip", type=Path, help="the clip, named <run id> with its suffix")
     track.add_argument("--calibration", type=Path, required=True, help="the calibration file of the mounting")
