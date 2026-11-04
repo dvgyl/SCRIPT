@@ -26,6 +26,7 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 
 import numpy as np
 from scipy.stats import beta as beta_distribution
@@ -309,6 +310,25 @@ def covariates(programs: Sequence[Design]) -> tuple[FloatArray, FloatArray]:
     return u, np.array([math.log(d.scale) for d in programs])
 
 
+class CorrectionModel(StrEnum):
+    """The model of the correction of section 11.5 for one program set."""
+
+    COVARIATES = "covariates"
+    """P = alpha + beta W + gamma_u u + gamma_v v, as section 11.5 writes it. For the 12 main programs."""
+    SLOPE = "slope"
+    """P = alpha + beta W, with the Deming slope on the centred values. For the 5 loops programs."""
+    SHIFT = "shift"
+    """P = alpha + W, with alpha the mean of P - W over the pairs. For the 3 line programs."""
+
+    @property
+    def fits_slope(self) -> bool:
+        return self is not CorrectionModel.SHIFT
+
+    @property
+    def fits_covariates(self) -> bool:
+        return self is CorrectionModel.COVARIATES
+
+
 @dataclass(frozen=True)
 class Coefficients:
     """The correction P = alpha + beta W + gamma_u u + gamma_v v of section 11.5."""
@@ -328,20 +348,32 @@ class Coefficients:
 class Correction:
     """Section 11.5 for one program set."""
 
+    model: CorrectionModel
     fit: Coefficients
-    """The fit on all pairs, (...)."""
+    """The fit on all pairs, (...). A term outside the model keeps its fixed value: beta 1, gamma 0."""
     se: Coefficients
-    """The jackknife standard errors over the held-out fits, (...)."""
+    """The jackknife standard errors over the held-out fits, (...). NaN for a term outside the model."""
     residual: Interval
     """The residual bias over the held-out mountings with its 90 percent t interval, (..., P)."""
 
 
-def _fit(p: FloatArray, w: FloatArray, runs_p: FloatArray, runs_w: FloatArray, z: FloatArray) -> Coefficients:
-    # Every program has the same m pairs, so the least squares fit on (1, u, v) of the pairs equals the
+def _fit(
+    model: CorrectionModel,
+    p: FloatArray,
+    w: FloatArray,
+    runs_p: FloatArray,
+    runs_w: FloatArray,
+    z: FloatArray,
+) -> Coefficients:
+    fixed = np.zeros(p.shape[:-2])
+    if not model.fits_slope:
+        return Coefficients((p - w).mean(axis=(-2, -1)), fixed + 1.0, fixed, fixed)
+    design = z if model.fits_covariates else z[:, :1]
+    # Every program has the same m pairs, so the least squares fit on the design of the pairs equals the
     # fit of the program means.
-    project = np.linalg.pinv(z).T
+    project = np.linalg.pinv(design).T
     cp, cw = p.mean(axis=-1) @ project, w.mean(axis=-1) @ project
-    ep, ew = p - (cp @ z.T)[..., None], w - (cw @ z.T)[..., None]
+    ep, ew = p - (cp @ design.T)[..., None], w - (cw @ design.T)[..., None]
     error_p, error_w = (
         np.maximum(pooled_variance_components(runs).error_variance, VARIANCE_FLOOR)
         for runs in (runs_p, runs_w)
@@ -351,45 +383,53 @@ def _fit(p: FloatArray, w: FloatArray, runs_p: FloatArray, runs_w: FloatArray, z
     d = syy - lam * sxx
     slope = (d + np.sqrt(d**2 + 4 * lam * sxy**2)) / (2 * sxy)
     c = cp - slope[..., None] * cw
+    if not model.fits_covariates:
+        return Coefficients(c[..., 0], slope, fixed, fixed)
     return Coefficients(c[..., 0], slope, c[..., 1], c[..., 2])
 
 
-def correction(runs_p: FloatArray, runs_w: FloatArray, u: FloatArray, v: FloatArray) -> Correction:
-    """Section 11.5: the correction with covariates, the held-out check, and the jackknife, (..., P, m, r).
+def correction(
+    runs_p: FloatArray, runs_w: FloatArray, u: FloatArray, v: FloatArray, *, model: CorrectionModel
+) -> Correction:
+    """Section 11.5: the correction, the held-out check, and the jackknife, (..., P, m, r).
 
-    The covariates are least squares on (1, u, v). The Deming slope uses lambda = the error variance of
-    device P over that of device W, from the pooled components of the fitted mountings. The floor of
-    1e-6 applies to each of the two error variances. Each held-out fit leaves out one mounting index on
-    both devices. A program passes the check when `residual.within(limit)`.
+    `COVARIATES` removes (1, u, v) from both devices by least squares and `SLOPE` removes the mean. Both
+    then fit the Deming slope on the residuals with lambda = the error variance of device P over that of
+    device W, from the pooled components of the fitted mountings. The floor of 1e-6 applies to each of
+    the two error variances. Each held-out fit leaves out one mounting index on both devices. A program
+    passes the check when `residual.within(limit)`.
 
-    Only the W differences between programs that (1, u, v) does not explain identify the slope. On the
-    loops programs and on the line programs, the residuals hold mostly noise. A covariate that does not
-    vary over the program set, such as u and v on the line programs, gets the minimum-norm coefficient 0
-    with a standard error of 0. That 0 is not a fitted value.
+    Only the W differences between programs that the removed terms do not explain identify the slope.
+    On the loops programs and on the line programs, u and v explain almost all of them, so these sets
+    take `SLOPE` and `SHIFT`. `COVARIATES` refuses a program set on which u and v do not vary
+    independently, because the fit would return a coefficient that no data determine.
     """
-    p, w = _pairs(runs_p, runs_w)
     z = np.column_stack((np.ones_like(u), u, v))
+    if model.fits_covariates and np.linalg.matrix_rank(z) < 3:
+        raise ValueError("The covariate model needs u and v that vary independently over the program set.")
+    p, w = _pairs(runs_p, runs_w)
     m = p.shape[-1]
 
     def fit(keep: list[int]) -> Coefficients:
-        return _fit(p[..., keep], w[..., keep], runs_p[..., keep, :], runs_w[..., keep, :], z)
+        return _fit(model, p[..., keep], w[..., keep], runs_p[..., keep, :], runs_w[..., keep, :], z)
 
     folds = [fit([i for i in range(m) if i != k]) for k in range(m)]
     residuals = np.stack([p[..., k] - f.corrected(w[..., k], u, v) for k, f in enumerate(folds)], axis=-1)
     mean = residuals.mean(axis=-1)
     half = float(t_distribution.ppf(0.95, m - 1)) * np.std(residuals, axis=-1, ddof=1) / math.sqrt(m)
 
-    def jackknife(values: list[FloatArray]) -> FloatArray:
+    def jackknife(values: list[FloatArray], fitted: bool) -> FloatArray:
         s = np.stack(values, axis=-1)
-        return np.sqrt((m - 1) / m * ((s - s.mean(axis=-1, keepdims=True)) ** 2).sum(axis=-1))
+        se = np.sqrt((m - 1) / m * ((s - s.mean(axis=-1, keepdims=True)) ** 2).sum(axis=-1))
+        return se if fitted else np.full_like(se, np.nan)
 
     se = Coefficients(
-        jackknife([f.alpha for f in folds]),
-        jackknife([f.beta for f in folds]),
-        jackknife([f.gamma_u for f in folds]),
-        jackknife([f.gamma_v for f in folds]),
+        jackknife([f.alpha for f in folds], True),
+        jackknife([f.beta for f in folds], model.fits_slope),
+        jackknife([f.gamma_u for f in folds], model.fits_covariates),
+        jackknife([f.gamma_v for f in folds], model.fits_covariates),
     )
-    return Correction(fit(list(range(m))), se, Interval(mean, mean - half, mean + half))
+    return Correction(model, fit(list(range(m))), se, Interval(mean, mean - half, mean + half))
 
 
 def clopper_pearson(successes: int | IntArray, total: int | IntArray) -> Interval:

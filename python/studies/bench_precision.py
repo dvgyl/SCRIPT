@@ -205,7 +205,7 @@ def correction_cell(
     )
     w = draw(rng, n, m, r, sigma_run, sigma_mount, TRUTH_W, "shared", 0.0)
     p = draw(rng, n, m, r, sigma_run, sigma_mount, truth_p, "shared", 0.0)
-    correction = stats.correction(p, w, COVARIATE_U, COVARIATE_V)
+    correction = stats.correction(p, w, COVARIATE_U, COVARIATE_V, model=stats.CorrectionModel.COVARIATES)
     true_residual = truth_p - correction.fit.corrected(TRUTH_W, COVARIATE_U, COVARIATE_V)
     return CorrectionCell(
         m,

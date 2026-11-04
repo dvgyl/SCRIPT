@@ -17,6 +17,11 @@ from scriptkin.recording import FloatArray
 U, V = stats.covariates(MAIN)
 GEOMETRY_OFFSET = {"loops": 0.0, "spiral": 1.0, "line": -1.0}
 TRUTH_W = 8 * U - 6 * V + np.array([GEOMETRY_OFFSET[d.geometry] for d in MAIN])
+LOOPS = [i for i, d in enumerate(MAIN) if d.geometry == "loops"]
+LINE = [i for i, d in enumerate(MAIN) if d.geometry == "line"]
+COVARIATES = stats.CorrectionModel.COVARIATES
+SLOPE = stats.CorrectionModel.SLOPE
+SHIFT = stats.CorrectionModel.SHIFT
 SPREAD = np.array([-0.2, -0.1, 0.0, 0.1, 0.2])
 
 
@@ -187,11 +192,45 @@ def test_the_correction_recovers_known_coefficients_from_noise_free_means() -> N
     truth_w = np.round(8 * TRUTH_W) / 8
     truth_p = 0.5 + 1.05 * truth_w + 0.3 * U - 0.2 * V
     flat, equal = np.zeros(6), np.zeros(5)
-    c = stats.correction(_runs(truth_p, flat, equal), _runs(truth_w, flat, equal), U, V)
+    c = stats.correction(_runs(truth_p, flat, equal), _runs(truth_w, flat, equal), U, V, model=COVARIATES)
     assert stats.pooled_variance_components(_runs(truth_w, flat, equal)).error_variance == 0.0
     assert np.allclose([c.fit.alpha, c.fit.beta, c.fit.gamma_u, c.fit.gamma_v], [0.5, 1.05, 0.3, -0.2])
     assert np.allclose(c.residual.estimate, 0.0) and np.allclose(c.se.beta, 0.0, atol=1e-12)
     assert np.allclose(c.fit.corrected(truth_w, U, V), truth_p)
+    assert c.model is COVARIATES
+    assert np.isfinite([c.se.alpha, c.se.beta, c.se.gamma_u, c.se.gamma_v]).all()
+
+
+def test_the_slope_model_recovers_alpha_and_beta_and_fixes_gamma() -> None:
+    # Detects a slope model that does not recover alpha and beta, or that gives a fixed gamma a value or a
+    # standard error, so that the deliverables would show it as fitted.
+    u, v, truth_w = U[LOOPS], V[LOOPS], TRUTH_W[LOOPS]
+    truth_p = 0.5 + 1.05 * truth_w
+    flat, equal = np.zeros(6), np.zeros(5)
+    c = stats.correction(_runs(truth_p, flat, equal), _runs(truth_w, flat, equal), u, v, model=SLOPE)
+    assert np.allclose([c.fit.alpha, c.fit.beta, c.fit.gamma_u, c.fit.gamma_v], [0.5, 1.05, 0.0, 0.0])
+    assert np.isfinite([c.se.alpha, c.se.beta]).all() and np.isnan([c.se.gamma_u, c.se.gamma_v]).all()
+    assert np.allclose(c.residual.estimate, 0.0) and c.model is SLOPE
+
+
+def test_the_shift_model_recovers_alpha_and_fixes_beta_and_gamma() -> None:
+    # Detects a shift model whose alpha is not the mean of P - W, or that gives the fixed beta or gamma a
+    # standard error.
+    u, v = U[LINE], V[LINE]
+    truth_w = np.array([0.2, -0.1, 0.4])
+    flat, equal = np.zeros(6), np.zeros(5)
+    c = stats.correction(_runs(truth_w + 0.45, flat, equal), _runs(truth_w, flat, equal), u, v, model=SHIFT)
+    assert np.allclose([c.fit.alpha, c.fit.beta, c.fit.gamma_u, c.fit.gamma_v], [0.45, 1.0, 0.0, 0.0])
+    assert np.isfinite(c.se.alpha) and np.isnan([c.se.beta, c.se.gamma_u, c.se.gamma_v]).all()
+    assert np.allclose(c.residual.estimate, 0.0) and c.model is SHIFT
+
+
+def test_the_covariate_model_refuses_covariates_that_do_not_vary() -> None:
+    # Detects a covariate fit on the line programs, where u = v = 0, which returns a coefficient of 0 with
+    # a standard error of 0 that no data determine.
+    runs = _runs(TRUTH_W[LINE], np.zeros(6))
+    with pytest.raises(ValueError, match="vary independently"):
+        stats.correction(runs, runs, U[LINE], V[LINE], model=COVARIATES)
 
 
 def test_the_held_out_check_passes_the_linear_truth_and_fails_the_program_truth() -> None:
@@ -201,22 +240,26 @@ def test_the_held_out_check_passes_the_linear_truth_and_fails_the_program_truth(
     effects_w = 0.1 * np.array([-1.0, -1.0, 1.0, 1.0, -1.0, 1.0])
     offsets = 0.5 * np.resize([1.0, -1.0], len(MAIN))
     linear = 0.5 + 1.05 * TRUTH_W
-    fits = stats.correction(_runs(linear, effects_p), _runs(TRUTH_W, effects_w), U, V)
-    misfit = stats.correction(_runs(linear + offsets, effects_p), _runs(TRUTH_W, effects_w), U, V)
+    fits = stats.correction(_runs(linear, effects_p), _runs(TRUTH_W, effects_w), U, V, model=COVARIATES)
+    misfit = stats.correction(
+        _runs(linear + offsets, effects_p), _runs(TRUTH_W, effects_w), U, V, model=COVARIATES
+    )
     assert fits.residual.within(1.0).all()
     assert not misfit.residual.within(1.0).all()
     # The residual bias alone stays inside the limit, so only the interval fails the misfit.
     assert np.abs(misfit.residual.estimate).max() < 1.0
 
 
-def test_the_deming_slope_matches_an_independent_fit() -> None:
-    # Detects a Deming slope with lambda inverted, or a slope on data without the covariates removed.
+@pytest.mark.parametrize("model", [COVARIATES, SLOPE])
+def test_the_deming_slope_matches_an_independent_fit(model: stats.CorrectionModel) -> None:
+    # Detects a Deming slope with lambda inverted, a covariate model without the covariates removed, or a
+    # slope model that removes the covariates.
     rng = np.random.default_rng(3)
     shape = (len(MAIN), 6, 5)
     w = TRUTH_W[:, None, None] + rng.normal(0, 0.1, shape[:2])[..., None] + rng.normal(0, 0.1, shape)
     p = 0.5 + 1.05 * w + rng.normal(0, 0.3, shape[:2])[..., None] + rng.normal(0, 0.4, shape)
-    c = stats.correction(p, w, U, V)
-    z = np.column_stack((np.ones(len(MAIN)), U, V))
+    c = stats.correction(p, w, U, V, model=model)
+    z = np.column_stack((np.ones(len(MAIN)), U, V)) if model is COVARIATES else np.ones((len(MAIN), 1))
     design = np.repeat(z, 6, axis=0)
 
     def residual(runs: FloatArray) -> FloatArray:
@@ -243,9 +286,9 @@ def test_the_held_out_residuals_and_the_jackknife_use_the_fits_without_each_moun
     shape = (len(MAIN), 6, 5)
     w = TRUTH_W[:, None, None] + rng.normal(0, 0.2, shape[:2])[..., None] + rng.normal(0, 0.2, shape)
     p = 0.5 + 1.05 * w + rng.normal(0, 0.2, shape[:2])[..., None] + rng.normal(0, 0.2, shape)
-    c = stats.correction(p, w, U, V)
+    c = stats.correction(p, w, U, V, model=COVARIATES)
     folds = [
-        stats.correction(p[:, keep], w[:, keep], U, V).fit
+        stats.correction(p[:, keep], w[:, keep], U, V, model=COVARIATES).fit
         for keep in ([i for i in range(6) if i != k] for k in range(6))
     ]
     residuals = np.array(
@@ -265,13 +308,14 @@ def test_every_function_keeps_the_leading_axes() -> None:
     w = TRUTH_W[:, None, None] + rng.normal(0, 0.2, shape)
     p = 0.5 + 1.05 * w + rng.normal(0, 0.2, shape)
     p[1, 2, 3, :2] = np.nan
-    b, c, ba = stats.bias(p, w), stats.correction(p, w, U, V), stats.bland_altman(p, w)
+    b, ba = stats.bias(p, w), stats.bland_altman(p, w)
+    c = stats.correction(p, w, U, V, model=COVARIATES)
     for i in range(3):
         one = stats.bias(p[i], w[i])
         assert np.array_equal(b.estimate[i], one.estimate, equal_nan=True)
         assert np.array_equal(b.df[i], one.df, equal_nan=True)
         assert np.array_equal(stats.tost_p(b, 1.0)[i], stats.tost_p(one, 1.0))
-        ci = stats.correction(p[i], w[i], U, V)
+        ci = stats.correction(p[i], w[i], U, V, model=COVARIATES)
         assert np.allclose(c.fit.beta[i], ci.fit.beta, equal_nan=True)
         assert np.allclose(c.residual.upper[i], ci.residual.upper, equal_nan=True)
         assert np.allclose(ba.pooled.sd[i], stats.bland_altman(p[i], w[i]).pooled.sd, equal_nan=True)
