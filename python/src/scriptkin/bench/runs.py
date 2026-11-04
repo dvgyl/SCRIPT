@@ -34,13 +34,12 @@ from scriptkin.bench.camera import (
     SpatialAccuracy,
     TimeAlignment,
     camera_record,
-    executed_movement,
+    path_fit,
     spatial_accuracy,
     time_alignment,
-    trace_error,
 )
 from scriptkin.bench.features import CATALOG as BENCH_CATALOG
-from scriptkin.bench.features import Motion, RunFeatures, run_features
+from scriptkin.bench.features import Motion, RunFeatures, commanded_motion, run_features
 from scriptkin.bench.inputs import InputError, Journal, RunRow
 from scriptkin.bench.moves import MoveList
 from scriptkin.bench.track import Track
@@ -179,9 +178,14 @@ def evaluate(
     move_list: MoveList,
     track: Track | None,
     *,
+    commanded: Motion | Refusal | None = None,
     policy: QcPolicy = DEFAULT_QC,
     settings: Preprocessing = DEFAULT_PREPROCESSING,
 ) -> Evaluated:
+    """Everything of one run. `commanded` is `commanded_motion(move_list)`, which a study computes once
+    per program; without it the function computes it."""
+    if commanded is None:
+        commanded = commanded_motion(move_list, settings)
     qc = assess(trial, policy)
     features: RunFeatures | None = None
     library: dict[str, Cell] = (
@@ -191,13 +195,14 @@ def evaluate(
         features, library = run_features(qc, settings), extract(qc, settings)
     device = features.motion if features is not None and isinstance(features.motion, Motion) else None
     camera = camera_record(track, settings) if track is not None else None
-    executed = executed_movement(camera, move_list, settings) if camera is not None and camera.valid else None
-    alignment = accuracy = None
-    if device is not None and camera is not None and camera.valid and isinstance(camera.run.motion, Motion):
-        alignment = time_alignment(device, camera.run.motion, settings)
-        if isinstance(alignment, TimeAlignment):
-            accuracy = spatial_accuracy(device, camera.run.motion, alignment)
-    trace = trace_error(device, move_list, settings) if device is not None else None
+    executed = alignment = accuracy = None
+    if camera is not None and camera.valid and isinstance(camera.run.motion, Motion):
+        executed = _executed(camera.run.motion, move_list, commanded, settings)
+        if device is not None:
+            alignment = time_alignment(device, camera.run.motion, settings)
+            if isinstance(alignment, TimeAlignment):
+                accuracy = spatial_accuracy(device, camera.run.motion, alignment)
+    trace = _fit(device, move_list, commanded, settings) if device is not None else None
     state = (
         CameraState.ABSENT if camera is None else CameraState.VALID if camera.valid else CameraState.INVALID
     )
@@ -211,6 +216,27 @@ def evaluate(
     return Evaluated(
         row, trial, move_list, qc, features, library, camera, executed, alignment, accuracy, trace, outcome
     )
+
+
+def _fit(
+    record: Motion, move_list: MoveList, commanded: Motion | Refusal, settings: Preprocessing
+) -> PathFit | Refusal:
+    """Section 8.2 as `camera.trace_error` computes it, on a commanded motion computed once."""
+    if isinstance(commanded, Refusal):
+        return commanded
+    return path_fit(record, move_list.path(), commanded, settings)
+
+
+def _executed(
+    record: Motion, move_list: MoveList, commanded: Motion | Refusal, settings: Preprocessing
+) -> ExecutedMovement | Refusal:
+    """Section 7.6 as `camera.executed_movement` computes it, on a commanded motion computed once."""
+    if isinstance(commanded, Refusal):
+        return commanded
+    fit = _fit(record, move_list, commanded, settings)
+    if isinstance(fit, Refusal):
+        return fit
+    return ExecutedMovement(fit, record.interval.duration_s, commanded.interval.duration_s)
 
 
 @dataclass(frozen=True)
