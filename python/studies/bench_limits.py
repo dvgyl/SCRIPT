@@ -95,19 +95,13 @@ def rule_b_limits() -> dict[str, Candidate]:
     return chosen
 
 
-def main() -> None:
+def limits() -> list[tuple[str, str, float, str]]:
+    """The table of protocol section 10 before rounding: feature, scale, limit, and basis."""
     programs = _load_programs()
     loops_cv = min(programs.program(d)[0].speed_cv for d in programs.MAIN if d.geometry == "loops")
-    print(f"rule B factor: sqrt(2) * Phi^-1({AUC_THRESHOLD}) = {RULE_B_FACTOR:.4f}")
-    print("\nfeature\tsource\tcondition\tmean\tSD\tunit\tCV\tln SD\tL (rule B)")
-    for c in CANDIDATES:
-        print(
-            f"{c.feature}\t{c.source}\t{c.condition}\t{c.mean:g}\t{c.sd:g}\t{c.unit}\t"
-            f"{c.sd / c.mean:.3f}\t{c.ln_sd:.4f}\t{c.limit:.4f}"
-        )
     chosen = rule_b_limits()
     sem_ln_amplitude = ELBLE_LOG10_SD_DIFFERENCES / math.sqrt(2) * math.log(10)
-    limits: list[tuple[str, str, float, str]] = [
+    return [
         (
             "bench.motion_s",
             "ln",
@@ -145,8 +139,18 @@ def main() -> None:
             f"judgement, half the SEM of a patient group ({2 * sem_ln_amplitude:.3f} ln on power)",
         ),
     ]
+
+
+def main() -> None:
+    print(f"rule B factor: sqrt(2) * Phi^-1({AUC_THRESHOLD}) = {RULE_B_FACTOR:.4f}")
+    print("\nfeature\tsource\tcondition\tmean\tSD\tunit\tCV\tln SD\tL (rule B)")
+    for c in CANDIDATES:
+        print(
+            f"{c.feature}\t{c.source}\t{c.condition}\t{c.mean:g}\t{c.sd:g}\t{c.unit}\t"
+            f"{c.sd / c.mean:.3f}\t{c.ln_sd:.4f}\t{c.limit:.4f}"
+        )
     print("\nfeature\tscale\tL\tsigma_mount bound (0.25 L)\tbasis")
-    for feature, scale, limit, basis in limits:
+    for feature, scale, limit, basis in limits():
         rounded = round(limit, 3)
         bound = SIGMA_MOUNT_SHARE * rounded
         bound_text = f"{100 * (math.exp(bound) - 1):.2f} percent" if scale == "ln" else f"{bound:.4f}"

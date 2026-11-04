@@ -19,6 +19,7 @@ from __future__ import annotations
 import csv
 import json
 import shutil
+import zlib
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
@@ -253,7 +254,7 @@ def _write_track(
         shift_mm=(0.5 * k, -0.3 * k),
         bump=(3.0, 0.3) if defect == "bump" else None,
         missing_share=0.03 if defect == "invalid_camera" else 0.0,
-        seed=hash(rid) % 1000,
+        seed=zlib.crc32(rid.encode()) % 1000,
     )
     write_track(replace(track, facts=replace(track.facts, run_id=rid)), folder)
 
