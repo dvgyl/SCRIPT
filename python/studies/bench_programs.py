@@ -200,8 +200,8 @@ def moves(times: FloatArray, xy: FloatArray, ends: FloatArray) -> list[Move]:
     return [Move(float(p[0]), float(p[1]), float(d)) for p, d in zip(points, durations, strict=True)]
 
 
-def fault_program(design: Design) -> tuple[list[Move], float, float, tuple[float, float]]:
-    """The base program with one change after loop 4 (parameter 8 pi of 16 pi), with its path and start."""
+def fault_program(design: Design) -> tuple[list[Move], float, float]:
+    """The base program with one change after loop 4 (parameter 8 pi of 16 pi), its path, and duration."""
     times, xy, _ = timed_path(FAULT_BASE)
     split = float(times[PROBE // 2])
     ends = move_end_times(times, (split,))
@@ -217,14 +217,12 @@ def fault_program(design: Design) -> tuple[list[Move], float, float, tuple[float
         result = [*head, Move(at.x_mm, at.y_mm, 2 * LIFT_MM / LIFT_SPEED_MM_S + LIFT_HOLD_S, LIFT_MM), *tail]
     else:
         raise ValueError(f"unknown fault {design.fault}")
-    start = (float(xy[0, 0]), float(xy[0, 1]))
-    points = np.array([start] + [[m.x_mm, m.y_mm] for m in result])
+    points = np.array([[float(xy[0, 0]), float(xy[0, 1])]] + [[m.x_mm, m.y_mm] for m in result])
     length = float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum())
-    return result, length, float(sum(m.duration_s for m in result)), start
+    return result, length, float(sum(m.duration_s for m in result))
 
 
-def program(design: Design) -> tuple[Program, list[Move], tuple[float, float]]:
-    """The summary of one main program, its move list, and its start point."""
+def program(design: Design) -> tuple[Program, list[Move]]:
     times, xy, v = timed_path(design)
     grid = np.arange(0.0, times[-1], 1 / GRID_HZ)
     speed_grid = np.interp(grid, times, v)
@@ -273,7 +271,15 @@ def program(design: Design) -> tuple[Program, list[Move], tuple[float, float]]:
         frame(design),
         len(move_list),
     )
-    return summary, move_list, (float(xy[0, 0]), float(xy[0, 1]))
+    return summary, move_list
+
+
+def start_point(design: Design) -> tuple[float, float]:
+    """The first point of the path of a program, in the stimulus frame."""
+    if design.geometry == "line":
+        return LINE_START_MM
+    xy = (loops_curve if design.geometry == "loops" else spiral_curve)(design.scale)[1]
+    return (float(xy[0, 0]), float(xy[0, 1]))
 
 
 def registered(program: Any) -> dict[str, Any]:
@@ -304,7 +310,8 @@ def main() -> None:
     designs = [d for d in MAIN if d.id not in args.exclude]
     rows: list[Program] = []
     for design in designs:
-        summary, move_list, start = program(design)
+        summary, move_list = program(design)
+        start = start_point(design)
         rows.append(summary)
         if args.write:
             payload = {
@@ -315,7 +322,8 @@ def main() -> None:
             write_program(args.write, payload, design.id)
     fault_rows: list[tuple[Design, float, float, int]] = []
     for design in FAULTS:
-        move_list, length, duration, start = fault_program(design)
+        move_list, length, duration = fault_program(design)
+        start = start_point(FAULT_BASE)
         fault_rows.append((design, length, duration, len(move_list)))
         if args.write:
             payload = {
