@@ -274,7 +274,9 @@ def test_the_sampling_and_accuracy_tables_describe_the_simulated_devices(study: 
     assert all(r["deviations"] == "" for r in accuracy if r["measure"] != "camera_rotation_deg")
     duration = [r for r in accuracy if r["measure"] == "executed_duration_error"]
     assert all(abs(float(r["median"])) < 0.01 for r in duration)
-    assert float((study / "analyse_seconds.txt").read_text()) < 90
+    # About 75 s of CPU time on an idle machine. CPU time grows when another check loads every core,
+    # because a thread then runs at half speed and still counts full time, so the limit leaves room.
+    assert float((study / "analyse_seconds.txt").read_text()) < 120
 
 
 def test_the_analysis_refuses_an_incomplete_study_a_changed_file_and_a_foreign_build(
