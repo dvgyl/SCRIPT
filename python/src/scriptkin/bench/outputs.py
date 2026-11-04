@@ -28,9 +28,9 @@ import numpy as np
 from scriptkin import __version__, bench
 from scriptkin.bench import stats
 from scriptkin.bench.analysis import MAIN_ANALYSIS, AnalysisResult, FeatureResult
-from scriptkin.bench.camera import ExecutedMovement, PathFit, SpatialAccuracy, TimeAlignment
+from scriptkin.bench.camera import MAX_ROTATION_DEG, ExecutedMovement, PathFit, SpatialAccuracy, TimeAlignment
 from scriptkin.bench.features import CATALOG as BENCH_CATALOG
-from scriptkin.bench.runs import CleanMedians, Evaluated, fault_detected
+from scriptkin.bench.runs import CAMERA_FEATURES, CleanMedians, Evaluated, fault_detected
 from scriptkin.bench.study import EvaluatedStudy, Study, clean_medians
 from scriptkin.features import FeatureRow, FeatureTable, Provenance, catalog_digest
 from scriptkin.quality import DEFAULT_QC, Accepted, Refusal
@@ -96,6 +96,7 @@ STATUS_COLUMNS = (
     "valid",
     "lag_s",
     "correlation",
+    "rotation_deviation",
     "reason",
 )
 
@@ -121,6 +122,7 @@ def status_rows(study: Study, evaluated: Mapping[str, Evaluated]) -> list[Row]:
             continue
         o = run.outcome
         alignment = run.alignment if isinstance(run.alignment, TimeAlignment) else None
+        accuracy = run.accuracy if isinstance(run.accuracy, SpatialAccuracy) else None
         base.update(
             accepted=not o.rejected,
             rejection=";".join(o.rejected),
@@ -129,9 +131,10 @@ def status_rows(study: Study, evaluated: Mapping[str, Evaluated]) -> list[Row]:
             camera_rules=";".join(o.camera_rules),
             motion_failure=o.motion_failure,
             failed=o.failed,
-            valid=not o.failed and not row.fault,
+            valid=run.valid,
             lag_s=alignment.lag_s if alignment else None,
             correlation=alignment.correlation if alignment else None,
+            rotation_deviation=accuracy.rotation_deviation if accuracy else None,
             reason=o.reason,
         )
         rows.append(base)
@@ -378,13 +381,7 @@ def correction_rows(analyses: Sequence[AnalysisResult]) -> list[Row]:
             if c is None:
                 rows.append({**head, "kind": "coefficient", "reason": f.correction_reason})
                 continue
-            fitted = {
-                "alpha": True,
-                "beta": c.model.fits_slope,
-                "gamma_u": c.model.fits_covariates,
-                "gamma_v": c.model.fits_covariates,
-            }
-            for term, is_fitted in fitted.items():
+            for term, is_fitted in fitted_terms(c.model).items():
                 estimate = _finite(float(getattr(c.fit, term)))
                 rows.append(
                     {
@@ -450,7 +447,7 @@ def sampling_rows(
 ) -> list[Row]:
     """Section 8.1 per device and program over the valid main runs, and the two noise floors."""
     rows: list[Row] = []
-    valid = [r for r in evaluated.values() if not r.row.fault and not r.outcome.failed]
+    valid = [r for r in evaluated.values() if r.valid]
     for device in DEVICES:
         for program in study.main_programs:
             runs = [r for r in valid if r.row.device == device and r.row.program == program.id]
@@ -534,7 +531,7 @@ def sampling_rows(
     return rows
 
 
-ACCURACY_COLUMNS = ("device", "program", "measure", "runs", "median", "low", "high", "reason")
+ACCURACY_COLUMNS = ("device", "program", "measure", "runs", "median", "low", "high", "deviations", "reason")
 MEASURES = (
     "camera_rotation_deg",
     "camera_rms_mm",
@@ -566,14 +563,20 @@ def _measure(run: Evaluated, measure: str) -> float | None:
 
 
 def accuracy_rows(study: Study, evaluated: Mapping[str, Evaluated]) -> list[Row]:
-    """Section 8.2 and 11.6: medians with ranges over the valid main runs, per device and program."""
+    """Section 8.2 and 11.6: medians with ranges over the valid main runs, per device and program.
+
+    `deviations` counts the runs whose fitted camera rotation is above 1 degree (section 8.2), on the
+    `camera_rotation_deg` rows."""
     rows: list[Row] = []
-    valid = [r for r in evaluated.values() if not r.row.fault and not r.outcome.failed]
+    valid = [r for r in evaluated.values() if r.valid]
     for device in DEVICES:
         for program in study.main_programs:
             runs = [r for r in valid if r.row.device == device and r.row.program == program.id]
             for measure in MEASURES:
                 values = [v for v in (_measure(r, measure) for r in runs) if v is not None]
+                deviations = None
+                if measure == "camera_rotation_deg":
+                    deviations = sum(abs(v) > MAX_ROTATION_DEG for v in values)
                 rows.append(
                     {
                         "device": device,
@@ -583,6 +586,7 @@ def accuracy_rows(study: Study, evaluated: Mapping[str, Evaluated]) -> list[Row]
                         "median": _median(values),
                         "low": min(values) if values else None,
                         "high": max(values) if values else None,
+                        "deviations": deviations,
                         "reason": "" if values else "no valid run with this measure",
                     }
                 )
@@ -668,8 +672,23 @@ def _interval(interval: stats.Interval, g: int) -> dict[str, float | None]:
     }
 
 
+def fitted_terms(model: stats.CorrectionModel) -> dict[str, bool]:
+    """Section 11.5: which coefficient of the model is fitted. A term outside the model keeps its fixed
+    value, beta 1 and gamma 0, and is marked as not fitted (section 12)."""
+    return {
+        "alpha": True,
+        "beta": model.fits_slope,
+        "gamma_u": model.fits_covariates,
+        "gamma_v": model.fits_covariates,
+    }
+
+
 def deliverables(study: Study, result: AnalysisResult) -> dict[str, Any]:
-    """Section 12 for the main analysis. A value that is not estimable is null."""
+    """Section 12 for the main analysis. A value that is not estimable is null.
+
+    `values` names what each result is computed on: the bias of a camera feature is on the
+    camera-referenced differences of section 9.2, the bias of the other features and every correction
+    on the raw device values (section 11.5)."""
     features: dict[str, Any] = {}
     for f in result.features:
         programs: dict[str, Any] = {}
@@ -695,9 +714,10 @@ def deliverables(study: Study, result: AnalysisResult) -> dict[str, Any]:
                 "coefficients": {
                     term: {
                         "estimate": _json_number(float(getattr(c.fit, term))),
-                        "se": _json_number(float(getattr(c.se, term))),
+                        "se": _json_number(float(getattr(c.se, term))) if is_fitted else None,
+                        "fitted": is_fitted,
                     }
-                    for term in ("alpha", "beta", "gamma_u", "gamma_v")
+                    for term, is_fitted in fitted_terms(c.model).items()
                 },
                 "residual": {
                     group.label: {
@@ -708,9 +728,14 @@ def deliverables(study: Study, result: AnalysisResult) -> dict[str, Any]:
                 },
             }
         designs = [d for group in f.arrays.groups for d in group.programs]
+        camera = result.analysis.camera_referenced and f.feature in CAMERA_FEATURES
         features[f.feature] = {
             "limit": f.limit,
             "scale": f.scale,
+            "values": {
+                "bias": "camera_referenced" if camera else "raw_device",
+                "correction": "raw_device",
+            },
             "featureP": f.feature_p,
             "equivalent": {
                 "adjusted": bool(result.decision.adjusted[result.features.index(f)]),
