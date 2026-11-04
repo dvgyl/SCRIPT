@@ -43,7 +43,7 @@ The bench protocol, `docs/BENCH_PROTOCOL.md`, defines every step. The commands b
 | `scriptkin bench pilot ROOT` | Check each device against its own command (section 6.5) |
 | `scriptkin bench lock ROOT` | Write the lock file (section 14) |
 | `scriptkin bench interim ROOT` | Print the variance components of blocks 1 to 6 (section 6.6) |
-| `scriptkin bench analyse ROOT` | Analyse the study and write `bench/results/` |
+| `scriptkin bench analyse ROOT [--post-hoc]` | Analyse the study and write `bench/results/` |
 
 The camera steps need OpenCV, which `./check` installs with the `camera` extra, and `ffprobe` for the frames file of each clip.
 
