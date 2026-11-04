@@ -10,8 +10,10 @@ step 5. A camera at height D above the marker plane sees a marker raised by dz a
 its true position, away from the nadir, where X is the distance from the nadir. A lowering at 10 mm/s
 therefore appears as a movement of 2 to 5 mm/s at the start points, above the 2 mm/s of section 7.4,
 and the rule alone would start the motion interval at the lowering. The rule is unchanged. It applies
-only inside a window around the motion of the reference record of the run, which a coarse alignment
-of the speed profiles places in the clip.
+only inside a window around the commanded motion of the program, which a coarse alignment of the
+speed profiles places in the clip. The commanded motion is the reference of every run, so the window
+never depends on the device record that the camera measures. A motion interval that touches an edge
+of the window is cut, and the record is then invalid (`touches_window`).
 
 The QC policy. The camera record has no policy of its own, so `DEFAULT_QC` applies. Its `max_gap_s` of
 0.05 s is twelve frame intervals at 240 frames per second: a marker lost for twelve or more consecutive
@@ -74,8 +76,9 @@ _MIRROR = np.array([1.0, -1.0])
 
 class CameraRule(StrEnum):
     ALIGNMENT = "alignment"
-    """The clip does not hold the whole motion of the reference record, or the speed profile of the clip
-    does not match the profile of the reference (`motion_window`)."""
+    """The clip does not hold the whole commanded motion, the speed profile of the clip does not match
+    the commanded profile (`motion_window`), or the motion interval found inside the window touches an
+    edge of the window, so that the movement continues outside it (`touches_window`)."""
     DUPLICATE_FRAME = "duplicate_frame"
     """A duplicate frame inside the motion interval."""
     FRAME_INTERVAL = "frame_interval"
@@ -220,20 +223,31 @@ def motion_window(
 ) -> MotionInterval | Refusal:
     """Where the motion interval rule of section 7.4 applies on a camera record.
 
-    The reference is the device record of the run, or the commanded motion when the device record is
-    rejected. Its speed profile inside its motion interval slides over the speed profile of the whole
-    clip, and the lag with the largest correlation coefficient places the motion in the clip. The
-    window is the reference interval at that lag, wider by `WINDOW_BEFORE_S` before and
-    `WINDOW_AFTER_S` after. Both are shorter than the dwells of 0.5 s and 0.3 s of section 5.2, so the
-    lowering and the lift stay outside. The lag is accurate to about one grid step, and
+    The reference is the commanded motion of the program of the run (`features.commanded_motion`),
+    for every run. The camera record measures the device record, so the window must not depend on
+    it: a device record that loses part of the movement would cut the camera interval to the part
+    that it holds. The speed profile of the reference inside its motion interval slides over the
+    speed profile of the whole clip, and the lag with the largest correlation coefficient places the
+    motion in the clip. The window is the reference interval at that lag, wider by `WINDOW_BEFORE_S`
+    before and `WINDOW_AFTER_S` after. Both are shorter than the dwells of 0.5 s and 0.3 s of section
+    5.2, so the lowering and the lift stay outside. The lag is accurate to about one grid step, and
     `time_alignment` refines it on the motion intervals afterwards.
 
     The alignment fails without a reference, when the clip does not hold the whole reference
     interval, and when the largest coefficient is below `COARSE_CORRELATION`. The two records of one
     run correlate above 0.9. A clip of another program correlates far below 0.5, because its profile
-    has another length and another shape. The commanded motion as the reference can be 1 percent
-    longer or shorter than the executed one (section 7.6), which cuts up to 0.2 s of the longest
-    program into the margins; a run without a device record fails in any case (section 6.4).
+    has another length and another shape. The executed movement can be 1 percent longer or shorter
+    than the command (section 7.6), and the margins hold that difference on every program; a run
+    further off the command reaches an edge of the window, and `touches_window` makes it invalid.
+    In a sweep of synthetic tracks, the first touch is at 1.5 percent slow on `spiral-l-v20` and at
+    2 percent on `loops-l-v20`, `loops-s-v20`, `spiral-s-v20`, and `line-osc5`, while `loops-l-v20`
+    1.2 percent slow keeps its interval and fails the duration check.
+
+    The raw speed profiles of the line programs oscillate at 5 to 11 Hz, and a run off the command
+    stretches the oscillation against the commanded one. In the same sweep, `line-osc11` correlates
+    at 0.48 one percent fast and at 0.46 one percent slow, and `line-osc8` at 0.39 1.5 percent slow,
+    so such a record is invalid under the alignment rule instead of a motion failure. The loops and
+    spiral programs correlate above 0.5 up to 2 percent off the command.
     """
     if reference is None:
         return Refusal(RefusalCode.NOT_APPLICABLE, "The run has no reference record for the alignment.")
@@ -260,10 +274,22 @@ def motion_window(
     )
 
 
+def touches_window(
+    motion: Motion, window: MotionInterval, ok: Accepted, settings: Preprocessing = DEFAULT_PREPROCESSING
+) -> bool:
+    """Whether the motion interval starts at the first grid sample inside the window or ends at the last
+    one. The movement then continues outside the window, and the interval holds only a part of it. The
+    rule compares the interval with the grid samples that the rule of section 7.4 searched, so a window
+    edge between two grid samples counts as the sample inside it."""
+    times = np.concatenate([k.t for _, k in contact_grids(ok, settings)])
+    inside = times[(times >= window.start_s) & (times <= window.end_s)]
+    return bool(motion.interval.start_s <= inside.min() or motion.interval.end_s >= inside.max())
+
+
 def camera_record(
     track: Track, reference: Motion | None, settings: Preprocessing = DEFAULT_PREPROCESSING
 ) -> CameraRecord:
-    """The record of a track, with its motion interval inside the window of the reference record."""
+    """The record of a track, with its motion interval inside the window of the commanded motion."""
     trial = camera_trial(track)
     qc = assess(trial, DEFAULT_QC)
     failed: tuple[CameraRule, ...] = ()
@@ -273,8 +299,11 @@ def camera_record(
             refusal, failed = window, (CameraRule.ALIGNMENT,)
         else:
             run = run_features(qc, settings, window=window)
-            interval = run.motion.interval if isinstance(run.motion, Motion) else None
-            return CameraRecord(track, run, validity(track, interval))
+            motion = run.motion if isinstance(run.motion, Motion) else None
+            failed = validity(track, motion.interval if motion is not None else None)
+            if motion is not None and touches_window(motion, window, qc, settings):
+                failed = tuple(sorted((CameraRule.ALIGNMENT, *failed)))
+            return CameraRecord(track, run, failed)
     else:
         refusal = qc.refusals[0]
     run = RunFeatures(
