@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import bench_camera_render as render
+import cv2
 import numpy as np
 import pytest
 
@@ -17,14 +18,17 @@ from scriptkin.bench.camera import (
     CameraFileError,
     Clock,
     Frame,
+    Readout,
     Region,
+    read_camera_file,
     read_frame_times,
     sha256_file,
     write_camera_file,
 )
 from scriptkin.bench.clock import led_levels, measure_clock, measure_readout
 from scriptkin.bench.track import FrameTimes, Track, TrackFacts, read_track
-from scriptkin.bench.tracker import TRACKER_VERSION, find_marker, read_video, track_clip, track_frames
+from scriptkin.bench.tracker import TRACKER_VERSION, find_marker, read_video, track_frames
+from scriptkin.cli import main
 from scriptkin.quality import Refusal, RefusalCode
 from scriptkin.recording import FloatArray
 
@@ -194,6 +198,20 @@ def _led_clip(rate: float, seconds: float) -> list[Frame]:
     ]
 
 
+def _write_clip(path: Path, frames: list[Frame], *, playback_hz: float) -> None:
+    """A lossless clip, and a frames file in the shape that ffprobe writes, with playback times."""
+    h, w = frames[0].shape[:2]
+    writer = cv2.VideoWriter(str(path), cv2.CAP_FFMPEG, cv2.VideoWriter.fourcc(*"FFV1"), 240.0, (w, h))
+    for frame in frames:
+        writer.write(cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR))
+    writer.release()
+    listed = [
+        {"media_type": "video", "stream_index": 0, "pts_time": f"{k / playback_hz:.6f}"}
+        for k in range(len(frames))
+    ]
+    path.with_name(f"{path.stem}.frames.json").write_text(json.dumps({"frames": listed}))
+
+
 @pytest.mark.parametrize("rate", [render.RATE_HZ, 239.8])
 def test_clock_recovers_the_rate_and_tells_capture_from_playback_times(rate: float) -> None:
     # Detects a frame clock that misses the LED rate, or that takes playback times for capture times.
@@ -253,6 +271,23 @@ def test_readout_refuses_frames_without_bands(row_time: float, exposure: float) 
     assert isinstance(readout, Refusal) and readout.code is RefusalCode.TOO_FEW_VALUES
 
 
+def test_clock_and_readout_commands_read_their_clips(tmp_path: Path) -> None:
+    # Detects a clock or readout command that misreads its clip, its frames file, or its region.
+    _write_clip(tmp_path / "clock.avi", _led_clip(239.8, 60.5), playback_hz=30.0)
+    _write_clip(tmp_path / "bands.avi", _band_frames(render.ROW_TIME_S, 1e-4), playback_hz=30.0)
+    clock, readout = tmp_path / "clock.json", tmp_path / "readout.json"
+    led = ["--led", "0", "0", "16", "16"]
+    assert main(["bench", "clock", *led, "--out", str(clock), str(tmp_path / "clock.avi")]) == 0
+    region = ["--region", "0", "0", "32", "1080"]
+    assert main(["bench", "readout", *region, "--out", str(readout), str(tmp_path / "bands.avi")]) == 0
+    measured = read_camera_file(Clock, clock)
+    assert measured.frame_times is FrameTimes.PLAYBACK
+    assert abs(measured.frame_rate_hz / 239.8 - 1) < 1 / (59 * 240)
+    assert abs(read_camera_file(Readout, readout).row_time_s / render.ROW_TIME_S - 1) < 2e-3
+    names = [s["name"] for s in json.loads(clock.read_text())["sources"]]
+    assert names == ["clock.avi", "clock.frames.json"]
+
+
 def test_frames_file_reader_reads_the_real_ffprobe_output() -> None:
     # Detects a frames-file reader that misreads the presentation times that ffprobe writes.
     pts = read_frame_times(FIXTURES / f"{render.FIXTURE_RUN}.frames.json")
@@ -282,16 +317,15 @@ def test_video_boundary_decodes_every_frame_of_the_real_clip_unchanged() -> None
     assert all(np.array_equal(a, b) for a, b in zip(decoded, expected, strict=True))
 
 
-def test_tracker_tracks_the_real_clip(tmp_path: Path) -> None:
-    # Detects a tracker that loses a frame observation of a real clip or names the wrong input files.
+def test_track_command_tracks_the_real_clip(tmp_path: Path) -> None:
+    # Detects a track command that loses a frame observation of a real clip or names the wrong input files.
     camera = render.fixture_camera()
     calibration = write_camera_file(
         Calibration(camera.plane(), (0.0, 0.0), render.FIXTURE_LED), tmp_path / "c.json"
     )
     clock = write_camera_file(Clock(240.0, FrameTimes.CAPTURE, 1.0, 59, 1.0, 240.0), tmp_path / "clock.json")
-    track_clip(
-        CLIP, calibration=calibration, clock=clock, readout=None, start_mm=(-2.5, 0.4), out_dir=tmp_path
-    )
+    command = ["bench", "track", str(CLIP), "--calibration", str(calibration), "--clock", str(clock)]
+    assert main([*command, "--global-shutter", "--start-mm", "-2.5", "0.4", "--out-dir", str(tmp_path)]) == 0
     track = read_track(tmp_path / f"{render.FIXTURE_RUN}.track.csv")
     facts = track.facts
     assert facts.run_id == render.FIXTURE_RUN

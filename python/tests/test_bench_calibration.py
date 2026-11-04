@@ -5,6 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import bench_camera_render as render
+import cv2
 import numpy as np
 import pytest
 
@@ -28,6 +29,7 @@ from scriptkin.bench.camera import (
 )
 from scriptkin.bench.track import FrameTimes
 from scriptkin.bench.tracker import measure_marker_offset
+from scriptkin.cli import main
 from scriptkin.quality import Refusal, RefusalCode
 from scriptkin.recording import FloatArray
 
@@ -157,3 +159,53 @@ def test_camera_files_refuse_another_format_and_an_invalid_plane(tmp_path: Path)
         read_camera_file(Plane, path)
     with pytest.raises(CameraFileError, match="capture times exactly"):
         replace(Clock(239.987, FrameTimes.PLAYBACK, 0.125, 59, 1.0, 240.0), frame_times=FrameTimes.CAPTURE)
+
+
+def test_calibration_commands_chain_from_images_to_the_mounting_calibration(tmp_path: Path) -> None:
+    # Detects a calibration command that loses a value between steps, or writes a file for a refused board.
+    camera = render.main_camera()
+    images = {
+        **{f"view{i:02}.png": view for i, view in enumerate(render.lens_views(camera))},
+        "board.png": render.board(camera),
+        "warped.png": render.board(camera, warp_mm=0.15),
+        "still.png": render.tip_still("ipad"),
+    }
+    for name, image in images.items():
+        cv2.imwrite(str(tmp_path / name), image)
+    views = [str(tmp_path / n) for n in images if n.startswith("view")]
+    shape = ["--pattern", "9x6", "--pitch-mm", "10"]
+    lens, plane, refused, mounting = (
+        str(tmp_path / n) for n in ("lens.json", "plane.json", "no.json", "M1.json")
+    )
+    assert main(["bench", "lens", *shape, "--out", lens, *views]) == 0
+    plane_command = ["bench", "plane", "--lens", lens, *shape]
+    assert main([*plane_command, "--out", refused, str(tmp_path / "warped.png")]) == 1
+    assert not Path(refused).exists()
+    assert main([*plane_command, "--out", plane, str(tmp_path / "board.png")]) == 0
+    led = [str(v) for v in render.LED.to_json().values()]
+    offset_command = ["bench", "marker-offset", "--plane", plane, "--near-mm", "-8", "0", "--led", *led]
+    assert main([*offset_command, "--out", mounting, str(tmp_path / "still.png")]) == 0
+    calibration = read_camera_file(Calibration, mounting)
+    assert calibration.plane.lens.views == 24
+    raw, xy = _device_pixels(camera)
+    assert np.abs(to_plane(raw, calibration.plane) - xy).max() < 0.02
+    np.testing.assert_allclose(calibration.marker_offset_mm, render.MARKER_OFFSET_MM, atol=0.01)
+    assert calibration.led == render.LED
+    names = [s["name"] for s in json.loads(Path(mounting).read_text())["sources"]]
+    assert names == ["plane.json", "still.png"]
+
+
+@pytest.mark.parametrize(
+    ("option", "value"), [("--pattern", "2x6"), ("--pattern", "9-6"), ("--pitch-mm", "-10")]
+)
+def test_lens_command_refuses_a_bad_board_before_it_reads_an_image(
+    option: str, value: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Detects a calibration command that passes a board OpenCV cannot use, or a pitch that is not positive.
+    arguments = {"--pattern": "9x6", "--pitch-mm": "10", option: value}
+    with pytest.raises(SystemExit) as stop:
+        main(
+            ["bench", "lens", *[x for item in arguments.items() for x in item], "--out", "x.json", "view.png"]
+        )
+    assert stop.value.code == 2
+    assert option in capsys.readouterr().err
