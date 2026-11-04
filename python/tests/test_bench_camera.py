@@ -29,6 +29,17 @@ device_run = features_tests.device_run
 rotated = features_tests.rotated
 
 RATE = 239.987
+DWELL_BEFORE_S = 0.5
+DWELL_AFTER_S = 0.3
+# The nadir of the camera at the centre of the largest frame, with y up, and its height: the height of
+# the renderer of `bench_camera_render.py`.
+CAMERA_MM = (66.0, -52.0, 144.0)
+
+
+def command(move_list: MoveList) -> Motion:
+    found = commanded_motion(move_list)
+    assert isinstance(found, Motion)
+    return found
 
 
 def camera_track(
@@ -36,6 +47,8 @@ def camera_track(
     *,
     true_rate_hz: float = RATE,
     lead_s: float = 0.6,
+    lift_mm: float = 0.0,
+    lower_mm_s: float = 10.0,
     frame_times: FrameTimes = FrameTimes.PLAYBACK,
     rotation_deg: float = 0.0,
     shift_mm: tuple[float, float] = (0.0, 0.0),
@@ -49,16 +62,29 @@ def camera_track(
     seed: int = 1,
 ) -> Track:
     """A track of the commanded movement: still for `lead_s`, the movement at `speed_factor` times the
-    commanded speed, then still. The marker stays visible in the air. `bump` moves the marker sideways
-    by the given millimetres at the given time of the movement over five frames. The facts name the
-    measured rate `RATE`; `true_rate_hz` is the rate of the clip."""
+    commanded speed, then still. The marker stays visible in the air. With `lift_mm`, the clip holds the
+    run sequence of section 5.2: the marker still at the lift height for `lead_s`, the lowering at
+    `lower_mm_s`, the dwell, the movement, the dwell, and the lift, seen by a pinhole camera at
+    `CAMERA_MM`, which shifts a marker at height z by X z / (D - z) away from the nadir. `bump` moves
+    the marker sideways by the given millimetres at the given time of the movement over five frames.
+    The facts name the measured rate `RATE`; `true_rate_hz` is the rate of the clip."""
     rng = np.random.default_rng(seed)
     path = move_list.path()
     duration = path.duration_s / speed_factor
-    count = int((lead_s + duration + 0.4) * true_rate_hz) + 1
+    lower_s = lift_mm / lower_mm_s if lift_mm else 0.0
+    start = lead_s + (lower_s + DWELL_BEFORE_S if lift_mm else 0.0)
+    rise_at = start + duration + DWELL_AFTER_S
+    after = DWELL_AFTER_S + lower_s if lift_mm else 0.0
+    count = int((start + duration + after + 0.4) * true_rate_hz) + 1
     t_frame = np.arange(count) / true_rate_hz
-    motion_t = np.clip((t_frame - lead_s) * speed_factor, 0.0, path.duration_s)
+    motion_t = np.clip((t_frame - start) * speed_factor, 0.0, path.duration_s)
     xy = rotated(path.position(motion_t) * [1.0, -1.0], rotation_deg) + shift_mm
+    if lift_mm:
+        lowering = np.clip(lift_mm - lower_mm_s * (t_frame - lead_s), 0.0, lift_mm)
+        lifting = np.clip(lower_mm_s * (t_frame - rise_at), 0.0, lift_mm)
+        z = np.where(t_frame < rise_at, lowering, lifting)
+        nadir, height = np.array(CAMERA_MM[:2]), CAMERA_MM[2]
+        xy = nadir + (xy - nadir) * (height / (height - z))[:, None]
     xy = xy + rng.normal(0.0, noise_mm, xy.shape)
     if bump is not None:
         at = int(np.argmin(np.abs(motion_t - bump[0])))
@@ -107,7 +133,7 @@ def test_the_track_as_a_recording_gives_the_features_of_the_movement(move_lists:
     # Detects a camera record in the wrong frame, unit, or clock, or one that drops the still frames
     # into the motion interval.
     ml = move_lists["loops-l-v20"]
-    record = camera_record(camera_track(ml))
+    record = camera_record(camera_track(ml), command(ml))
     assert record.failed == ()
     assert record.valid
     device = features_tests.features_of(device_run(ml))
@@ -141,7 +167,7 @@ def test_each_validity_rule_fails_on_its_defect_and_passes_a_clean_track(
     # Detects a rule that passes its defect inside the motion interval, fails a defect outside it, or
     # fails a clean track. The movement starts at frame 144; frame 20 and 500 are outside and inside.
     track = camera_track(move_lists["loops-s-v40"], **changes)  # type: ignore[arg-type]
-    assert camera_record(track).failed == failed
+    assert camera_record(track, command(move_lists["loops-s-v40"])).failed == failed
 
 
 def test_the_led_rule_allows_one_frame_and_fails_a_rate_error() -> None:
@@ -155,6 +181,10 @@ def test_the_led_rule_allows_one_frame_and_fails_a_rate_error() -> None:
     )
     assert not led_count_agrees(np.concatenate([np.arange(n) < n / 2 for n in [239] * 19]), 240.2)
     assert not led_count_agrees(led[:300], 239.987)
+    # One full period, from the rising edge at frame 240 to the one at 480, applies the rule.
+    assert led_count_agrees(led[100:600], 239.987)
+    short = np.concatenate([np.arange(n) < n / 2 for n in [240, 236, 240]])
+    assert not led_count_agrees(short[100:600], 239.987)
 
 
 def test_the_time_alignment_recovers_a_known_lag_below_the_frame(move_lists: dict[str, MoveList]) -> None:
@@ -163,7 +193,7 @@ def test_the_time_alignment_recovers_a_known_lag_below_the_frame(move_lists: dic
     ml = move_lists["loops-s-v40"]
     device = device_motion(ml, noise_mm=0.01, jitter_s=0.0005, seed=3)
     for lead in (0.6, 0.6037):
-        record = camera_record(camera_track(ml, lead_s=lead, noise_mm=0.01))
+        record = camera_record(camera_track(ml, lead_s=lead, noise_mm=0.01), device)
         assert isinstance(record.run.motion, Motion)
         alignment = time_alignment(device, record.run.motion)
         assert isinstance(alignment, TimeAlignment)
@@ -175,7 +205,7 @@ def test_the_spatial_accuracy_recovers_the_rotation_and_the_shift(move_lists: di
     # Detects a fit that reflects, scales, or ignores the time alignment.
     ml = move_lists["loops-l-v20"]
     device = device_motion(ml, noise_mm=0.01, seed=4)
-    record = camera_record(camera_track(ml, rotation_deg=0.5, shift_mm=(1.0, 0.3), noise_mm=0.01))
+    record = camera_record(camera_track(ml, rotation_deg=0.5, shift_mm=(1.0, 0.3), noise_mm=0.01), device)
     assert isinstance(record.run.motion, Motion)
     alignment = time_alignment(device, record.run.motion)
     assert isinstance(alignment, TimeAlignment)
@@ -208,21 +238,73 @@ def test_the_executed_movement_check_fails_a_bump_and_a_slow_run(move_lists: dic
     # Detects a check that passes a 0.3 mm departure from the path, passes a run 1.5 percent too slow,
     # or takes the commanded duration from the sum of the moves instead of the motion interval rule.
     ml = move_lists["loops-s-v40"]
-    commanded = commanded_motion(ml)
-    assert isinstance(commanded, Motion)
-    clean = executed_movement(camera_record(camera_track(ml, noise_mm=0.005)), ml)
+    commanded = command(ml)
+    clean = executed_movement(camera_record(camera_track(ml, noise_mm=0.005), commanded), ml)
     assert isinstance(clean, ExecutedMovement)
     assert not clean.failure
     assert clean.fit.max_mm < 0.1
     assert clean.commanded_s == pytest.approx(commanded.interval.duration_s)
     assert clean.commanded_s < ml.duration_s
     assert clean.motion_s == pytest.approx(clean.commanded_s, abs=0.015)
-    bumped = executed_movement(camera_record(camera_track(ml, noise_mm=0.005, bump=(3.0, 0.3))), ml)
-    assert isinstance(bumped, ExecutedMovement)
-    assert bumped.failure
-    assert bumped.fit.max_mm == pytest.approx(0.3, abs=0.05)
-    slow = executed_movement(camera_record(camera_track(ml, noise_mm=0.005, speed_factor=1 / 1.015)), ml)
-    assert isinstance(slow, ExecutedMovement)
-    assert slow.failure
-    assert slow.fit.max_mm < 0.1
-    assert slow.motion_s == pytest.approx(clean.commanded_s * 1.015, abs=0.02)
+    bumped = camera_record(camera_track(ml, noise_mm=0.005, bump=(3.0, 0.3)), commanded)
+    bumped_check = executed_movement(bumped, ml)
+    assert isinstance(bumped_check, ExecutedMovement)
+    assert bumped_check.failure
+    assert bumped_check.fit.max_mm == pytest.approx(0.3, abs=0.05)
+    slow = camera_record(camera_track(ml, noise_mm=0.005, speed_factor=1 / 1.015), commanded)
+    slow_check = executed_movement(slow, ml)
+    assert isinstance(slow_check, ExecutedMovement)
+    assert slow_check.failure
+    assert slow_check.fit.max_mm < 0.1
+    assert slow_check.motion_s == pytest.approx(clean.commanded_s * 1.015, abs=0.02)
+
+
+@pytest.mark.parametrize("pid", ["loops-s-v40", "spiral-s-v40", "line-osc8"])
+def test_the_lowering_and_the_lift_stay_outside_the_camera_motion_interval(
+    move_lists: dict[str, MoveList], pid: str
+) -> None:
+    # Detects a camera motion interval that starts at the lowering of section 5.2 step 3 or ends at
+    # the lift of step 5, which the perspective shows as a movement above 2 mm/s at a start point far
+    # from the nadir. The motion duration is then too long, every run is a motion failure, and the
+    # true lag lies outside the refinement window of the time alignment.
+    ml = move_lists[pid]
+    device = device_motion(ml, noise_mm=0.005, seed=3)
+    record = camera_record(camera_track(ml, lead_s=0.8, lift_mm=10.0, noise_mm=0.005), device)
+    assert record.failed == () and record.valid
+    assert isinstance(record.run.motion, Motion)
+    start = 0.8 + 10.0 / 10.0 + DWELL_BEFORE_S
+    interval = record.run.motion.interval
+    assert interval.start_s == pytest.approx(start + device.interval.start_s, abs=0.015)
+    assert interval.duration_s == pytest.approx(device.interval.duration_s, abs=0.015)
+    executed = executed_movement(record, ml)
+    assert isinstance(executed, ExecutedMovement) and not executed.failure
+    alignment = time_alignment(device, record.run.motion)
+    assert isinstance(alignment, TimeAlignment)
+    assert alignment.lag_s == pytest.approx(start, abs=0.002)
+
+
+def test_a_clip_of_another_run_or_without_the_motion_fails_the_alignment(
+    move_lists: dict[str, MoveList],
+) -> None:
+    # Detects a camera record that keeps a clip of another program, a clip that ends inside the
+    # motion, or a track without a reference record, as a valid record with a motion interval.
+    ml, other = move_lists["loops-s-v40"], move_lists["line-osc8"]
+    device = device_motion(ml, noise_mm=0.005, seed=3)
+    wrong = camera_record(camera_track(other, noise_mm=0.005), device)
+    assert wrong.failed == (CameraRule.ALIGNMENT,) and not wrong.valid
+    assert isinstance(wrong.run.motion, Refusal) and "correlate" in wrong.run.motion.detail
+    whole = camera_track(ml, noise_mm=0.005)
+    n = len(whole.frame) // 2
+    cut = Track(
+        whole.facts,
+        whole.frame[:n],
+        whole.t_frame[:n],
+        whole.t[:n],
+        whole.xy[:n],
+        whole.duplicate[:n],
+        whole.led[:n],
+    )
+    short = camera_record(cut, device)
+    assert short.failed == (CameraRule.ALIGNMENT,) and "shorter" in str(short.run.motion)
+    assert camera_record(whole, None).failed == (CameraRule.ALIGNMENT,)
+    assert camera_record(whole, device).valid

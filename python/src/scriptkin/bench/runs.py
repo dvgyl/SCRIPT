@@ -194,7 +194,8 @@ def evaluate(
         features, library = qc.refusals[0], {f.name: qc.refusals[0] for f in LIBRARY_CATALOG}
     device = features.motion if isinstance(features, RunFeatures) else None
     device = device if isinstance(device, Motion) else None
-    camera = camera_record(track, settings) if track is not None else None
+    reference = device if device is not None else commanded if isinstance(commanded, Motion) else None
+    camera = camera_record(track, reference, settings) if track is not None else None
     executed = alignment = accuracy = None
     if camera is not None and camera.valid and isinstance(camera.run.motion, Motion):
         executed = _executed(camera.run.motion, move_list, commanded, settings)

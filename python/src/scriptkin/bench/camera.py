@@ -1,8 +1,17 @@
 """The camera record of one run (protocol sections 7.3 to 7.7, 8.2, and 9.2).
 
 The input is a `Track` of `scriptkin.bench.track`. `camera_record` makes the frames with a marker into one
-contact stroke in millimetres, assesses it, finds the motion interval, computes the features with the code
-of a device run, and applies the validity rules inside the motion interval.
+contact stroke in millimetres, assesses it, finds the motion interval inside the window of `motion_window`,
+computes the features with the code of a device run, and applies the validity rules inside the motion
+interval.
+
+The motion window. The clip starts before the lowering of section 5.2 step 3 and ends after the lift of
+step 5. A camera at height D above the marker plane sees a marker raised by dz at X dz / (D - dz) from
+its true position, away from the nadir, where X is the distance from the nadir. A lowering at 10 mm/s
+therefore appears as a movement of 2 to 5 mm/s at the start points, above the 2 mm/s of section 7.4,
+and the rule alone would start the motion interval at the lowering. The rule is unchanged. It applies
+only inside a window around the motion of the reference record of the run, which a coarse alignment
+of the speed profiles places in the clip.
 
 The QC policy. The camera record has no policy of its own, so `DEFAULT_QC` applies. Its `max_gap_s` of
 0.05 s is twelve frame intervals at 240 frames per second: a marker lost for twelve or more consecutive
@@ -24,6 +33,7 @@ catches one lost frame; with playback times nothing does.
 from __future__ import annotations
 
 import itertools
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -36,6 +46,7 @@ from scriptkin.bench.features import (
     Points,
     RunFeatures,
     commanded_motion,
+    contact_grids,
     feature_cells,
     run_features,
     sampling_cells,
@@ -44,7 +55,7 @@ from scriptkin.bench.moves import CommandedPath, MoveList
 from scriptkin.bench.track import BoolArray, FrameTimes, Track
 from scriptkin.quality import DEFAULT_QC, Accepted, Refusal, RefusalCode, assess
 from scriptkin.recording import Device, FloatArray, IntArray, Stroke, TaskRef, Trial
-from scriptkin.signal import DEFAULT_PREPROCESSING, Preprocessing
+from scriptkin.signal import DEFAULT_PREPROCESSING, Kinematics, Preprocessing
 
 MARKER_MISSING_SHARE = 0.02
 FRAME_INTERVAL_TOLERANCE = 0.01
@@ -52,12 +63,19 @@ FRAME_INTERVAL_RESOLUTION_S = 1e-6
 LED_RATE_TOLERANCE = 0.001
 MAX_PATH_DISTANCE_MM = 0.2
 MAX_DURATION_ERROR = 0.01
+MAX_ROTATION_DEG = 1.0
+COARSE_CORRELATION = 0.5
+WINDOW_BEFORE_S = 0.2
+WINDOW_AFTER_S = 0.15
 _ICP_MAX_ITERATIONS = 100
 _ICP_TOLERANCE_MM = 1e-6
 _MIRROR = np.array([1.0, -1.0])
 
 
 class CameraRule(StrEnum):
+    ALIGNMENT = "alignment"
+    """The clip does not hold the whole motion of the reference record, or the speed profile of the clip
+    does not match the profile of the reference (`motion_window`)."""
     DUPLICATE_FRAME = "duplicate_frame"
     """A duplicate frame inside the motion interval."""
     FRAME_INTERVAL = "frame_interval"
@@ -97,6 +115,11 @@ class SpatialAccuracy:
     rms_mm: float
     p95_mm: float
     matched: int
+
+    @property
+    def rotation_deviation(self) -> bool:
+        """Section 8.2: a fitted rotation above 1 degree is a deviation."""
+        return abs(self.rotation_deg) > MAX_ROTATION_DEG
 
 
 @dataclass(frozen=True)
@@ -141,8 +164,9 @@ def led_count_agrees(led: BoolArray, rate_hz: float) -> bool:
     """The LED rule of the module docstring on the frames inside the motion interval.
 
     A period runs from one frame where the LED turns on to the next. Every full period, and all of
-    them together, must hold the frames of the measured rate within one frame plus 0.1 percent.
-    Without two full periods the rule cannot be applied, and the record is invalid.
+    them together, must hold the frames of the measured rate within one frame plus 0.1 percent. One
+    full period, which is two frames where the LED turns on, is enough to apply the rule. Without
+    one, the rule cannot be applied, and the record is invalid.
     """
     edges = np.flatnonzero(led[1:] & ~led[:-1]) + 1
     if len(edges) < 2:
@@ -177,29 +201,102 @@ def validity(track: Track, interval: MotionInterval | None) -> tuple[CameraRule,
     return tuple(sorted(failed))
 
 
-def camera_record(track: Track, settings: Preprocessing = DEFAULT_PREPROCESSING) -> CameraRecord:
+def _sliding_correlation(reference: FloatArray, clip: FloatArray) -> FloatArray:
+    """The correlation coefficient of `reference` with every window of `clip` of the same length."""
+    n = len(reference)
+    centred = reference - reference.mean()
+    scale = float(np.sqrt(np.sum(centred**2)))
+    cross = np.correlate(clip, centred, mode="valid")
+    sums = np.concatenate(([0.0], np.cumsum(clip)))
+    squares = np.concatenate(([0.0], np.cumsum(clip**2)))
+    variance = (squares[n:] - squares[:-n]) - (sums[n:] - sums[:-n]) ** 2 / n
+    with np.errstate(divide="ignore", invalid="ignore"):
+        coefficients = cross / (scale * np.sqrt(np.maximum(variance, 0.0)))
+    return np.where((variance > 0) & (scale > 0), coefficients, -np.inf)
+
+
+def motion_window(
+    reference: Motion | None, ok: Accepted, settings: Preprocessing = DEFAULT_PREPROCESSING
+) -> MotionInterval | Refusal:
+    """Where the motion interval rule of section 7.4 applies on a camera record.
+
+    The reference is the device record of the run, or the commanded motion when the device record is
+    rejected. Its speed profile inside its motion interval slides over the speed profile of the whole
+    clip, and the lag with the largest correlation coefficient places the motion in the clip. The
+    window is the reference interval at that lag, wider by `WINDOW_BEFORE_S` before and
+    `WINDOW_AFTER_S` after. Both are shorter than the dwells of 0.5 s and 0.3 s of section 5.2, so the
+    lowering and the lift stay outside. The lag is accurate to about one grid step, and
+    `time_alignment` refines it on the motion intervals afterwards.
+
+    The alignment fails without a reference, when the clip does not hold the whole reference
+    interval, and when the largest coefficient is below `COARSE_CORRELATION`. The two records of one
+    run correlate above 0.9. A clip of another program correlates far below 0.5, because its profile
+    has another length and another shape. The commanded motion as the reference can be 1 percent
+    longer or shorter than the executed one (section 7.6), which cuts up to 0.2 s of the longest
+    program into the margins; a run without a device record fails in any case (section 6.4).
+    """
+    if reference is None:
+        return Refusal(RefusalCode.NOT_APPLICABLE, "The run has no reference record for the alignment.")
+    grids = [k for _, k in contact_grids(ok, settings)]
+    if not grids:
+        return Refusal(RefusalCode.TOO_FEW_VALUES, "The track has no grid.")
+    hz = settings.grid_hz
+    first, last = float(grids[0].t[0]), float(grids[-1].t[-1])
+    clip = _profile_between(grids, first, last, hz)
+    profile = _profile(reference, hz)
+    if len(clip) < len(profile):
+        return Refusal(RefusalCode.TOO_FEW_VALUES, "The clip is shorter than the motion of the reference.")
+    coefficients = _sliding_correlation(profile, clip)
+    peak = int(np.argmax(coefficients))
+    if coefficients[peak] < COARSE_CORRELATION:
+        return Refusal(
+            RefusalCode.UNDEFINED,
+            f"The speed profiles of the clip and the reference correlate at {coefficients[peak]:.2f} at"
+            f" best, below {COARSE_CORRELATION:g}.",
+        )
+    lag = first + peak / hz - reference.interval.start_s
+    return MotionInterval(
+        reference.interval.start_s + lag - WINDOW_BEFORE_S, reference.interval.end_s + lag + WINDOW_AFTER_S
+    )
+
+
+def camera_record(
+    track: Track, reference: Motion | None, settings: Preprocessing = DEFAULT_PREPROCESSING
+) -> CameraRecord:
+    """The record of a track, with its motion interval inside the window of the reference record."""
     trial = camera_trial(track)
     qc = assess(trial, DEFAULT_QC)
+    failed: tuple[CameraRule, ...] = ()
     if isinstance(qc, Accepted):
-        run = run_features(qc, settings)
+        window = motion_window(reference, qc, settings)
+        if isinstance(window, Refusal):
+            refusal, failed = window, (CameraRule.ALIGNMENT,)
+        else:
+            run = run_features(qc, settings, window=window)
+            interval = run.motion.interval if isinstance(run.motion, Motion) else None
+            return CameraRecord(track, run, validity(track, interval))
     else:
         refusal = qc.refusals[0]
-        run = RunFeatures(
-            refusal, {**feature_cells(refusal, settings), **sampling_cells(trial, DEFAULT_QC.max_gap_s)}
-        )
-    interval = run.motion.interval if isinstance(run.motion, Motion) else None
-    return CameraRecord(track, run, validity(track, interval))
+    run = RunFeatures(
+        refusal, {**feature_cells(refusal, settings), **sampling_cells(trial, DEFAULT_QC.max_gap_s)}
+    )
+    return CameraRecord(track, run, tuple(sorted((*failed, *validity(track, None)))))
+
+
+def _profile_between(grids: Sequence[Kinematics], start_s: float, end_s: float, grid_hz: float) -> FloatArray:
+    """The grid speed of a record on one grid from `start_s` to `end_s`, zero where the record has a gap."""
+    count = int(np.floor((end_s - start_s) * grid_hz)) + 1
+    t = start_s + np.arange(count) / grid_hz
+    profile = np.zeros(count)
+    for g in grids:
+        inside = (t >= g.t[0]) & (t <= g.t[-1])
+        profile[inside] = np.interp(t[inside], g.t, g.speed)
+    return profile
 
 
 def _profile(motion: Motion, grid_hz: float) -> FloatArray:
     """The grid speed of a record on one grid from its motion start, zero where the record has a gap."""
-    count = int(np.floor(motion.interval.duration_s * grid_hz)) + 1
-    t = motion.interval.start_s + np.arange(count) / grid_hz
-    profile = np.zeros(count)
-    for g in motion.grids:
-        inside = (t >= g.t[0]) & (t <= g.t[-1])
-        profile[inside] = np.interp(t[inside], g.t, g.speed)
-    return profile
+    return _profile_between(motion.grids, motion.interval.start_s, motion.interval.end_s, grid_hz)
 
 
 def _pearson_by_lag(a: FloatArray, b: FloatArray, max_lag: int) -> tuple[IntArray, FloatArray]:
