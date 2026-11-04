@@ -336,7 +336,7 @@ def _bench_analyse(args: argparse.Namespace) -> int:
     from scriptkin.formats import FormatError
 
     try:
-        study = read_study(args.root)
+        study = read_study(args.root, post_hoc=args.post_hoc)
         problems = incomplete(study)
         if problems:
             print("bench analyse: refused. The study is not complete (section 13):", file=sys.stderr)
@@ -350,6 +350,10 @@ def _bench_analyse(args: argparse.Namespace) -> int:
         return 2
     for path in written:
         print(f"bench analyse: wrote {path}")
+    if study.post_hoc:
+        print("bench analyse: post hoc (section 13). These locked code files changed after the lock:")
+        for path in study.changed_code:
+            print(f"  {path}")
     return 0
 
 
@@ -440,6 +444,11 @@ def _add_bench_analysis(steps: Any) -> None:
     analyse = steps.add_parser("analyse", help="run the bench analysis and write bench/results/")
     analyse.add_argument("root", type=Path, help=root_help)
     analyse.add_argument("--results", type=Path, help="the output folder (default: bench/results)")
+    analyse.add_argument(
+        "--post-hoc",
+        action="store_true",
+        help="run with analysis code that changed after the lock (section 13); every output says so",
+    )
     analyse.set_defaults(run=_bench_analyse)
     interim = steps.add_parser("interim", help="print the variance components of blocks 1 to 6, section 6.6")
     interim.add_argument("root", type=Path, help=root_help)

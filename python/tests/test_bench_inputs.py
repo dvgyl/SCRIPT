@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -63,12 +64,20 @@ def registry_json(path: Path, **changes: Any) -> Path:
         "studyStore": "store",
         "devices": {"P": {"model": "iPad16,3"}},
         "mountings": [
-            {"device": "W", "mounting": "M1", "block": 1, "originMM": {"x": 20.0, "y": 90.0}, "level": 0.2},
+            {
+                "device": "W",
+                "mounting": "M1",
+                "block": 1,
+                "originMM": {"x": 20.0, "y": 90.0},
+                "calibrationSHA256": "c" * 64,
+                "level": 0.2,
+            },
             {
                 "device": "P",
                 "mounting": "M1",
                 "block": 2,
                 "originMM": {"x": 25.5, "y": 95.0},
+                "calibrationSHA256": "d" * 64,
                 "qualificationSession": "3F2A9C1E-0000-4000-8000-000000000099",
             },
         ],
@@ -84,9 +93,14 @@ def registry_json(path: Path, **changes: Any) -> Path:
     return path
 
 
+CODE_FILE = "python/src/scriptkin/bench/stats.py"
+"""The one file that stands for the analysis code in a test root."""
+
+
 def lock_root(root: Path, extra: tuple[str, ...] = ()) -> Path:
-    """A root with every file of protocol section 14 step 5, with short content."""
-    for rel in (*LOCK_FILES, "bench/programs/loops-s-v40.json", "bench/order/block-01.csv", *extra):
+    """A root with every file of protocol section 14 step 5 and one code file, with short content."""
+    folders = ("bench/programs/loops-s-v40.json", "bench/order/block-01.csv")
+    for rel in (*LOCK_FILES, *folders, CODE_FILE, *extra):
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f"content of {rel}\n", encoding="utf-8")
@@ -152,6 +166,7 @@ def test_the_registry_reads_what_the_analysis_uses_and_ignores_the_rest(tmp_path
     assert registry.study_store == tmp_path / "store"
     assert [m.mounting for m in registry.mountings_of("P")] == ["M1"]
     assert registry.mounting("P", "M1").origin_mm == (25.5, 95.0)
+    assert registry.mounting("P", "M1").calibration_sha256 == "d" * 64
     assert registry.mounting("P", "M1").qualification_session == "3F2A9C1E-0000-4000-8000-000000000099"
     assert registry.mounting("W", "M1").qualification_session is None
     assert registry.blocks == {1, 2}
@@ -167,9 +182,12 @@ def test_the_registry_reads_what_the_analysis_uses_and_ignores_the_rest(tmp_path
         registry.mounting("P", "M2")
     absolute = read_registry(registry_json(tmp_path / "abs.json", studyStore=str(tmp_path / "s")), tmp_path)
     assert absolute.study_store == tmp_path / "s"
+    mounting = {"device": "P", "mounting": "M1", "block": 2, "originMM": {"x": 0, "y": 0}}
     for message, changes in [
         ("constants must be an object", {"constants": None}),
         ("'originMM'", {"mountings": [{"device": "P"}]}),
+        ("'calibrationSHA256'", {"mountings": [mounting]}),
+        ("lower-case SHA-256", {"mountings": [{**mounting, "calibrationSHA256": "ABC"}]}),
         (
             "main program",
             {
@@ -200,8 +218,8 @@ def test_the_registry_reads_what_the_analysis_uses_and_ignores_the_rest(tmp_path
     same_block = registry_json(
         tmp_path / "blocks.json",
         mountings=[
-            {"device": "W", "mounting": "M1", "block": 1, "originMM": {"x": 0, "y": 0}},
-            {"device": "P", "mounting": "M1", "block": 1, "originMM": {"x": 0, "y": 0}},
+            {**mounting, "device": "W", "block": 1, "calibrationSHA256": "c" * 64},
+            {**mounting, "block": 1, "calibrationSHA256": "c" * 64},
         ],
     )
     with pytest.raises(InputError, match="own device, mounting, and block"):
@@ -217,12 +235,13 @@ def test_the_lock_hashes_every_file_and_the_check_finds_a_change(tmp_path: Path)
         *LOCK_FILES,
         "bench/programs/loops-s-v40.json",
         "bench/order/block-01.csv",
+        CODE_FILE,
         "tools/translate.py",
     }
     assert lock.protocol_version == bench.PROTOCOL_VERSION and lock.commit == COMMIT
     (root / "bench" / "BENCH_LOCK.json").write_bytes(lock_json(lock))
     assert read_lock(root / "bench" / "BENCH_LOCK.json") == lock
-    check_lock(lock, root)
+    assert check_lock(lock, root) == []
     (root / "bench" / "registry.json").write_text("changed\n", encoding="utf-8")
     with pytest.raises(InputError, match=r"bench/registry\.json"):
         check_lock(lock, root)
@@ -243,6 +262,29 @@ def test_the_lock_hashes_every_file_and_the_check_finds_a_change(tmp_path: Path)
         (root / "bad.json").write_text(damaged, encoding="utf-8")
         with pytest.raises(InputError):
             read_lock(root / "bad.json")
+
+
+def test_the_lock_check_needs_every_file_and_allows_changed_code_post_hoc_only(tmp_path: Path) -> None:
+    # Detects a lock check that passes a file added under a locked folder after the lock, a lock file
+    # that lost an entry, or analysis code that changed after the lock, and a post hoc check that
+    # passes a changed file outside the code.
+    root = lock_root(tmp_path)
+    lock = write_lock(root, BUILDS, COMMIT)
+    added = root / "bench" / "programs" / "loops-s-v40~edited.json"
+    added.write_text("edited\n", encoding="utf-8")
+    with pytest.raises(InputError, match=r"does not hold these files: bench/programs/loops-s-v40~edited"):
+        check_lock(lock, root)
+    added.unlink()
+    files = {k: v for k, v in lock.files.items() if k != "bench/registry.json"}
+    with pytest.raises(InputError, match=r"does not hold these files: bench/registry\.json"):
+        check_lock(Lock(lock.protocol_version, lock.commit, lock.builds, files), root)
+    (root / CODE_FILE).write_text("changed\n", encoding="utf-8")
+    with pytest.raises(InputError, match=f"changed or are missing: {re.escape(CODE_FILE)}"):
+        check_lock(lock, root)
+    assert check_lock(lock, root, post_hoc=True) == [CODE_FILE]
+    (root / "bench" / "registry.json").write_text("changed\n", encoding="utf-8")
+    with pytest.raises(InputError, match=r"changed or are missing: bench/registry\.json\."):
+        check_lock(lock, root, post_hoc=True)
 
 
 def test_a_bench_journal_gives_its_role_mounting_and_build(tmp_path: Path) -> None:

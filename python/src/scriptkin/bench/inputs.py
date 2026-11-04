@@ -15,18 +15,21 @@ run passes (section 6.4); the operator does not.
 
 `bench/registry.json` holds much more than the analysis reads (section 2). The analysis reads three
 keys and ignores the rest. `studyStore` is the store path, absolute or relative to the root. `mountings`
-is one record per mounting: `device`, `mounting`, `block`, `originMM` with `x` and `y`, and the optional
-`qualificationSession`. `originMM` is the position of the stimulus origin of the programs in the marker
-plane, which `scriptkin bench start-point` adds to the start point of a move list. The marker plane has
-y up and the stimulus frame has y down. `constants` holds `bandPowerPrograms`, the line programs that
+is one record per mounting: `device`, `mounting`, `block`, `originMM` with `x` and `y`,
+`calibrationSHA256`, and the optional `qualificationSession`. `originMM` is the position of the stimulus
+origin of the programs in the marker plane, which `scriptkin bench start-point` adds to the start point
+of a move list. The marker plane has y up and the stimulus frame has y down. `calibrationSHA256` is the
+SHA-256 of the calibration file of the mounting (section 7.2); a track whose facts name another
+calibration is refused. `constants` holds `bandPowerPrograms`, the line programs that
 pass section 6.5, `excludedPrograms`, the main programs that section 4.2 step 7 dropped, and
 `faultDwellGapsOnP`, true when the pilot showed that a still Pencil gives a `gaps` finding (section 5.3).
 
 `bench/BENCH_LOCK.json` holds the protocol version, the lock commit, the `app.build` and
 `app.sourceRevision` of each capture tool by device role, and the SHA-256 of each locked file by its path
-relative to the root. `write_lock` hashes the files of section 14 step 5 and any extra file, such as the
-translation script. `check_lock` refuses a changed or missing file, and `check_build` refuses a journal
-whose build is not the build of its device.
+relative to the root. `write_lock` hashes the files of section 14 step 5, every file of the analysis code
+under `LOCK_CODE`, and any extra file, such as the translation script. `check_lock` refuses a lock that
+does not hold every file that it must hold, and a changed or missing file. `check_build` refuses a
+journal whose build is not the build of its device.
 """
 
 from __future__ import annotations
@@ -62,6 +65,9 @@ LOCK_FILES = (
     "bench/results/bench_precision.json",
 )
 LOCK_FOLDERS = ("bench/programs", "bench/order")
+LOCK_CODE = "python/src/scriptkin"
+"""The analysis code. Section 14 says that the lock commit covers it; the lock also hashes every file
+under it, so that a change of the code after the lock fails the check without Git."""
 RUN_COLUMNS = (
     "run_id",
     "device",
@@ -77,6 +83,8 @@ RUN_COLUMNS = (
     "deviation_row",
 )
 ROLES: tuple[BenchRole, ...] = ("P", "W")
+PLANNED_RUNS = 5
+"""The run indices 1 to 5 are the planned runs; 6 and 7 are the reruns of section 6.4."""
 
 
 class InputError(FormatError):
@@ -112,7 +120,7 @@ class RunRow:
 
     @property
     def rerun(self) -> bool:
-        return self.run_index > 5
+        return self.run_index > PLANNED_RUNS
 
     @property
     def fault(self) -> bool:
@@ -125,6 +133,7 @@ class MountingRecord:
     mounting: str
     block: int
     origin_mm: tuple[float, float]
+    calibration_sha256: str
     qualification_session: str | None
 
 
@@ -278,6 +287,12 @@ def _finite(value: Any, name: str) -> float:
     return number
 
 
+def _digest(text: object, name: str) -> str:
+    if not isinstance(text, str) or len(text) != 64 or any(c not in "0123456789abcdef" for c in text):
+        raise ValueError(f"{name} must be a lower-case SHA-256")
+    return text
+
+
 def _mounting_record(raw: Mapping[str, Any]) -> MountingRecord:
     origin = raw["originMM"]
     session = raw.get("qualificationSession")
@@ -288,6 +303,7 @@ def _mounting_record(raw: Mapping[str, Any]) -> MountingRecord:
         _mounting(raw["mounting"]),
         _int(str(raw["block"]), "block", minimum=1),
         (_finite(origin["x"], "originMM.x"), _finite(origin["y"], "originMM.y")),
+        _digest(raw["calibrationSHA256"], "calibrationSHA256"),
         session,
     )
 
@@ -333,12 +349,17 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _lockable(path: Path) -> bool:
+    return path.is_file() and not path.name.startswith("._") and "__pycache__" not in path.parts
+
+
 def lock_files(root: str | Path, extra: Iterable[str | Path] = ()) -> list[str]:
-    """The paths of section 14 step 5 relative to the root, in path order. Every file must exist."""
+    """The paths of section 14 step 5 and of the analysis code relative to the root, in path order.
+    Every file must exist."""
     root = Path(root).resolve()
     found: list[str] = list(LOCK_FILES)
-    for folder in LOCK_FOLDERS:
-        files = [p for p in sorted((root / folder).glob("*")) if p.is_file() and not p.name.startswith("._")]
+    for folder, pattern in (*((f, "*") for f in LOCK_FOLDERS), (LOCK_CODE, "**/*")):
+        files = [p for p in sorted((root / folder).glob(pattern)) if _lockable(p)]
         if not files:
             raise InputError(f"{folder}/ has no file to lock.")
         found.extend(p.relative_to(root).as_posix() for p in files)
@@ -401,19 +422,33 @@ def read_lock(path: str | Path) -> Lock:
     return lock
 
 
-def check_lock(lock: Lock, root: str | Path) -> None:
-    """Section 14: every locked file still has its digest, and the protocol is the locked version."""
+def check_lock(lock: Lock, root: str | Path, *, post_hoc: bool = False) -> list[str]:
+    """Section 14: the lock holds every file that it must hold, every locked file still has its digest,
+    and the protocol is the locked version.
+
+    The files that the lock must hold are `lock_files(root)` without extras, so a file added under a
+    locked folder after the lock, and an entry removed from the lock file, both fail the check. With
+    `post_hoc`, the files under `LOCK_CODE` may differ from the lock, and the function returns the
+    paths that do. Section 13 calls an analysis change after the lock a deviation, reported as post
+    hoc. Every other change refuses.
+    """
     root = Path(root)
     if lock.protocol_version != bench.PROTOCOL_VERSION:
         raise InputError(
             f"The lock is for protocol {lock.protocol_version}."
             f" The library implements protocol {bench.PROTOCOL_VERSION}."
         )
-    changed = [
+    unlisted = sorted(set(lock_files(root)) - set(lock.files))
+    if unlisted:
+        raise InputError(f"The lock does not hold these files: {', '.join(unlisted)}.")
+    changed = sorted(
         p for p, digest in lock.files.items() if not (root / p).is_file() or _sha256(root / p) != digest
-    ]
-    if changed:
-        raise InputError(f"These locked files changed or are missing: {', '.join(sorted(changed))}.")
+    )
+    code = [p for p in changed if p.startswith(f"{LOCK_CODE}/")]
+    refused = [p for p in changed if not post_hoc or p not in code]
+    if refused:
+        raise InputError(f"These locked files changed or are missing: {', '.join(refused)}.")
+    return code
 
 
 def check_build(lock: Lock, journal: Journal) -> None:
@@ -425,24 +460,38 @@ def check_build(lock: Lock, journal: Journal) -> None:
         )
 
 
-def read_bench_journal(folder: str | Path) -> Journal:
-    """Read one bench export with the build of its header. A session of another purpose is an error."""
-    folder = Path(folder)
+def _read_export(folder: Path, purpose: str) -> tuple[Recording, Build]:
+    """One verified export of the given purpose, with the build of its header."""
     try:
         export = verify_export(folder)
     except JournalError as e:
         raise InputError(f"{folder.name}: {e}") from e
     recording = export.to_recording()
     context = recording.context
-    if context is None or context.purpose != "bench" or not isinstance(context.subject, BenchContext):
-        raise InputError(f"{folder.name}: the session is not a bench session.")
+    if context is None or context.purpose != purpose:
+        raise InputError(f"{folder.name}: the session is not a {purpose} session.")
     app = export.rows[0]["app"]
-    return Journal(
-        recording,
-        context.subject.role,
-        context.subject.mounting,
-        Build(str(app["build"]), str(app["sourceRevision"])),
-    )
+    return recording, Build(str(app["build"]), str(app["sourceRevision"]))
+
+
+def read_bench_journal(folder: str | Path) -> Journal:
+    """Read one bench export with the build of its header. A session of another purpose is an error."""
+    folder = Path(folder)
+    recording, build = _read_export(folder, "bench")
+    context = recording.context
+    if context is None or not isinstance(context.subject, BenchContext):
+        raise InputError(f"{folder.name}: the session is not a bench session.")
+    return Journal(recording, context.subject.role, context.subject.mounting, build)
+
+
+def read_qualification_journal(folder: str | Path, device: BenchRole, mounting: str) -> Journal:
+    """Read the qualification export of a mounting (section 8.1) with the build of its header.
+
+    A qualification session names no device role and no mounting, so the registry record of the
+    mounting gives them, and `check_build` can then check the session against the lock."""
+    folder = Path(folder)
+    recording, build = _read_export(folder, "qualification")
+    return Journal(recording, device, mounting, build)
 
 
 def parse_run_id(run_id: str) -> tuple[BenchRole, str, str, int]:

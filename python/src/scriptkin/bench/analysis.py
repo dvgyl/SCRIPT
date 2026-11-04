@@ -2,31 +2,30 @@
 
 Program sets. The set of a feature is the main programs of the study whose geometry the feature is
 decided on (`features.CATALOG`), and for `bench.band_power_mm2_s2` the line programs of the band-power
-set of the registry. The correction model of a set follows the coordinator's decision on section 11.5:
-`COVARIATES` for the set of every geometry, `SLOPE` for the loops, and `SHIFT` for the line.
+set of the registry. The correction model of a set is the model of section 11.5: `COVARIATES` for the
+set of every geometry, `SLOPE` for the loops, and `SHIFT` for the line.
 
 Run arrays. `run_arrays` fills the arrays of `scriptkin.bench.stats` from the evaluated runs: one row per
-mounting of the device in mounting order, and one slot per run index 1 to 7. A failed run, an unused
-slot, and a camera-referenced difference without a valid camera record are NaN. Mounting i of device P
-pairs with mounting i of device W, so both devices need the same number of mountings.
+mounting of the device in mounting order, and one slot per run index 1 to 7 (`run_slot`). A failed run,
+an unused rerun (section 6.4), an unused slot, and a camera-referenced difference without a valid camera
+record are NaN. Mounting i of device P pairs with mounting i of device W, so both devices need the same
+number of mountings.
 
 Analyses. `main` is sections 11.2 to 11.5 with the camera-referenced differences of the four camera
 features. The other analyses are the sensitivity analyses of section 11.9. `no_motion_exclusion` keeps
 the motion failures of section 7.6. `raw_device` compares the raw device values of the camera features.
 `median` replaces each mounting mean by the median of its runs: every valid run of a mounting is
 shifted by the median minus the mean, which keeps the run spread and the counts of section 11.2. The
-analyses `by_task`, `by_scale`, and `by_speed` pool the runs of the programs that share the factor into
-one group per level, with the other factors mixed, and report sections 11.2 to 11.4 per group. They
-report no correction, because the covariates of section 11.5 are per program, and no group has one
-speed and one scale.
+analyses `by_task`, `by_scale`, and `by_speed` pool the programs that share the factor into one group
+per level, with the other factors mixed, and report sections 11.2 to 11.4 per group. The mounting mean
+of a group is the mean of the per-program mounting means (`pooled_group`), so a program with more valid
+runs does not weigh more. They report no correction, because the covariates of section 11.5 are per
+program, and no group has one speed and one scale.
 
 The correction of section 11.5 is fitted on the raw device values of every feature, in every analysis,
 while the equivalence test and the limits of agreement of the main analysis use the camera-referenced
-differences. The protocol takes the points of the correction from the pairs of section 11.4, which for
-the four camera features are differences. A difference holds no spread between programs, because the
-camera removes the movement, so the slope of a model on differences is not identified: in the synthetic
-study of the tests its jackknife standard error is 1.1 to 5.0. The correction maps a device W value to a
-device P value for recordings without a camera (section 12), so it is fitted on the values it maps.
+differences of the four camera features. Section 11.5 states the reason: a difference holds no spread
+between programs, so it leaves the slope unidentified, and the correction maps a raw device W value.
 
 The limits are the registered values of section 10. The functions return NaN as `stats` does, and the
 output writer turns a NaN into an empty value with a reason.
@@ -138,7 +137,7 @@ class Arrays:
 def run_value(run: Evaluated, feature: str, analysis: Analysis) -> float:
     """The value of a run on the comparison scale, NaN for a failed run or a missing value."""
     failed = run.outcome.failed if analysis.motion_exclusion else run.outcome.failed_without_motion_check
-    if failed or run.row.fault:
+    if failed or run.row.fault or run.outcome.unused_rerun:
         return np.nan
     if analysis.camera_referenced and feature in CAMERA_FEATURES:
         return run.camera_difference(feature)
@@ -158,6 +157,32 @@ def _mounting_index(registry: Registry) -> dict[tuple[BenchRole, str], int]:
     return index
 
 
+def run_slot(position: int, run_index: int) -> int:
+    """The column of a run in the arrays: the programs of a group hold 7 slots each, in group order,
+    and run index 1 to 7 is the slot inside them."""
+    return position * _SLOTS + run_index - 1
+
+
+def pooled_group(runs: FloatArray, programs: int) -> FloatArray:
+    """The runs of a group of several programs, (m, width), with the per-program mounting means averaged.
+
+    Every valid run of a program in a mounting is shifted by the group mounting mean minus the program
+    mounting mean. The mean of all runs of the mounting is then the mean of the per-program mounting
+    means, and the run spread and the counts of section 11.2 stay. A mounting where a program of the
+    group has fewer than `MIN_VALID_RUNS` valid runs is NaN for the group, as it makes the program not
+    estimable (section 6.4). The within-mounting mean square of the group then counts the runs of every
+    program against one mean, so its degrees of freedom are n - 1 per mounting, not n - programs.
+    """
+    m, width = runs.shape
+    by_program = runs.reshape(m, width // _SLOTS, _SLOTS)[:, :programs]
+    means = stats.mounting_means(by_program)
+    complete = (stats.valid_counts(by_program) >= stats.MIN_VALID_RUNS).all(axis=1)
+    shifted = by_program + (means.mean(axis=1)[:, None] - means)[:, :, None]
+    pooled = np.full_like(runs, np.nan)
+    pooled[complete, : programs * _SLOTS] = shifted[complete].reshape(-1, programs * _SLOTS)
+    return pooled
+
+
 def run_arrays(
     evaluated: dict[str, Evaluated],
     registry: Registry,
@@ -167,15 +192,20 @@ def run_arrays(
 ) -> Arrays:
     index = _mounting_index(registry)
     m = len(index) // 2
-    slot = {(g, d.id): k * _SLOTS for g, group in enumerate(groups) for k, d in enumerate(group.programs)}
+    position = {(g, d.id): k for g, group in enumerate(groups) for k, d in enumerate(group.programs)}
     width = max(len(g.programs) for g in groups) * _SLOTS if groups else _SLOTS
     arrays = {device: np.full((len(groups), m, width), np.nan) for device in DEVICES}
     for run in evaluated.values():
-        for g, group in enumerate(groups):
-            if any(d.id == run.row.program for d in group.programs):
+        for g in range(len(groups)):
+            k = position.get((g, run.row.program))
+            if k is not None:
                 mounting = index[(run.row.device, run.row.mounting)]
-                column = slot[(g, run.row.program)] + run.row.run_index - 1
+                column = run_slot(k, run.row.run_index)
                 arrays[run.row.device][g, mounting, column] = run_value(run, feature, analysis)
+    for g, group in enumerate(groups):
+        if len(group.programs) > 1:
+            for a in arrays.values():
+                a[g] = pooled_group(a[g], len(group.programs))
     if analysis.median:
         for a in arrays.values():
             valid = np.isfinite(a)

@@ -46,7 +46,7 @@ from scriptkin.bench.track import Track
 from scriptkin.features import CATALOG as LIBRARY_CATALOG
 from scriptkin.features import Cell, extract
 from scriptkin.quality import DEFAULT_QC, Accepted, QcPolicy, Refusal, RefusalCode, Rejected, assess
-from scriptkin.recording import BenchRunContext, Trial
+from scriptkin.recording import BenchRunContext, PenState, Trial
 from scriptkin.signal import DEFAULT_PREPROCESSING, Preprocessing
 
 FEATURE_SET = tuple(f.name for f in BENCH_CATALOG if f.decided_on)
@@ -67,7 +67,8 @@ class CameraState(StrEnum):
     ABSENT = "absent"
     """No track file for the run."""
     INVALID = "invalid"
-    """A track that fails a rule of section 7.3 or has no motion interval."""
+    """A track that fails a rule of section 7.3, has no motion interval, or has no executed movement
+    check of section 7.6. The run then leaves the camera-referenced comparison (section 7.7)."""
     VALID = "valid"
 
 
@@ -82,6 +83,9 @@ class Outcome:
     camera_rules: tuple[CameraRule, ...]
     motion_failure: bool | None
     """None without a valid camera record or a path fit."""
+    unused_rerun: bool = False
+    """Section 6.4: the rerun follows fewer failed earlier runs of its program and mounting than its
+    run index needs, so the analysis does not use it (`scriptkin.bench.study.mark_unused_reruns`)."""
 
     @property
     def failed_without_motion_check(self) -> bool:
@@ -96,6 +100,8 @@ class Outcome:
         parts = [str(code) for code in self.rejected] + list(self.marks)
         if self.motion_failure:
             parts.append("motion_failure")
+        if self.unused_rerun:
+            parts.append("unused_rerun")
         return ";".join(parts)
 
 
@@ -107,8 +113,8 @@ class Evaluated:
     trial: Trial
     move_list: MoveList
     qc: Accepted | Rejected
-    features: RunFeatures | None
-    """The bench features of the device record; None when `assess` rejects the trial."""
+    features: RunFeatures | Refusal
+    """The bench features of the device record, or the refusal of `assess` when it rejects the trial."""
     library: dict[str, Cell]
     """The library features of section 9.3; every cell a refusal when `assess` rejects the trial."""
     camera: CameraRecord | None
@@ -118,15 +124,18 @@ class Evaluated:
     trace: PathFit | Refusal | None
     outcome: Outcome
 
+    @property
+    def valid(self) -> bool:
+        """A main run that the analysis uses: not failed, not a fault run, and not an unused rerun."""
+        return not self.row.fault and not self.outcome.failed and not self.outcome.unused_rerun
+
     def device_value(self, name: str) -> Cell:
-        if self.features is None:
-            return self.qc.refusals[0] if isinstance(self.qc, Rejected) else self.library[name]
-        return self.features.cells[name]
+        return self.features.cells[name] if isinstance(self.features, RunFeatures) else self.features
 
     def camera_value(self, name: str) -> Cell:
         if self.camera is None:
             return Refusal(RefusalCode.NOT_APPLICABLE, "The run has no camera record.")
-        if not self.camera.valid:
+        if self.outcome.camera is not CameraState.VALID:
             return Refusal(RefusalCode.NOT_APPLICABLE, "The camera record is invalid.")
         return self.camera.run.cells[name]
 
@@ -187,14 +196,16 @@ def evaluate(
     if commanded is None:
         commanded = commanded_motion(move_list, settings)
     qc = assess(trial, policy)
-    features: RunFeatures | None = None
-    library: dict[str, Cell] = (
-        {f.name: qc.refusals[0] for f in LIBRARY_CATALOG} if isinstance(qc, Rejected) else {}
-    )
+    features: RunFeatures | Refusal
+    library: dict[str, Cell]
     if isinstance(qc, Accepted):
         features, library = run_features(qc, settings), extract(qc, settings)
-    device = features.motion if features is not None and isinstance(features.motion, Motion) else None
-    camera = camera_record(track, settings) if track is not None else None
+    else:
+        features, library = qc.refusals[0], {f.name: qc.refusals[0] for f in LIBRARY_CATALOG}
+    device = features.motion if isinstance(features, RunFeatures) else None
+    device = device if isinstance(device, Motion) else None
+    reference = device if device is not None else commanded if isinstance(commanded, Motion) else None
+    camera = camera_record(track, reference, settings) if track is not None else None
     executed = alignment = accuracy = None
     if camera is not None and camera.valid and isinstance(camera.run.motion, Motion):
         executed = _executed(camera.run.motion, move_list, commanded, settings)
@@ -203,9 +214,12 @@ def evaluate(
             if isinstance(alignment, TimeAlignment):
                 accuracy = spatial_accuracy(device, camera.run.motion, alignment)
     trace = _fit(device, move_list, commanded, settings) if device is not None else None
-    state = (
-        CameraState.ABSENT if camera is None else CameraState.VALID if camera.valid else CameraState.INVALID
-    )
+    if camera is None:
+        state = CameraState.ABSENT
+    elif isinstance(executed, ExecutedMovement):
+        state = CameraState.VALID
+    else:
+        state = CameraState.INVALID
     outcome = Outcome(
         tuple(r.code for r in qc.refusals) if isinstance(qc, Rejected) else (),
         tuple(m for m in trial.marks if m in FAILURE_MARKS),
@@ -252,14 +266,22 @@ def _within(value: Cell, target: float, tolerance: float) -> bool:
 
 
 def fault_detected(run: Evaluated, clean: CleanMedians, *, gaps_on_p: bool) -> tuple[bool, str]:
-    """Section 5.3: whether every expected result of the fault program holds, with the reason when not."""
+    """Section 5.3: whether every expected result of the fault program holds, with the reason when not.
+
+    The dwell rule reads the contact strokes only. A bench journal also holds the hover strokes of the
+    lowering and the lift, which the library counts as segments and checks for gaps. A contact gap is
+    a contact sample interval above `max_gap_s`, the interval that gives the `gaps` finding.
+    """
     program = bench.program(run.row.program)
     motion = run.device_value("bench.motion_s")
     if program.fault == "dwell":
-        findings = [r.code for r in run.qc.report.findings]
-        gaps = RefusalCode.GAPS in findings
+        gap_share = run.device_value("sampling.share_above_max_gap")
+        gaps = not isinstance(gap_share, Refusal) and gap_share > 0
+        segments = (
+            sum(s.state == PenState.CONTACT for s in run.qc.segments) if isinstance(run.qc, Accepted) else 0
+        )
         expect_gaps = gaps_on_p and run.row.device == "P"
-        if expect_gaps and not (gaps and run.qc.report.segment_count == 2):
+        if expect_gaps and not (gaps and segments == 2):
             return False, "no gaps finding with two contact segments"
         if not expect_gaps and gaps:
             return False, "a gaps finding"

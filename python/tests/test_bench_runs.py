@@ -25,7 +25,7 @@ from scriptkin.bench.runs import (
     trial_of,
 )
 from scriptkin.quality import Refusal, RefusalCode, Rejected
-from scriptkin.recording import Stroke, Trial, TrialOutcome
+from scriptkin.recording import FloatArray, PenState, Stroke, Trial, TrialOutcome
 
 programs_folder = moves_tests.programs_folder
 move_lists = moves_tests.move_lists
@@ -56,6 +56,20 @@ def row(program: str = "loops-l-v20", run_index: int = 1, trial_index: int = 0, 
 
 def scaled(trial: Trial, factor: float) -> Trial:
     return replace(trial, strokes=tuple(Stroke(s.t, s.xy * factor) for s in trial.strokes))
+
+
+def hover(t0: float, xy: FloatArray, seconds: float, *, gap: bool = False) -> Stroke:
+    """An in-air stroke still at `xy` at 240 Hz from `t0`, with a 0.125 s gap inside it when `gap`."""
+    t = t0 + np.arange(int(seconds * 240)) / 240
+    if gap:
+        t = t[(t < t0 + 0.2) | (t >= t0 + 0.325)]
+    return Stroke(t, np.repeat(xy[None, :], len(t), axis=0), PenState.IN_AIR)
+
+
+def dwell_gap_s(dwell: MoveList) -> float:
+    """The time of the dwell move of `fault-dwell`."""
+    first_long = next(i for i, m in enumerate(dwell.moves) if m.duration_s > 0.4)
+    return sum(m.duration_s for m in dwell.moves[:first_long])
 
 
 def test_the_trial_of_a_row_is_found_and_every_disagreement_is_an_error(tmp_path: Path) -> None:
@@ -133,7 +147,8 @@ def test_each_failure_cause_gives_its_outcome(move_lists: dict[str, MoveList], c
     excluded = evaluate(row("loops-s-v40"), replace(clean.trial, marks=("exclude",)), ml, None)
     assert excluded.outcome.failed and excluded.outcome.rejected == (RefusalCode.EXCLUDED,)
     assert excluded.outcome.marks == () and isinstance(excluded.qc, Rejected)
-    assert excluded.features is None and all(isinstance(c, Refusal) for c in excluded.library.values())
+    assert isinstance(excluded.features, Refusal)
+    assert all(isinstance(c, Refusal) for c in excluded.library.values())
     assert isinstance(excluded.device_value("bench.motion_s"), Refusal)
     interrupted = evaluate(
         row("loops-s-v40"), replace(clean.trial, outcome=TrialOutcome.INTERRUPTED), ml, None
@@ -153,6 +168,26 @@ def test_each_failure_cause_gives_its_outcome(move_lists: dict[str, MoveList], c
     assert math.isnan(invalid.camera_difference("bench.path_length_mm"))
 
 
+def test_a_camera_record_without_an_executed_movement_check_is_invalid(
+    move_lists: dict[str, MoveList], clean: Evaluated
+) -> None:
+    # Detects a run whose camera record passes the rules of section 7.3 but has no executed movement
+    # check of section 7.6, and still enters the camera-referenced comparison with its camera values.
+    ml = move_lists["loops-s-v40"]
+    run = evaluate(
+        row("loops-s-v40"),
+        clean.trial,
+        ml,
+        camera_track(ml, noise_mm=0.005),
+        commanded=Refusal(RefusalCode.UNDEFINED, "no command"),
+    )
+    assert isinstance(run.executed, Refusal)
+    assert run.outcome.camera is CameraState.INVALID and run.outcome.motion_failure is None
+    assert not run.outcome.failed
+    assert isinstance(run.camera_value("bench.path_length_mm"), Refusal)
+    assert math.isnan(run.camera_difference("bench.path_length_mm"))
+
+
 def test_each_fault_rule_detects_its_fault_and_rejects_a_clean_run(move_lists: dict[str, MoveList]) -> None:
     # Detects a fault rule that passes a run without the fault, fails the fault it expects, or reads
     # the device P dwell expectation the wrong way round.
@@ -166,9 +201,7 @@ def test_each_fault_rule_detects_its_fault_and_rejects_a_clean_run(move_lists: d
     assert fault_detected(runs["fault-dwell"], medians, gaps_on_p=False) == (True, "")
     assert fault_detected(runs["fault-dwell"], medians, gaps_on_p=True)[1].startswith("no gaps")
     dwell = move_lists["fault-dwell"]
-    at = sum(
-        m.duration_s for m in dwell.moves[: next(i for i, m in enumerate(dwell.moves) if m.duration_s > 0.4)]
-    )
+    at = dwell_gap_s(dwell)
     with_gap = evaluate(row("fault-dwell"), device_run(dwell, drop=(at + 0.02, at + 0.48)), dwell, None)
     assert fault_detected(with_gap, medians, gaps_on_p=True) == (True, "")
     assert fault_detected(with_gap, medians, gaps_on_p=False) == (False, "a gaps finding")
@@ -185,3 +218,38 @@ def test_each_fault_rule_detects_its_fault_and_rejects_a_clean_run(move_lists: d
             evaluate(row("loops-l-v20"), base, move_lists["loops-l-v20"], None), medians, gaps_on_p=False
         )
     assert np.isfinite(clean_cells["bench.motion_s"])
+
+
+def test_the_dwell_rule_counts_contact_segments_and_contact_gaps_only(
+    move_lists: dict[str, MoveList],
+) -> None:
+    # Detects a dwell rule that counts the in-air strokes of a bench journal as segments, or an in-air
+    # gap as the dwell gap. The library counts every segment and reports a gap in any stroke, so the
+    # rule must look at the contact strokes only.
+    base = device_run(move_lists["loops-l-v20"])
+    cells = features_tests.features_of(base)
+    medians = CleanMedians(cells["bench.motion_s"], cells["bench.path_length_mm"])
+    dwell = move_lists["fault-dwell"]
+    at = dwell_gap_s(dwell)
+    with_gap = device_run(dwell, drop=(at + 0.02, at + 0.48))
+    first, last = with_gap.strokes[0], with_gap.strokes[-1]
+    hovered = replace(
+        with_gap,
+        strokes=(
+            hover(first.t[0] - 0.8, first.xy[0], 0.5),
+            *with_gap.strokes,
+            hover(last.t[-1] + 0.4, last.xy[-1], 0.5),
+        ),
+    )
+    run = evaluate(row("fault-dwell"), hovered, dwell, None)
+    assert run.qc.report.segment_count == 4
+    assert fault_detected(run, medians, gaps_on_p=True) == (True, "")
+    assert fault_detected(run, medians, gaps_on_p=False) == (False, "a gaps finding")
+    clean = device_run(dwell)
+    start = clean.strokes[0]
+    gappy = replace(clean, strokes=(hover(start.t[0] - 1.0, start.xy[0], 0.6, gap=True), *clean.strokes))
+    run = evaluate(row("fault-dwell"), gappy, dwell, None)
+    assert RefusalCode.GAPS in [r.code for r in run.qc.report.findings]
+    assert fault_detected(run, medians, gaps_on_p=False) == (True, "")
+    expected = (False, "no gaps finding with two contact segments")
+    assert fault_detected(run, medians, gaps_on_p=True) == expected

@@ -157,3 +157,14 @@ def test_a_damaged_file_is_refused(
     damaged.write_text(json.dumps(raw), encoding="utf-8")
     with pytest.raises(MoveListError, match=message):
         read_move_list(damaged)
+
+
+def test_two_files_with_one_program_id_are_refused(programs_folder: Path, tmp_path: Path) -> None:
+    # Detects a reader that lets a later file with the id of a locked program replace the locked move
+    # list without an error.
+    for name in ("loops-s-v40.json", "spiral-s-v40.json"):
+        (tmp_path / name).write_bytes((programs_folder / name).read_bytes())
+    assert set(read_move_lists(tmp_path)) == {"loops-s-v40", "spiral-s-v40"}
+    (tmp_path / "loops-s-v40~edited.json").write_bytes((programs_folder / "loops-s-v40.json").read_bytes())
+    with pytest.raises(MoveListError, match=r"loops-s-v40\.json and loops-s-v40~edited\.json both hold"):
+        read_move_lists(tmp_path)

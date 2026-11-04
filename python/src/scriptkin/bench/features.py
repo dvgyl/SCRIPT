@@ -20,7 +20,7 @@ from scriptkin.bench import Geometry
 from scriptkin.bench.moves import MoveList, commanded_trial
 from scriptkin.features import Cell
 from scriptkin.qualification import intervals
-from scriptkin.quality import Accepted, Refusal, RefusalCode, Rejected, assess
+from scriptkin.quality import Accepted, Refusal, RefusalCode, Rejected, Segment, assess
 from scriptkin.recording import FloatArray, PenState, Trial
 from scriptkin.signal import (
     DEFAULT_PREPROCESSING,
@@ -156,32 +156,45 @@ def motion_interval(grids: Sequence[Kinematics]) -> MotionInterval | Refusal:
     return MotionInterval(min(starts), max(ends))
 
 
-def motion(ok: Accepted, settings: Preprocessing = DEFAULT_PREPROCESSING) -> Motion | Refusal:
-    """The accepted contact segments of one run on the grid, cut to the motion interval."""
-    if ok.trial.device.spatial_unit != "mm":
-        return Refusal(RefusalCode.UNKNOWN_SCALE, "A physical position scale is required.")
+def contact_grids(
+    ok: Accepted, settings: Preprocessing = DEFAULT_PREPROCESSING
+) -> list[tuple[Segment, Kinematics]]:
+    """The accepted contact segments of one run with their grids, in time order."""
     contact = [s for s in ok.segments if s.state == PenState.CONTACT]
     resampled = [(s, kinematics(s, settings)) for s in contact]
-    valid = sorted(((s, k) for s, k in resampled if isinstance(k, Kinematics)), key=lambda pair: pair[1].t[0])
-    interval = motion_interval([k for _, k in valid])
+    return sorted(((s, k) for s, k in resampled if isinstance(k, Kinematics)), key=lambda pair: pair[1].t[0])
+
+
+def _inside(k: Kinematics, interval: MotionInterval) -> Kinematics:
+    keep = (k.t >= interval.start_s) & (k.t <= interval.end_s)
+    return Kinematics(
+        k.t[keep], k.xy[keep], k.velocity[keep], k.acceleration[keep], k.jerk[keep], k.speed[keep]
+    )
+
+
+def motion(
+    ok: Accepted, settings: Preprocessing = DEFAULT_PREPROCESSING, *, window: MotionInterval | None = None
+) -> Motion | Refusal:
+    """The accepted contact segments of one run on the grid, cut to the motion interval.
+
+    With a `window`, the motion interval rule reads only the grid samples inside it. A camera record
+    needs one (`scriptkin.bench.camera.motion_window`), because its clip also holds the lowering and
+    the lift of section 5.2. A device record searches its whole run.
+    """
+    if ok.trial.device.spatial_unit != "mm":
+        return Refusal(RefusalCode.UNKNOWN_SCALE, "A physical position scale is required.")
+    valid = contact_grids(ok, settings)
+    searched = [k for _, k in valid] if window is None else [_inside(k, window) for _, k in valid]
+    interval = motion_interval([k for k in searched if len(k.t)])
     if isinstance(interval, Refusal):
         return interval
     grids: list[Kinematics] = []
     samples: list[Points] = []
     for s, k in valid:
-        inside = (k.t >= interval.start_s) & (k.t <= interval.end_s)
-        if not inside.any():
+        cut = _inside(k, interval)
+        if not len(cut.t):
             continue
-        grids.append(
-            Kinematics(
-                k.t[inside],
-                k.xy[inside],
-                k.velocity[inside],
-                k.acceleration[inside],
-                k.jerk[inside],
-                k.speed[inside],
-            )
-        )
+        grids.append(cut)
         raw = (s.t >= interval.start_s) & (s.t <= interval.end_s)
         samples.append(Points(s.t[raw], s.xy[raw]))
     return Motion(interval, tuple(grids), tuple(samples))
@@ -277,9 +290,11 @@ def sampling_cells(trial: Trial, max_gap_s: float) -> dict[str, Cell]:
     }
 
 
-def run_features(ok: Accepted, settings: Preprocessing = DEFAULT_PREPROCESSING) -> RunFeatures:
+def run_features(
+    ok: Accepted, settings: Preprocessing = DEFAULT_PREPROCESSING, *, window: MotionInterval | None = None
+) -> RunFeatures:
     """Every cell of `CATALOG` for one run, with the motion that the camera comparisons need."""
-    found = motion(ok, settings)
+    found = motion(ok, settings, window=window)
     return RunFeatures(
         found, {**feature_cells(found, settings), **sampling_cells(ok.trial, ok.report.policy.max_gap_s)}
     )

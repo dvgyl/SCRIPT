@@ -143,9 +143,19 @@ def read_move_list(path: str | Path) -> MoveList:
 
 
 def read_move_lists(folder: str | Path) -> dict[str, MoveList]:
-    """Every move list in a folder, by program id."""
-    lists = [read_move_list(p) for p in sorted(Path(folder).glob("*.json")) if not p.name.startswith("._")]
-    return {m.program.id: m for m in lists}
+    """Every move list in a folder, by program id. Two files with one program id are an error, because
+    the lock names each program once (section 14)."""
+    lists: dict[str, MoveList] = {}
+    files: dict[str, Path] = {}
+    for path in sorted(Path(folder).glob("*.json")):
+        if path.name.startswith("._"):
+            continue
+        move_list = read_move_list(path)
+        program = move_list.program.id
+        if program in lists:
+            raise MoveListError(f"{files[program].name} and {path.name} both hold the program {program}.")
+        lists[program], files[program] = move_list, path
+    return lists
 
 
 def commanded_strokes(path: CommandedPath, times: FloatArray) -> tuple[Stroke, ...]:
