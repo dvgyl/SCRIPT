@@ -81,6 +81,7 @@ class BenchInputs:
     digest: str
     post_hoc: bool = False
     raw: str = ""
+    registry_sha256: str | None = None
 
 
 Centers = Mapping[tuple[str, str], float]
@@ -254,6 +255,7 @@ def read_deliverables(
             correction = f["correction"]
             terms = None
             support = "unavailable"
+            reason = ""
             if correction is not None:
                 model = correction_model(feature)
                 if correction["model"] != model.value:
@@ -274,17 +276,20 @@ def read_deliverables(
                     terms = None
                 if terms is not None:
                     residual = correction["residual"]
-                    support = (
-                        "bench_supported"
-                        if set(eligible[feature]) <= set(residual)
-                        and all(
-                            r["withinLimit"]
-                            and -LIMITS[feature] < _interval(r)[1]
-                            and _interval(r)[2] < LIMITS[feature]
-                            for r in (residual[pid] for pid in eligible[feature])
+                    if not set(eligible[feature]) <= set(residual):
+                        support = "failed_lack_of_fit"
+                        reason = "residual_programs_differ_from_eligible_set"
+                    else:
+                        support = (
+                            "bench_supported"
+                            if all(
+                                r["withinLimit"]
+                                and -LIMITS[feature] < _interval(r)[1]
+                                and _interval(r)[2] < LIMITS[feature]
+                                for r in (residual[pid] for pid in eligible[feature])
+                            )
+                            else "failed_lack_of_fit"
                         )
-                        else "failed_lack_of_fit"
-                    )
             rows.append(
                 FeatureInputs(
                     feature,
@@ -300,6 +305,7 @@ def read_deliverables(
                     correction=terms,
                     support=support,
                     bias_basis=basis,
+                    reason=reason,
                 )
             )
     except (KeyError, TypeError, OverflowError, AttributeError) as error:

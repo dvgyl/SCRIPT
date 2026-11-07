@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import csv
+import hashlib
+import importlib.util
 import json
+import sys
 from dataclasses import replace
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import numpy as np
@@ -13,7 +17,7 @@ from scipy.special import logit
 from scipy.stats import norm
 
 from scriptkin import bench
-from scriptkin.bench.analysis import correction_model
+from scriptkin.bench.analysis import correction_model, feature_programs
 from scriptkin.bench.inputs import Constants, Registry
 from scriptkin.bench.moves import MoveList
 from scriptkin.consequence.generate import correct_w, generate_cohort, observe
@@ -41,6 +45,7 @@ from scriptkin.consequence.plan import (
     ProgramTarget,
     SeedKey,
     cells,
+    plan_digest,
     planned_replicates,
     seed_for,
 )
@@ -64,6 +69,17 @@ move_lists = moves_tests.move_lists
 @pytest.fixture(scope="session")
 def centers(move_lists: dict[str, MoveList]) -> Centers:
     return centers_for(move_lists)
+
+
+@pytest.fixture
+def study_script() -> ModuleType:
+    path = Path(__file__).resolve().parents[1] / "studies/consequence.py"
+    spec = importlib.util.spec_from_file_location("consequence_study_test", path)
+    assert spec is not None and spec.loader is not None
+    script = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = script
+    spec.loader.exec_module(script)
+    return script
 
 
 PLAN = ConsequencePlan()
@@ -101,12 +117,13 @@ def fixture_document(centers: Centers) -> dict[str, Any]:
                     )
                 },
                 "residual": {
-                    f.selection.program.id: {
+                    p.id: {
                         "estimate": 0.0,
                         "lower": -0.001,
                         "upper": 0.001,
                         "withinLimit": True,
                     }
+                    for p in feature_programs(name, bench.MAIN, tuple(p.id for p in bench.MAIN))
                 },
             },
         }
@@ -214,13 +231,39 @@ def test_correction_formula() -> None:
     )
 
 
+def test_passing_correction_supported(tmp_path: Path, centers: Centers) -> None:
+    # Defect: The reader never reports bench support for a passing correction.
+    features = read_fixture(tmp_path, fixture_document(centers), centers).features
+    assert all(f.support == "bench_supported" and not f.reason for f in features)
+
+
 def test_failed_check_retained(tmp_path: Path, centers: Centers) -> None:
-    # Defect: A failed correction disappears from diagnostic inputs.
+    # Defect: The reader ignores a failed residual outside the selected program.
     raw = fixture_document(centers)
     residual = raw["features"][FEATURES[0]]["correction"]["residual"]
-    next(iter(residual.values()))["withinLimit"] = False
-    f = read_fixture(tmp_path, raw, centers).features[0]
+    residual["loops-l-v40"]["withinLimit"] = False
+    features = read_fixture(tmp_path, raw, centers).features
+    f = features[0]
     assert f.correction is not None and f.support == "failed_lack_of_fit"
+    assert all(other.support == "bench_supported" for other in features[1:])
+
+
+def test_missing_residual_reason(tmp_path: Path, centers: Centers) -> None:
+    # Defect: Missing residual coverage has no reason code.
+    raw = fixture_document(centers)
+    del raw["features"][FEATURES[0]]["correction"]["residual"]["loops-l-v40"]
+    features = read_fixture(tmp_path, raw, centers).features
+    assert features[0].support == "failed_lack_of_fit"
+    assert features[0].reason == "residual_programs_differ_from_eligible_set"
+    assert features[0].correction is not None
+    assert all(f.support == "bench_supported" and not f.reason for f in features[1:])
+    registry = Registry(
+        tmp_path,
+        (),
+        Constants(("line-osc5", "line-osc8", "line-osc11"), ("loops-l-v40",), False),
+    )
+    restored = read_fixture(tmp_path, raw, centers, registry).features
+    assert all(f.support == "bench_supported" and not f.reason for f in restored)
 
 
 def test_mounting_dependence(centers: Centers) -> None:
@@ -580,22 +623,87 @@ def test_sensitivity_completeness(tmp_path: Path, centers: Centers) -> None:
     assert rows and all(r["planned_R"] == "2" and r["status"] == "ok" for r in rows)
 
 
-def test_study_move_lists(tmp_path: Path, move_lists: dict[str, MoveList], programs_folder: Path) -> None:
+def test_study_move_lists(
+    tmp_path: Path, move_lists: dict[str, MoveList], programs_folder: Path, study_script: ModuleType
+) -> None:
     # Defect: The study loader changes a registered move list when it builds it in memory.
-    import importlib.util
-    import sys
-
-    path = Path(__file__).resolve().parents[1] / "studies/consequence.py"
-    spec = importlib.util.spec_from_file_location("consequence_study_test", path)
-    assert spec is not None and spec.loader is not None
-    script = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = script
-    spec.loader.exec_module(script)
-    built = script.load_move_lists(tmp_path)
-    read = script.load_move_lists(programs_folder)
+    built = study_script.load_move_lists(tmp_path)
+    read = study_script.load_move_lists(programs_folder)
     assert set(built) == set(read) == {d.id for d in bench.MAIN}
     for pid in built:
         assert built[pid] == read[pid] == move_lists[pid]
+
+
+def test_grid_refuses_registry(
+    tmp_path: Path,
+    study_script: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Defect: Grid mode silently ignores a supplied bench registry.
+    out = tmp_path / "out"
+    monkeypatch.setattr(
+        sys, "argv", ["consequence.py", "--mode", "grid", "--registry", "registry.json", "--out", str(out)]
+    )
+    with pytest.raises(SystemExit) as error:
+        study_script.main()
+    assert error.value.code == 2
+    assert "--registry requires --mode measured." in capsys.readouterr().err
+    assert not out.exists()
+
+
+def test_measured_registry_digest(
+    tmp_path: Path,
+    centers: Centers,
+    move_lists: dict[str, MoveList],
+    study_script: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Defect: The measured manifest omits the supplied bench registry file hash.
+    plan = replace(PLAN, source="measured", cell_specs=())
+    monkeypatch.setattr(
+        study_script,
+        "ConsequencePlan",
+        lambda seed=plan.seed, source=plan.source: replace(plan, seed=seed, source=source),
+    )
+    monkeypatch.setattr(study_script, "load_move_lists", lambda: move_lists)
+    registry = tmp_path / "registry.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "studyStore": "store",
+                "mountings": [],
+                "constants": {
+                    "bandPowerPrograms": ["line-osc5", "line-osc8", "line-osc11"],
+                    "excludedPrograms": [],
+                    "faultDwellGapsOnP": False,
+                },
+            }
+        )
+    )
+    deliverables = tmp_path / "deliverables.json"
+    deliverables.write_text(json.dumps(fixture_document(centers)))
+    out = tmp_path / "out"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "consequence.py",
+            "--mode",
+            "measured",
+            "--deliverables",
+            str(deliverables),
+            "--registry",
+            str(registry),
+            "--expect-plan-sha256",
+            plan_digest(plan),
+            "--out",
+            str(out),
+        ],
+    )
+    study_script.main()
+    manifest = json.loads((out / "consequence_manifest.json").read_text())
+    assert manifest["bench_registry_sha256"] == hashlib.sha256(registry.read_bytes()).hexdigest()
 
 
 @pytest.mark.parametrize(

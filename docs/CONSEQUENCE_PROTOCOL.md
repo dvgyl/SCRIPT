@@ -157,6 +157,7 @@ Never use the presence of a result key to define program eligibility.
 Require the selected program entry and its bias, interval, factor, SE, and variance values.
 A missing selected entry or value gives `unavailable` with reason `missing_selected_program_value`.
 Older deliverables without constants use the full registered set unless a registry is supplied with `--registry`.
+Refuse `--registry` in grid mode. This option requires measured mode.
 
 Keep non-equivalent features in the analysis.
 Equivalence status is an output descriptor, not a feature selection rule.
@@ -165,11 +166,14 @@ Do not present that run as confirmation of an unchanged bench protocol.
 Hash the deliverable bytes, selected program center values, and eligible program identifiers together.
 Keep the original deliverable text in the manifest and the selected centers in `consequence_inputs.csv`.
 A change to a selected center must change the measured input digest.
+When `--registry` is supplied, record its file SHA-256 as `bench_registry_sha256` in the manifest.
+Leave this value null when no bench registry file is supplied.
 
 Deliverables do not contain coefficient covariance, raw feature support, or joint-feature noise covariance.
 Do not invent these quantities.
 The program registry supplies program geometry, scale, speed, and oscillation frequency.
 Record its digest separately.
+The manifest key `registry_sha256` identifies `contract/bench_programs.json`, not the supplied bench registry.
 
 ### 3.2 Closest-program rule
 
@@ -307,7 +311,11 @@ Band power uses the shift model.
 Fixed terms remain beta 1 and gamma 0 where required.
 
 Apply every finite correction as a diagnostic, including corrections that fail the held-out check [J5].
-Mark it `bench_supported` only when every registered program residual passes its limit.
+Mark it `bench_supported` only when every eligible program residual passes its limit.
+If an eligible program lacks a residual, use `failed_lack_of_fit` with reason `residual_programs_differ_from_eligible_set`.
+This reason identifies missing residual coverage, not a failed residual limit check.
+Older deliverables can give this reason when they omit the constants for excluded programs.
+Supply the locked bench registry to declare those exclusions. Do not infer them from residual keys.
 Mark all other corrected results `failed_lack_of_fit` or `unavailable`.
 An unavailable correction has no corrected metric.
 Never substitute an oracle correction into the measured analysis.
@@ -730,7 +738,8 @@ A unit stores cell ID, replicate, stream seeds, metric values, failures, and com
 Group values by validation scheme, direction, and observation version.
 Store decision-curve values and calibration-bin values as arrays, without repeated row fields.
 Keep cell settings once in `consequence_cells.csv`.
-`identity.json` holds `code_sha256`, `protocol_sha256`, `plan_sha256`, and `input_sha256`.
+`identity.json` holds six keys: `code_sha256`, `protocol_sha256`, `plan_sha256`, `input_sha256`, `smoke`, and `unit_format`.
+`smoke` states whether the run uses smoke mode. `unit_format` gives the restart unit format version, currently 2.
 The code hash covers the running `scriptkin` package. The protocol hash covers this document.
 The plan hash covers the canonical plan, cells, and registered limits.
 For measured runs, the input hash covers deliverables, selected centers, and eligible programs.

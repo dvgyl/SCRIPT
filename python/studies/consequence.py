@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
 
@@ -13,7 +14,7 @@ from scriptkin.bench.inputs import read_registry
 from scriptkin.bench.moves import MoveList, read_move_list
 from scriptkin.consequence.inputs import centers_for, read_deliverables
 from scriptkin.consequence.plan import ConsequencePlan, plan_digest
-from scriptkin.consequence.report import write_outputs
+from scriptkin.consequence.report import file_digest, write_outputs
 
 
 def load_move_lists(folder: Path = bench.PROGRAM_FOLDER) -> dict[str, MoveList]:
@@ -53,6 +54,8 @@ def main() -> None:
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--workers", type=int, default=1)
     args = parser.parse_args()
+    if args.registry and args.mode != "measured":
+        parser.error("--registry requires --mode measured.")
     plan = ConsequencePlan(seed=args.seed, source=args.mode)
     if args.workers < 1:
         parser.error("--workers must be positive.")
@@ -65,6 +68,8 @@ def main() -> None:
         inputs = read_deliverables(
             args.deliverables, centers, expected_protocol=bench.PROTOCOL_VERSION, registry=registry
         )
+        if args.registry:
+            inputs = replace(inputs, registry_sha256=file_digest(args.registry))
     print(f"plan_sha256: {plan_digest(plan)}", flush=True)
     write_outputs(
         plan,

@@ -938,6 +938,7 @@ def write_outputs(
         **identity,
         "protocol_sha256": hashlib.sha256(protocol.read_bytes()).hexdigest(),
         "registry_sha256": hashlib.sha256(registry.read_bytes()).hexdigest(),
+        "bench_registry_sha256": measured.registry_sha256 if measured else None,
         "plan": asdict(plan),
         "cell_table": "consequence_cells.csv",
         "planned_cells": len(catalog),
