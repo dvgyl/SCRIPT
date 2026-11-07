@@ -146,6 +146,7 @@ final class SessionStore {
     @ObservationIgnored let configurations: ConfigurationLibrary
     @ObservationIgnored let qualifications: QualificationRegistry
     @ObservationIgnored private let makeSink: SinkFactory
+    @ObservationIgnored private let uptime: @MainActor () -> Double
     /// The free bytes on the volume of the journals, or nil when the system does not say.
     @ObservationIgnored private let freeSpace: @Sendable () -> Int64?
     /// A session does not start with less free storage than this, because a full disk stops it part way.
@@ -169,6 +170,7 @@ final class SessionStore {
     init(contract: BundledContract, storage: Storage, device: DeviceFacts, configurations: ConfigurationLibrary,
          qualifications: QualificationRegistry = QualificationRegistry(),
          makeSink: @escaping SinkFactory = { try JournalWriter(appendingTo: $0, onFailure: $1) },
+         uptime: @escaping @MainActor () -> Double = { Clock.uptime },
          freeSpace: (@Sendable () -> Int64?)? = nil) {
         self.contract = contract
         self.storage = storage
@@ -176,6 +178,7 @@ final class SessionStore {
         self.configurations = configurations
         self.qualifications = qualifications
         self.makeSink = makeSink
+        self.uptime = uptime
         let volume = storage.sessions.deletingLastPathComponent()
         self.freeSpace = freeSpace ?? {
             try? volume.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
@@ -550,7 +553,7 @@ final class SessionStore {
 
     func start() {
         guard let flow = live?.participant, live?.stage == .ready else { return }
-        guard perform(.handoff(to: .participant, t: Clock.uptime)) else { return }
+        guard perform(.handoff(to: .participant, t: uptime())) else { return }
         if flow.dominant == nil, flow.plan.usesUnknownHand {
             self.live?.stage = .hand
         } else {
@@ -585,13 +588,13 @@ final class SessionStore {
                              subject: .participant(ParticipantTrialFacts(hand: step.hand, instruction: instruction)),
                              view: view, stimulusOrigin: origin)
         let index = TrialIndex(state.session.trials.count)!
-        if perform(.startTrial(plan, t: Clock.uptime)) {
+        if perform(.startTrial(plan, t: uptime())) {
             self.live?.trialGeometry = (index, view, origin)
         }
     }
 
     func begin() {
-        perform(.beginTrial(t: Clock.uptime))
+        perform(.beginTrial(t: uptime()))
     }
 
     /// The one who draws taps Done: the participant, or the operator of a bench session.
@@ -602,7 +605,7 @@ final class SessionStore {
     /// Ends the open trial. A contact still down ends as cancelled first, because a trial ends with no contact down.
     private func endTrial(_ reason: TrialEndReason) {
         guard case .drawing = core?.state.phase else { return }
-        let t = Clock.uptime
+        let t = uptime()
         record(core!.recorder.cancelAll(t: t))
         guard perform(.endTrial(reason: reason, t: t)) else { return }
         live?.trialGeometry = nil
@@ -612,9 +615,9 @@ final class SessionStore {
     /// Answers the current item, or skips it when `value` is nil. The last item ends the block.
     func answer(_ value: Int?) async {
         guard live?.stage == .working, let current = currentItem, let before = core?.state.session.safety else { return }
-        guard perform(.respond(item: current.item.id, value: value, t: Clock.uptime)) else { return }
+        guard perform(.respond(item: current.item.id, value: value, t: uptime())) else { return }
         if current.number == current.count {
-            guard perform(.endQuestionnaire(reason: .completed, t: Clock.uptime)) else { return }
+            guard perform(.endQuestionnaire(reason: .completed, t: uptime())) else { return }
         }
         guard await syncedFlags(since: before), live?.stage == .working,
               let after = core?.state.session.safety else { return }
@@ -654,7 +657,7 @@ final class SessionStore {
     func advance() {
         guard let live, let flow = live.participant, live.stage != .stopped, let state = core?.state else { return }
         if live.opened.person?.administration == .selfAdministered, state.session.safety.flaggedSinceCrisisList {
-            if perform(.show(.crisisList, t: Clock.uptime)) { self.live?.stage = .flagCrisisList }
+            if perform(.show(.crisisList, t: uptime())) { self.live?.stage = .flagCrisisList }
             return
         }
         switch flow.plan.next(state.session) {
@@ -664,7 +667,7 @@ final class SessionStore {
             if live.opened.person?.administration == .selfAdministered, !flow.disclosureShown,
                flow.plan.hasSafetyItem(in: live.rules.instruments) {
                 self.live?.stage = .disclosure
-            } else if perform(.startQuestionnaire(id, t: Clock.uptime)) {
+            } else if perform(.startQuestionnaire(id, t: uptime())) {
                 self.live?.stage = .working
             }
         case .done:
@@ -675,7 +678,7 @@ final class SessionStore {
     private func finish() {
         guard let live, let state = core?.state else { return }
         if live.opened.purpose == .qualification {
-            guard perform(.close(t: Clock.uptime)) else { return }
+            guard perform(.close(t: uptime())) else { return }
             qualifications.record(live.opened)
             self.live?.stage = .sampleTiming
             closeSink()
@@ -690,11 +693,11 @@ final class SessionStore {
 
     private func showClosingCrisisList() {
         live?.stage = .closingCrisisList
-        perform(.show(.crisisList, t: Clock.uptime))
+        perform(.show(.crisisList, t: uptime()))
     }
 
     private func close() {
-        guard perform(.close(t: Clock.uptime)) else { return }
+        guard perform(.close(t: uptime())) else { return }
         live?.stage = .finished
         closeSink()
     }
@@ -736,7 +739,7 @@ final class SessionStore {
         let plan = TrialPlan(task: program.task, practice: false, position: state.session.trials.count + 1,
                              subject: .bench(run), view: view, stimulusOrigin: origin)
         let index = TrialIndex(state.session.trials.count)!
-        if perform(.startTrial(plan, t: Clock.uptime)) {
+        if perform(.startTrial(plan, t: uptime())) {
             self.live?.trialGeometry = (index, view, origin)
         }
     }
@@ -745,7 +748,7 @@ final class SessionStore {
     @discardableResult
     func mark(_ code: MarkCode) -> Bool {
         guard let run = currentRun, let trial = run.trial, run.markCodes.contains(code) else { return false }
-        return perform(.mark(trial: trial, code: code, t: Clock.uptime))
+        return perform(.mark(trial: trial, code: code, t: uptime()))
     }
 
     /// The operator stops the open run, for example after a wrong pick or a fault of the motion system.
@@ -756,7 +759,7 @@ final class SessionStore {
 
     /// Closes a bench session between runs. The operator then exports it.
     func endBench() {
-        guard live?.stage == .bench, perform(.close(t: Clock.uptime)) else { return }
+        guard live?.stage == .bench, perform(.close(t: uptime())) else { return }
         live?.chosenRun = nil
         live?.stage = .sampleTiming
         closeSink()
@@ -805,11 +808,11 @@ final class SessionStore {
         case .paused, .review, .bench:
             break
         case .handBack:
-            perform(.handoff(to: .operator, t: Clock.uptime))
+            perform(.handoff(to: .operator, t: uptime()))
             self.live?.stage = .review
             showOperatorAlert()
         default:
-            perform(.handoff(to: .operator, t: Clock.uptime))
+            perform(.handoff(to: .operator, t: uptime()))
             self.live?.participant?.participantStage = live.stage
             self.live?.stage = .paused
         }
@@ -817,7 +820,7 @@ final class SessionStore {
 
     func returnToParticipant() {
         guard let flow = live?.participant, live?.stage == .paused else { return }
-        guard perform(.handoff(to: .participant, t: Clock.uptime)) else { return }
+        guard perform(.handoff(to: .participant, t: uptime())) else { return }
         self.live?.stage = flow.participantStage
     }
 
@@ -828,12 +831,12 @@ final class SessionStore {
         let before = state.session.safety
         switch state.phase {
         case .drawing:
-            let t = Clock.uptime
+            let t = uptime()
             record(core!.recorder.cancelAll(t: t))
             perform(.endTrial(reason: .operatorAbort, t: t))
             live?.trialGeometry = nil
         case .answering:
-            perform(.endQuestionnaire(reason: .declined, t: Clock.uptime))
+            perform(.endQuestionnaire(reason: .declined, t: uptime()))
         default:
             break
         }
@@ -852,12 +855,12 @@ final class SessionStore {
     private func showOperatorAlert() {
         guard live?.opened.person?.administration == .supervised, let state = core?.state,
               state.session.safety.unactionedFlags > 0 else { return }
-        perform(.show(.operatorAlert, t: Clock.uptime))
+        perform(.show(.operatorAlert, t: uptime()))
     }
 
     func recordAction(_ code: Code) {
         guard live?.stage == .review else { return }
-        perform(.recordAction(code, t: Clock.uptime))
+        perform(.recordAction(code, t: uptime()))
     }
 
     /// The operator gives the iPad back for the crisis list, which every session with a block ends with. A supervised
@@ -866,13 +869,13 @@ final class SessionStore {
         guard let live, live.stage == .review, let state = core?.state,
               state.session.safety.unactionedFlags == 0 || live.opened.person?.administration == .selfAdministered
         else { return }
-        guard perform(.handoff(to: .participant, t: Clock.uptime)) else { return }
+        guard perform(.handoff(to: .participant, t: uptime())) else { return }
         showClosingCrisisList()
     }
 
     func closeFromReview() {
         guard live?.stage == .review, let state = core?.state, state.session.blocks.isEmpty else { return }
-        guard perform(.close(t: Clock.uptime)) else { return }
+        guard perform(.close(t: uptime())) else { return }
         leave()
     }
 

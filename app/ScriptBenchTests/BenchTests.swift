@@ -395,3 +395,62 @@ private func export(_ bench: TestBench, _ opened: SessionOpened) throws -> (fold
     let (_, state, _) = try export(second, opened)
     #expect(state.summary.trials.map(\.outcome) == [.completed, .interrupted, .completed])
 }
+
+@Test @MainActor func syntheticTabletCaptureWritesTheParityExport() async throws {
+    // Detects capture changes that alter the synthetic movement before Python computes its features.
+    let fixture = try #require(try JSONSerialization.jsonObject(with: parityFixture()) as? [String: Any])
+    let tools = try #require(fixture["tools"] as? [String: [String: Any]])
+    let events = try #require(tools["bench"]?["events"] as? [[String: Any]])
+    let mounting = try #require(fixture["mounting"] as? String)
+    let base = try #require(fixture["base"] as? Double)
+    let times = try #require(fixture["trial"] as? [String: Double])
+    let started = try #require(times["started"])
+    let ended = try #require(times["ended"])
+    let closed = try #require(times["closed"])
+    let origin = try #require(tools["bench"]?["origin"] as? [Double])
+    let programName = try #require(fixture["program"] as? String)
+    let program = try #require(ProgramID(programName))
+    let bench = try TestBench()
+    defer { bench.remove() }
+    bench.enter()
+    let opened = try bench.opened(.bench)
+    guard case .bench(let facts) = opened.subject else { throw CocoaError(.coderInvalidValue) }
+    #expect(facts.mounting.rawValue == mounting)
+    #expect(bench.store.open(opened))
+    bench.hover(x: Int(origin[0]), y: 29600 - Int(origin[1]))
+    bench.store.setOrigin()
+    // TestClock advances by 1 ms before it returns an app event time.
+    bench.clock.now = base + started - 0.001
+    bench.store.begin(.bench(BenchRunPlan(program: program, run: 1)))
+    for row in events {
+        let kind = try #require(row["kind"] as? String)
+        let source: TabletPoint.Source
+        switch kind {
+        case "down": source = .down
+        case "up": source = .up
+        case "moved": source = .moved
+        case "dragged": source = .dragged
+        default: throw CocoaError(.coderInvalidValue)
+        }
+        bench.clock.now = base + (try #require(row["offset"] as? Double))
+        bench.send(.point(TabletPoint(source: source, t: bench.clock.now, device: 3,
+                                     absoluteX: try #require(row["absoluteX"] as? Int),
+                                     absoluteY: try #require(row["absoluteY"] as? Int),
+                                     pressure: try #require(row["pressure"] as? Double),
+                                     tiltX: try #require(row["tiltX"] as? Double),
+                                     tiltY: try #require(row["tiltY"] as? Double), rotation: 0)))
+    }
+    bench.clock.now = base + ended - 0.001
+    bench.store.done()
+    bench.clock.now = base + closed - 0.001
+    await bench.store.close()
+    let (folder, state, _) = try export(bench, opened)
+    #expect(state.summary.trials.map(\.contacts) == [2])
+    if let out = benchContractOut?.appendingPathComponent("parity", isDirectory: true) {
+        try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+        let target = out.appendingPathComponent(folder.lastPathComponent, isDirectory: true)
+        try FileManager.default.copyItem(at: folder, to: target)
+        try state.summary.jsonData().write(to: out.appendingPathComponent("\(target.lastPathComponent).summary.json"))
+        try JSONSerialization.data(withJSONObject: ["base": base]).write(to: out.appendingPathComponent("\(target.lastPathComponent).clock.json"))
+    }
+}

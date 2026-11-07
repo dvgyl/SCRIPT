@@ -81,7 +81,10 @@ bench() {
     rm -rf "$BUILD/bench-tests.xcresult"
     # xcodebuild passes a TEST_RUNNER_ variable to the test process without its prefix. The arch keeps the log free
     # of the warning about two matching Mac destinations.
-    if ! TEST_RUNNER_SCRIPT_CONTRACT_OUT="$BUILD/contract-out" xcodebuild test -quiet \
+    # A test host may not read the external drive of the repository, so the parity fixture goes to the build folder.
+    cp "$ROOT/contract/fixtures/parity/parity.json" "$BUILD/parity.json"
+    if ! TEST_RUNNER_SCRIPT_CONTRACT_OUT="$BUILD/contract-out" TEST_RUNNER_SCRIPT_PARITY_FIXTURE="$BUILD/parity.json" \
+        xcodebuild test -quiet \
         -project "$ROOT/app/ScriptApp.xcodeproj" -scheme ScriptBench -destination "platform=macOS,arch=$(uname -m)" \
         -derivedDataPath "$BUILD/DerivedData-bench" -resultBundlePath "$BUILD/bench-tests.xcresult" \
         SWIFT_TREAT_WARNINGS_AS_ERRORS=YES SCRIPT_SOURCE_REVISION="$revision" >"$BUILD/bench-tests.log" 2>&1; then
@@ -123,7 +126,9 @@ PY
     xcrun simctl uninstall "$udid" "$id" 2>/dev/null || true
     revision=$(source_revision)
     rm -rf "$BUILD/app-tests.xcresult"
-    if ! xcodebuild test -quiet -project "$ROOT/app/ScriptApp.xcodeproj" -scheme ScriptApp \
+    cp "$ROOT/contract/fixtures/parity/parity.json" "$BUILD/parity.json"
+    if ! TEST_RUNNER_SCRIPT_PARITY_FIXTURE="$BUILD/parity.json" xcodebuild test -quiet \
+        -project "$ROOT/app/ScriptApp.xcodeproj" -scheme ScriptApp \
         -destination "platform=iOS Simulator,id=$udid" -derivedDataPath "$BUILD/DerivedData" \
         -resultBundlePath "$BUILD/app-tests.xcresult" \
         SWIFT_TREAT_WARNINGS_AS_ERRORS=YES SCRIPT_SOURCE_REVISION="$revision" >"$BUILD/app-tests.log" 2>&1; then
