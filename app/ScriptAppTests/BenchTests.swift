@@ -254,3 +254,63 @@ private func lines(_ store: SessionStore) async throws -> [[String: Any]] {
     second.endBench()
     #expect(second.live?.stage == .sampleTiming)
 }
+
+@Test @MainActor func syntheticBenchCaptureWritesTheParityExport() async throws {
+    // Detects capture changes that alter the synthetic movement before Python computes its features.
+    let fixtureURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        .appendingPathComponent("../../contract/fixtures/parity/parity.json").standardizedFileURL
+    let fixture = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: fixtureURL)) as? [String: Any])
+    let tools = try #require(fixture["tools"] as? [String: [String: Any]])
+    let events = try #require(tools["app"]?["events"] as? [[String: Any]])
+    let base = try #require(fixture["base"] as? Double)
+    let times = try #require(fixture["trial"] as? [String: Double])
+    let started = try #require(times["started"])
+    let began = try #require(times["began"])
+    let ended = try #require(times["ended"])
+    let closed = try #require(times["closed"])
+    let clock = ParityClock(now: base)
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try makeStore(root: root, input: .pencil, clock: clock)
+    var header = try benchHeader(store)
+    header.openedUptime = base
+    header.pencil = .pro
+    header.channels = ChannelPlan.plan(pencil: .pro, hoverSupported: false)
+    store.openBench(header)
+    let program = try #require(fixture["program"] as? String)
+    store.chooseRun(BenchRunPlan(program: try #require(ProgramID(program)), run: 1))
+    clock.now = base + started
+    store.startRun(view: ViewSize(width: 834, height: 1000)!)
+    clock.now = base + began
+    store.begin()
+    for row in events {
+        let contact = try #require(row["contact"] as? Int)
+        let offset = try #require(row["offset"] as? Double)
+        let x = try #require(row["x"] as? Double)
+        let y = try #require(row["y"] as? Double)
+        let phaseName = try #require(row["phase"] as? String)
+        let phase = try #require(PenPhase(rawValue: phaseName))
+        clock.now = base + offset
+        let reading = PenReading(key: TouchKey(UInt(contact)), t: base + offset, x: x, y: y,
+                                 force: row["force"] as? Double, maxForce: row["maxForce"] as? Double,
+                                 altitude: row["altitude"] as? Double, azimuth: row["azimuth"] as? Double,
+                                 roll: row["roll"] as? Double, phase: phase)
+        store.pen([reading])
+    }
+    clock.now = base + ended
+    store.done()
+    clock.now = base + closed
+    store.endBench()
+    let result = try #require(await store.export(header.sessionID))
+    let data = try Data(contentsOf: result.url.appendingPathComponent(Storage.Export.journal))
+    let state = try Journal.read(data)
+    #expect(state.summary.trials.map(\.contacts) == [2])
+    // The app check copies Documents/Exports from this simulator container.
+    let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+    let out = documents.appendingPathComponent("Exports/parity", isDirectory: true)
+    try FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+    let target = out.appendingPathComponent(result.url.lastPathComponent, isDirectory: true)
+    try FileManager.default.copyItem(at: result.url, to: target)
+    try state.summary.jsonData().write(to: out.appendingPathComponent("\(target.lastPathComponent).summary.json"))
+    try JSONSerialization.data(withJSONObject: ["base": base]).write(to: out.appendingPathComponent("\(target.lastPathComponent).clock.json"))
+}

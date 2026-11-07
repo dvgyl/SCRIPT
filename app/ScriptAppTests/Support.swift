@@ -6,7 +6,8 @@ import Synchronization
 
 /// A store over new temporary folders. The caller removes `root`.
 @MainActor
-func makeStore(root: URL, makeSink: SinkFactory? = nil, freeBytes: Int64 = 50_000_000_000) throws -> SessionStore {
+func makeStore(root: URL, makeSink: SinkFactory? = nil, freeBytes: Int64 = 50_000_000_000,
+               input: InputKind = .directTouchAsPen, clock: ParityClock? = nil) throws -> SessionStore {
     let contract = try BundledContract()
     let defaults = UserDefaults(suiteName: "ScriptAppTests-\(UUID().uuidString)")!
     let storage = Storage(applicationSupport: root.appendingPathComponent("Support"),
@@ -14,14 +15,15 @@ func makeStore(root: URL, makeSink: SinkFactory? = nil, freeBytes: Int64 = 50_00
     let library = ConfigurationLibrary(folder: root.appendingPathComponent("Support/Configurations"), demo: contract.demo,
                                        defaults: defaults)
     let device = DeviceFacts(model: "iPad17,2", os: "iPadOS 27.0", nativeScale: 2,
-                             app: AppInfo(version: "0.1.0", build: "1", sourceRevision: "test"), input: .directTouchAsPen)
+                             app: AppInfo(version: "0.1.0", build: "1", sourceRevision: "test"), input: input)
     if let makeSink {
         return SessionStore(contract: contract, storage: storage, device: device, configurations: library,
                             qualifications: QualificationRegistry(defaults: defaults), makeSink: makeSink,
-                            freeSpace: { freeBytes })
+                            uptime: { clock?.now ?? Clock.uptime }, freeSpace: { freeBytes })
     }
     return SessionStore(contract: contract, storage: storage, device: device, configurations: library,
-                        qualifications: QualificationRegistry(defaults: defaults), freeSpace: { freeBytes })
+                        qualifications: QualificationRegistry(defaults: defaults),
+                        uptime: { clock?.now ?? Clock.uptime }, freeSpace: { freeBytes })
 }
 
 func temporaryFolder() throws -> URL {
@@ -210,4 +212,12 @@ final class GatedSink: JournalSink {
     func append(_ entries: [Entry]) throws { gate.appended(entries.map(\.event.kind)) }
     func sync() async throws { await gate.sync() }
     func close() async throws {}
+}
+
+/// The app event and pen event clock of a synthetic bench run.
+@MainActor
+final class ParityClock {
+    var now: Double
+
+    init(now: Double) { self.now = now }
 }

@@ -10,6 +10,7 @@ from __future__ import annotations
 import functools
 import hashlib
 import json
+import math
 import struct
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1100,6 +1101,74 @@ def _json_bytes(obj: Any) -> bytes:
     return (json.dumps(obj, indent=1) + "\n").encode()
 
 
+def _parity() -> dict[str, Any]:
+    """Two strokes of one movement, sampled in the native units of each tool."""
+    tools = {}
+    for tool, rate in (("app", 240), ("bench", 200)):
+        events = []
+        for stroke in range(2):
+            for i in range(int(4.2 * rate) + 1):
+                t = i / rate
+                x = round(200 * (20 + 20 * t + 0.12 * math.sin(16 * math.pi * t))) / 200
+                y = round(200 * (25 + 22 * stroke + 2 * t + math.sin(4 * math.pi * t))) / 200
+                first, last = i == 0, i == int(4.2 * rate)
+                row: dict[str, Any] = {"offset": 1 + stroke * 4.6 + t, "contact": stroke + 1, "mm": [x, -y]}
+                if tool == "app":
+                    row.update(
+                        x=x / (25.4 * 2 / 264),
+                        y=y / (25.4 * 2 / 264),
+                        phase="began" if first else "ended" if last else "moved",
+                        force=0.4 + 0.08 * math.sin(3 * t + stroke),
+                        maxForce=1.0,
+                        altitude=1.1 + 0.1 * math.sin(2 * t + stroke),
+                        azimuth=0.3 + 0.15 * math.sin(4 * t + stroke),
+                        roll=0.2 + 0.12 * math.sin(5 * t + stroke),
+                    )
+                else:
+                    row.update(
+                        kind="down" if first else "up" if last else "dragged",
+                        absoluteX=10000 + round(x * 200),
+                        absoluteY=21600 - round(y * 200),
+                        pressure=0.0 if last else 0.4 + 0.08 * math.sin(3 * t + stroke),
+                        tiltX=0.1 + 0.15 * math.sin(2 * t + stroke),
+                        tiltY=-0.2 + 0.12 * math.sin(4 * t + stroke),
+                    )
+                events.append(row)
+            if tool == "bench" and stroke == 0:
+                for i in range(1, 80):
+                    events.append(
+                        dict(
+                            kind="moved",
+                            offset=5.2 + i / rate,
+                            contact=0,
+                            absoluteX=16000,
+                            absoluteY=14000,
+                            pressure=0.0,
+                            tiltX=0.1 + 0.15 * math.sin(2 * i / rate),
+                            tiltY=-0.2 + 0.12 * math.sin(4 * i / rate),
+                            mm=[30.0, -38.0],
+                        )
+                    )
+        tools[tool] = {
+            "rate": rate,
+            "origin": [0.0, 0.0] if tool == "app" else [10000.0, 8000.0],
+            "device": {
+                "model": "iPad17,2" if tool == "app" else TABLET["model"],
+                "input": "pencil" if tool == "app" else "tablet",
+                "channels": ["force", "altitude", "azimuth", "roll"]
+                if tool == "app"
+                else ["force", "tiltX", "tiltY", "hover"],
+            },
+            "events": events,
+        }
+    return {
+        "program": "line-osc8",
+        "base": 5000.0,
+        "trial": {"started": 0.25, "began": 0.251, "ended": 10.0, "closed": 10.5},
+        "tools": tools,
+    }
+
+
 def generated_files() -> dict[str, bytes]:
     """Every generated file, keyed by its path relative to contract/."""
     files: dict[str, bytes] = {
@@ -1108,6 +1177,7 @@ def generated_files() -> dict[str, bytes]:
         "instruments.json": instruments.instruments_bytes(),
         "configs/demo.json": studyconfig.config_bytes(studyconfig.demo_config()),
         "fixtures/doubles.json": _doubles_bytes(),
+        "fixtures/parity/parity.json": _json_bytes(_parity()),
     }
     files["fixtures/svc/synthetic.svc"] = (
         b"8\n"
