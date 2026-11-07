@@ -840,6 +840,7 @@ The lock registers everything that the main runs depend on. Do it after the pilo
    - `contract/bench_programs.json`
    - `python/uv.lock`
    - every file under `python/src/scriptkin/`, without `__pycache__`, `.DS_Store`, and `._` files
+   - `docs/CONSEQUENCE_PROTOCOL.md` and `python/studies/consequence.py`
    - `python/studies/bench_programs.py`, `python/studies/bench_limits.py`, and `python/studies/bench_precision.py`
    - `python/studies/bench_controller.py`, the translation script of section 4.1
    - the precision report `bench/results/bench_precision.json`

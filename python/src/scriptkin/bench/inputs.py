@@ -66,6 +66,8 @@ LOCK_FORMAT = "script-bench-lock"
 LOCK_VERSION = 1
 LOCK_FILES = (
     "docs/BENCH_PROTOCOL.md",
+    "docs/CONSEQUENCE_PROTOCOL.md",
+    "python/studies/consequence.py",
     "bench/registry.json",
     "contract/bench_programs.json",
     "python/uv.lock",
