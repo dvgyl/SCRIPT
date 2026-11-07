@@ -83,6 +83,7 @@ class FitRecord:
     fold: int
     stage: str
     participants: frozenset[str]
+    rows: frozenset[int] = frozenset()
 
 
 @dataclass
@@ -95,7 +96,14 @@ class FitWitness:
     stage: str
 
     def fit(self, x: FloatArray, y: IntArray) -> None:
-        self.log.append(FitRecord(self.fold, self.stage, frozenset(self.ids[int(i)] for i in x[:, 0])))
+        self.log.append(
+            FitRecord(
+                self.fold,
+                self.stage,
+                frozenset(self.ids[int(i)] for i in x[:, 0]),
+                frozenset(int(i) for i in x[:, 0]),
+            )
+        )
 
     def transform(self, x: FloatArray) -> FloatArray:
         return x
