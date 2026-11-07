@@ -71,3 +71,4 @@ The camera steps need OpenCV, which `./check` installs with the `camera` extra, 
 | [docs/PAPER_PLAN.md](docs/PAPER_PLAN.md) | The first paper: the venue, its quality bar, the design, and the schedule |
 | [docs/BENCH_PROTOCOL.md](docs/BENCH_PROTOCOL.md) | The robotic bench study: devices, programs, camera reference, limits, statistics, and the lock |
 | [docs/CONSEQUENCE_PROTOCOL.md](docs/CONSEQUENCE_PROTOCOL.md) | The synthetic consequence experiment and its fixed analysis |
+| [paper/](paper/) | The first JBHI paper: LaTeX skeleton, content specifications, and analysis-output map |
