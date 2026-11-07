@@ -1,0 +1,84 @@
+\section{Results}
+% Budget: 2.3 pages, including all main tables and figures.
+% Order: data completeness; sampling and accuracy; feature agreement;
+% correction; quality gate; synthetic consequences and validation diagnostics.
+% Define estimable, adjusted decision, correction support, and unavailable estimate.
+% Do not insert numbers until outputs exist. Include every planned result.
+% Claim rules: bench protocol section 16 and consequence protocol section 11.
+% A feature claim needs all registered programs and the Holm-adjusted decision.
+% Camera references apply only to duration, path length, mean speed, and loop height.
+% CV and band power concern commanded movement within the executed-motion check.
+% Keep per-program results descriptive. A failed test does not prove a difference.
+% Correction residuals are a lack-of-fit check, not independent transfer validation.
+% Separate grid assumptions from measured-input consequences throughout.
+% Do not claim human agreement, reliability, screening accuracy, or clinical utility.
+
+\subsection{Completeness, sampling, and accuracy}
+\pending{R-completeness: report valid runs, failures, reruns, missing camera records, deviations, and non-estimable programs.}
+\begin{table}[t]
+\caption{\textbf{Caption specification:} State the observed sampling and accuracy pattern within the tested range.
+Show device and program summaries for sample intervals, gap shares, noise floors, camera distances, and command trace error.
+Give units, valid-run counts, and ranges.}
+\label{tab:sampling}
+\pending{T-sampling: insert the sampling and spatial accuracy table.}
+\end{table}
+\pending{R-sampling: describe measured sampling and accuracy without an acceptance claim. Include hold sample counts and camera validity.}
+
+\subsection{Feature agreement}
+\begin{table}[t]
+\caption{\textbf{Caption specification:} State which features meet the registered equivalence decision across their full program sets.
+Show limits, comparison scales, camera-reference status, feature p-values, adjusted and unadjusted decisions, and estimability.
+Keep per-program decisions descriptive.}
+\label{tab:agreement}
+\pending{T-agreement: insert all feature decisions, including failures.}
+\end{table}
+\begin{figure}[t]
+\pending{F-agreement: insert the bias intervals and repeated-measures agreement plots.}
+\caption{\textbf{Caption specification:} State the observed pattern of bias relative to the registered limits.
+Show program-specific intervals and Bland--Altman points with mounting-mean and single-run limits of agreement.
+Identify comparison scales and the camera-referenced features.}
+\label{fig:agreement}
+\end{figure}
+\pending{R-agreement: state only supported feature-level decisions. Report per-program bias and sensitivity results as descriptive evidence.}
+
+\subsection{Correction and quality gate}
+\begin{table}[t]
+\caption{\textbf{Caption specification:} State whether each correction passes its lack-of-fit check across every registered program.
+Show model terms, fitted or fixed status, coefficient uncertainty, and omitted-mounting residual intervals against the same limits.
+Do not describe these intervals as independent validation.}
+\label{tab:correction}
+\pending{T-correction: insert coefficients, residuals, and support status.}
+\end{table}
+\pending{R-correction: report residual sizes, failed checks, and unavailable fits. Bound use to the tested measurement chain and range.}
+\begin{table}[t]
+\caption{\textbf{Caption specification:} State which designed faults the quality gate detects on each device.
+Show main-run acceptance and detection by fault and device, with exact intervals and denominators.
+State the locked Pencil dwell expectation.}
+\label{tab:gate}
+\pending{T-gate: insert acceptance and fault-detection summaries.}
+\end{table}
+\pending{R-gate: describe each fault outcome. Do not infer detection of untested faults.}
+
+\subsection{Synthetic consequences}
+\begin{table}[t]
+\caption{\textbf{Caption specification:} State the scenario-specific changes from the paired synthetic reference.
+Show raw change, corrected change, absolute reduction, uncertainty, material-change share, usable pairs, and correction support for every feature.
+Separate assumed grids from measured inputs.}
+\label{tab:consequence}
+\pending{T-consequence: insert the primary consequence summaries.}
+\end{table}
+\begin{figure}[t]
+\pending{F-consequence: insert bias-response, transfer-calibration, and decision-curve panels.}
+\caption{\textbf{Caption specification:} State how the measurement-chain difference changes synthetic model metrics under the specified assumptions.
+Show uncorrected and corrected bias response, directional transfer calibration, and decision curves against paired references.
+Distinguish mean uncertainty from simulation distribution intervals. Retain unavailable levels and corrections that worsen results.}
+\label{fig:consequence}
+\end{figure}
+\pending{R-consequence: report the scenario-specific primary metrics and all supporting metrics. Explain negative absolute reductions and incomplete cells.}
+\pending{R-validation: compare record-wise, participant-wise, and both device-held-out directions. Report overlap, baselines, refusals, and sensitivity analyses.}
+% State beside the affected results that path length, CV, and band-power population
+% scaling has no independent population justification. Joint features are not one drawing.
+% A small synthetic effect does not establish equivalence. No numerical lower bound
+% on human AUC or calibration distortion follows from omitted surface behavior.
+% Optional example: omit by default. Add a separate result only after written clearance,
+% public provenance, participant grouping, deduplication, and full citations are verified.
