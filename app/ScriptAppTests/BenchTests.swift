@@ -262,6 +262,7 @@ private func lines(_ store: SessionStore) async throws -> [[String: Any]] {
     let fixture = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: fixtureURL)) as? [String: Any])
     let tools = try #require(fixture["tools"] as? [String: [String: Any]])
     let events = try #require(tools["app"]?["events"] as? [[String: Any]])
+    let mounting = try #require(fixture["mounting"] as? String)
     let base = try #require(fixture["base"] as? Double)
     let times = try #require(fixture["trial"] as? [String: Double])
     let started = try #require(times["started"])
@@ -275,7 +276,9 @@ private func lines(_ store: SessionStore) async throws -> [[String: Any]] {
     var header = try benchHeader(store)
     header.openedUptime = base
     header.pencil = .pro
-    header.channels = ChannelPlan.plan(pencil: .pro, hoverSupported: false)
+    header.channels = ChannelPlan.plan(pencil: .pro, hoverSupported: true)
+    guard case .bench(let facts) = header.subject else { throw CocoaError(.coderInvalidValue) }
+    #expect(facts.mounting.rawValue == mounting)
     store.openBench(header)
     let program = try #require(fixture["program"] as? String)
     store.chooseRun(BenchRunPlan(program: try #require(ProgramID(program)), run: 1))
@@ -289,8 +292,17 @@ private func lines(_ store: SessionStore) async throws -> [[String: Any]] {
         let x = try #require(row["x"] as? Double)
         let y = try #require(row["y"] as? Double)
         let phaseName = try #require(row["phase"] as? String)
-        let phase = try #require(PenPhase(rawValue: phaseName))
         clock.now = base + offset
+        if contact == 0 {
+            let z = try #require(row["z"] as? Double)
+            let altitude = try #require(row["altitude"] as? Double)
+            let azimuth = try #require(row["azimuth"] as? Double)
+            let roll = try #require(row["roll"] as? Double)
+            store.hover(HoverReading(t: clock.now, clock: .callback, x: x, y: y, z: z,
+                                     altitude: altitude, azimuth: azimuth, roll: roll))
+            continue
+        }
+        let phase = try #require(PenPhase(rawValue: phaseName))
         let reading = PenReading(key: TouchKey(UInt(contact)), t: base + offset, x: x, y: y,
                                  force: row["force"] as? Double, maxForce: row["maxForce"] as? Double,
                                  altitude: row["altitude"] as? Double, azimuth: row["azimuth"] as? Double,

@@ -1134,28 +1134,47 @@ def _parity() -> dict[str, Any]:
                         tiltY=-0.2 + 0.12 * math.sin(4 * t + stroke),
                     )
                 events.append(row)
-            if tool == "bench" and stroke == 0:
-                for i in range(1, 80):
-                    events.append(
-                        dict(
-                            kind="moved",
-                            offset=5.2 + i / rate,
-                            contact=0,
-                            absoluteX=16000,
-                            absoluteY=14000,
-                            pressure=0.0,
-                            tiltX=0.1 + 0.15 * math.sin(2 * i / rate),
-                            tiltY=-0.2 + 0.12 * math.sin(4 * i / rate),
-                            mm=[30.0, -38.0],
+            if stroke == 0:
+                for i in range(1, int(0.4 * rate)):
+                    if tool == "app":
+                        t = i / rate
+                        x, y = 30 + 5 * t, 38 + 2 * t
+                        events.append(
+                            dict(
+                                offset=5.2 + t,
+                                contact=0,
+                                phase="hover",
+                                clock="callback",
+                                x=x / (25.4 * 2 / 264),
+                                y=y / (25.4 * 2 / 264),
+                                mm=[x, -y],
+                                z=0.2 + t,
+                                altitude=1.1 + 0.1 * math.sin(2 * t),
+                                azimuth=0.3 + 0.15 * math.sin(4 * t),
+                                roll=0.2 + 0.12 * math.sin(5 * t),
+                            )
                         )
-                    )
+                    else:
+                        events.append(
+                            dict(
+                                kind="moved",
+                                offset=5.2 + i / rate,
+                                contact=0,
+                                absoluteX=16000,
+                                absoluteY=14000,
+                                pressure=0.0,
+                                tiltX=0.1 + 0.15 * math.sin(2 * i / rate),
+                                tiltY=-0.2 + 0.12 * math.sin(4 * i / rate),
+                                mm=[30.0, -38.0],
+                            )
+                        )
         tools[tool] = {
             "rate": rate,
             "origin": [0.0, 0.0] if tool == "app" else [10000.0, 8000.0],
             "device": {
                 "model": "iPad17,2" if tool == "app" else TABLET["model"],
                 "input": "pencil" if tool == "app" else "tablet",
-                "channels": ["force", "altitude", "azimuth", "roll"]
+                "channels": ["force", "altitude", "azimuth", "roll", "hover"]
                 if tool == "app"
                 else ["force", "tiltX", "tiltY", "hover"],
             },
@@ -1163,6 +1182,7 @@ def _parity() -> dict[str, Any]:
         }
     return {
         "program": "line-osc8",
+        "mounting": "M3",
         "base": 5000.0,
         "trial": {"started": 0.25, "began": 0.251, "ended": 10.0, "closed": 10.5},
         "tools": tools,

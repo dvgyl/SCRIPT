@@ -56,7 +56,7 @@ def equivalent(fixture: dict[str, Any], tool: str) -> Recording:
     facts = fixture["tools"][tool]
     events, origin = facts["events"], facts["origin"]
     strokes = []
-    for contact in (1, 0, 2) if tool == "bench" else (1, 2):
+    for contact in (1, 0, 2):
         rows = [row for row in events if row["contact"] == contact]
         if tool == "bench":
             xy = np.array(
@@ -71,7 +71,8 @@ def equivalent(fixture: dict[str, Any], tool: str) -> Recording:
         else:
             scale = 25.4 * 2 / 264
             xy = np.array([[(r["x"] - origin[0]) * scale, -(r["y"] - origin[1]) * scale] for r in rows])
-            names = {Channel(k): k for k in ("force", "altitude", "azimuth", "roll")}
+            names = {Channel(k): k for k in ("altitude", "azimuth", "roll")}
+            names[Channel.FORCE if contact else Channel.HOVER] = "force" if contact else "z"
         np.testing.assert_allclose(xy, [r["mm"] for r in rows], rtol=0, atol=1e-12)
         strokes.append(
             Stroke(
@@ -103,7 +104,7 @@ def equivalent(fixture: dict[str, Any], tool: str) -> Recording:
             program,
             1,
             bench.trajectory_sha256(program),
-            f"{'P' if tool == 'app' else 'W'}-M3-{program}-r1",
+            f"{'P' if tool == 'app' else 'W'}-{fixture['mounting']}-{program}-r1",
         ),
     )
     return Recording("synthetic-parity", None, device, (trial,), "synthetic")
@@ -136,6 +137,10 @@ def compare_parity_export(folder: Path, tool: str) -> None:
     fixture = json.loads((FIXTURES / "parity" / "parity.json").read_bytes())
     base = json.loads((folder.parent / f"{folder.name}.clock.json").read_bytes())["base"]
     assert base == fixture["base"]
+    assert rows[0]["bench"]["mounting"] == fixture["mounting"]
+    hover = [row for row in rows if row["kind"] == "hover"]
+    expected_clock = "callback" if tool == "app" else "event"
+    assert hover and all(row["clock"] == expected_clock for row in hover)
     expected = equivalent(fixture, tool)
     started = next(row for row in rows if row["kind"] == "trialStarted")
     origin = fixture["tools"][tool]["origin"]
@@ -172,6 +177,7 @@ def compare_parity_export(folder: Path, tool: str) -> None:
             "tilt.altitude_mean",
             "tilt.azimuth_variance",
             "tilt.roll_variance",
+            "timing.in_air_s",
         ):
             assert not isinstance(library[name], Refusal), name
     # The independent recording has no bench session context, so feature_table accepts it.
@@ -186,7 +192,7 @@ def compare_parity_export(folder: Path, tool: str) -> None:
 
 
 @pytest.mark.parametrize("tool", ["app", "bench"])
-def test_raw_capture_preserves_the_movement_and_every_feature(tool: str) -> None:
+def test_capture_preserves_the_movement_and_every_feature(tool: str) -> None:
     # Detects a capture export that changes the synthetic movement or violates the journal schema.
     folder = parity_export(tool)
     validate_parity_schema(folder)
@@ -209,6 +215,10 @@ def test_raw_capture_preserves_the_movement_and_every_feature(tool: str) -> None
         "spec_shift",
         "channel_shift",
         "schema",
+        "hover_drop",
+        "hover_channel_shift",
+        "hover_clock",
+        "mounting",
     ],
 )
 def test_parity_comparison_detects_capture_corruption(
@@ -219,10 +229,11 @@ def test_parity_comparison_detects_capture_corruption(
     base, times = fixture["base"], fixture["trial"]
     template = fixture_lines("bench_wacom" if tool == "bench" else "bench_ipad")
     header = template[0]
+    header["bench"]["mounting"] = fixture["mounting"]
     if tool == "app":
         header["input"] = "pencil"
         header["device"]["model"] = "iPad17,2"
-        header["channels"]["hover"] = False
+        header["channels"]["hover"] = True
     start = next(r for r in template if r["kind"] == "trialStarted")
     start.update(
         spec=task_spec(bench.program(fixture["program"]).task),
@@ -234,7 +245,7 @@ def test_parity_comparison_detects_capture_corruption(
         program=fixture["program"],
         run=1,
         trajectorySHA256=bench.trajectory_sha256(fixture["program"]),
-        clip=f"{'P' if tool == 'app' else 'W'}-M3-{fixture['program']}-r1",
+        clip=f"{'P' if tool == 'app' else 'W'}-{fixture['mounting']}-{fixture['program']}-r1",
     )
     rows: list[dict[str, Any]] = [
         header,
@@ -251,13 +262,16 @@ def test_parity_comparison_detects_capture_corruption(
                 channels["force"] = event["pressure"]
         else:
             phase, x, y = event["phase"], event["x"], event["y"]
-            channels = {k: event[k] for k in ("force", "altitude", "azimuth", "roll")}
+            channels = {k: event[k] for k in ("altitude", "azimuth", "roll")}
+            channels["force" if contact else "z"] = event["force" if contact else "z"]
         if phase == "began":
             rows.append(dict(kind="contactBegan", contact=contact, t=t, maxForce=1.0))
         if contact:
             rows.append(dict(kind="sample", contact=contact, t=t, x=x, y=y, phase=phase, est=0, **channels))
         else:
-            rows.append(dict(kind="hover", t=t, x=x, y=y, clock="event", **channels))
+            rows.append(
+                dict(kind="hover", t=t, x=x, y=y, clock="callback" if tool == "app" else "event", **channels)
+            )
         if phase == "ended":
             rows.append(dict(kind="contactEnded", contact=contact, t=t, cancelled=False))
     rows.append(dict(kind="trialEnded", trial=0, t=base + times["ended"], reason="operatorDone"))
@@ -294,6 +308,20 @@ def test_parity_comparison_detects_capture_corruption(
                 row["t"] += 0.01
             else:
                 row["t"] = base + (row["t"] - base) * 1.01
+    elif defect == "hover_drop":
+        rows.remove(next(row for row in rows if row["kind"] == "hover"))
+    elif defect == "hover_channel_shift":
+        hover = [row for row in rows if row["kind"] == "hover"]
+        channel = "z" if tool == "app" else "tiltX"
+        values = [row[channel] for row in hover]
+        for row, value in zip(hover, values[-1:] + values[:-1], strict=True):
+            row[channel] = value
+    elif defect == "hover_clock":
+        next(row for row in rows if row["kind"] == "hover")["clock"] = (
+            "event" if tool == "app" else "callback"
+        )
+    elif defect == "mounting":
+        header["bench"]["mounting"] = "M1" if fixture["mounting"] != "M1" else "M2"
     elif defect == "trial_ended":
         next(row for row in rows if row["kind"] == "trialEnded")["t"] = base + 0.5
     elif defect == "spec_shift":

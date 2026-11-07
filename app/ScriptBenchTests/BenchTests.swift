@@ -403,6 +403,7 @@ private func export(_ bench: TestBench, _ opened: SessionOpened) throws -> (fold
     let fixture = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: fixtureURL)) as? [String: Any])
     let tools = try #require(fixture["tools"] as? [String: [String: Any]])
     let events = try #require(tools["bench"]?["events"] as? [[String: Any]])
+    let mounting = try #require(fixture["mounting"] as? String)
     let base = try #require(fixture["base"] as? Double)
     let times = try #require(fixture["trial"] as? [String: Double])
     let started = try #require(times["started"])
@@ -415,6 +416,8 @@ private func export(_ bench: TestBench, _ opened: SessionOpened) throws -> (fold
     defer { bench.remove() }
     bench.enter()
     let opened = try bench.opened(.bench)
+    guard case .bench(let facts) = opened.subject else { throw CocoaError(.coderInvalidValue) }
+    #expect(facts.mounting.rawValue == mounting)
     #expect(bench.store.open(opened))
     bench.hover(x: Int(origin[0]), y: 29600 - Int(origin[1]))
     bench.store.setOrigin()
