@@ -94,13 +94,20 @@ def decided_on(feature: str) -> tuple[Geometry, ...]:
     return next(f.decided_on for f in CATALOG if f.name == feature)
 
 
+def feature_programs(
+    feature: str, programs: Sequence[Design], band_power_programs: Sequence[str]
+) -> tuple[Design, ...]:
+    """The program set of section 9.1 within the supplied main programs."""
+    selected = tuple(d for d in programs if d.geometry in decided_on(feature))
+    if feature == "bench.band_power_mm2_s2":
+        allowed = set(band_power_programs)
+        selected = tuple(d for d in selected if d.id in allowed)
+    return selected
+
+
 def program_set(feature: str, study: Study) -> tuple[Design, ...]:
     """Section 9.1: the programs on which the feature is tested, in `MAIN` order."""
-    programs = tuple(d for d in study.main_programs if d.geometry in decided_on(feature))
-    if feature == "bench.band_power_mm2_s2":
-        allowed = set(study.registry.constants.band_power_programs)
-        programs = tuple(d for d in programs if d.id in allowed)
-    return programs
+    return feature_programs(feature, study.main_programs, study.registry.constants.band_power_programs)
 
 
 def correction_model(feature: str) -> stats.CorrectionModel:
