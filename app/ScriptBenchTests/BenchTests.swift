@@ -398,9 +398,7 @@ private func export(_ bench: TestBench, _ opened: SessionOpened) throws -> (fold
 
 @Test @MainActor func syntheticTabletCaptureWritesTheParityExport() async throws {
     // Detects capture changes that alter the synthetic movement before Python computes its features.
-    let fixtureURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-        .appendingPathComponent("../../contract/fixtures/parity/parity.json").standardizedFileURL
-    let fixture = try #require(try JSONSerialization.jsonObject(with: Data(contentsOf: fixtureURL)) as? [String: Any])
+    let fixture = try #require(try JSONSerialization.jsonObject(with: parityFixture()) as? [String: Any])
     let tools = try #require(fixture["tools"] as? [String: [String: Any]])
     let events = try #require(tools["bench"]?["events"] as? [[String: Any]])
     let mounting = try #require(fixture["mounting"] as? String)

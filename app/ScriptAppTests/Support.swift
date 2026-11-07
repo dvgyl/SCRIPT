@@ -221,3 +221,16 @@ final class ParityClock {
 
     init(now: Double) { self.now = now }
 }
+
+
+/// The parity fixture of bench protocol section 2.4. `./check` copies it to the build folder on the internal disk and
+/// names it in `SCRIPT_PARITY_FIXTURE`, because a test host may not read the external drive of the repository.
+/// Without the variable, as in Xcode, the test reads it from the repository.
+func parityFixture(_ file: String = #filePath) throws -> Data {
+    if let path = ProcessInfo.processInfo.environment["SCRIPT_PARITY_FIXTURE"], !path.isEmpty {
+        return try Data(contentsOf: URL(fileURLWithPath: path))
+    }
+    let url = URL(fileURLWithPath: file).deletingLastPathComponent()
+        .appendingPathComponent("../../contract/fixtures/parity/parity.json").standardizedFileURL
+    return try Data(contentsOf: url)
+}
