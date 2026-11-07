@@ -72,3 +72,13 @@ def test_paper_has_no_rendered_internal_identifiers() -> None:
         visible = visible.replace("\\_", "_").replace("\n", " ")
         findings.extend(f"{path.name}: {match.group()}" for match in INTERNAL.finditer(visible))
     assert not findings, findings
+
+
+def test_paper_has_no_planning_caption() -> None:
+    # Detects a planning caption in the rendered paper.
+    findings = [
+        path.name
+        for path, source in sources()
+        if re.search(r"Caption\s+specification", source, flags=re.IGNORECASE)
+    ]
+    assert not findings, findings
