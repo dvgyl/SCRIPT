@@ -171,6 +171,7 @@ def input_tables(common: Row, inputs: BenchInputs) -> dict[str, list[Row]]:
                 "target_speed_mm_s": 20.0,
                 "target_geometry": "line" if f.feature == "bench.band_power_mm2_s2" else "loops",
                 "distance": f.selection.distance,
+                "frequency_distance_hz": f.selection.frequency_distance_hz,
                 "in_range": f.selection.in_range,
                 "limit": LIMITS[f.feature],
                 "comparison_scale": "absolute" if f.feature == "bench.speed_cv" else "ln",
@@ -557,7 +558,13 @@ def summary_rows(tables: dict[str, list[Row]]) -> dict[str, list[Row]]:
                 "material_raw",
             )
         }
-        summary.append({**base, "contrast": key[-1], **summarize(rows, planned=int(rows[0]["planned_R"]))})
+        summary.append(
+            {
+                **base,
+                "contrast": key[-1],
+                **summarize(rows, planned=int(rows[0]["planned_R"]), contrast=key[-1]),
+            }
+        )
     curves: dict[tuple[str, str, str, str, float], list[Row]] = defaultdict(list)
     for row in tables["decision_curves"]:
         curves[
@@ -575,7 +582,7 @@ def summary_rows(tables: dict[str, list[Row]]) -> dict[str, list[Row]]:
                     "version": key[3],
                     "threshold": key[4],
                     "metric": metric,
-                    **summarize(estimates, planned=int(rows[0]["planned_R"])),
+                    **summarize(estimates, planned=int(rows[0]["planned_R"]), contrast=metric),
                 }
             )
     primary = []
@@ -602,16 +609,17 @@ def summary_rows(tables: dict[str, list[Row]]) -> dict[str, list[Row]]:
             and row["contrast"] in ("D_raw", "D_corrected", "absolute_reduction")
         ):
             primary.append(row)
-    validation_rows: dict[tuple[str, str, str, str], Row] = {}
+    validation_rows: dict[tuple[str, str, str], Row] = {}
     for row in summary:
         if row["contrast"] not in ("reference", "uncorrected", "corrected"):
             continue
-        key = (row["cell_id"], row["metric"], row["contrast"], row["direction"])
-        target = validation_rows.setdefault(
-            key, {"cell_id": key[0], "metric": key[1], "version": key[2], "direction": key[3]}
-        )
-        target[f"{row['validation']}_estimate"] = row["mean"]
-        target[f"{row['validation']}_usable_R"] = row["usable_R"]
+        key = (row["cell_id"], row["metric"], row["contrast"])
+        target = validation_rows.setdefault(key, {"cell_id": key[0], "metric": key[1], "version": key[2]})
+        scheme = row["validation"]
+        if scheme == "device":
+            scheme = "device_w_to_p" if row["direction"] == "W-to-P" else "device_p_to_w"
+        target[f"{scheme}_estimate"] = row["mean"]
+        target[f"{scheme}_usable_R"] = row["usable_R"]
         if row["validation"] == "record":
             target["overlap_share"] = row.get("overlap_share")
     return {
@@ -747,14 +755,15 @@ def merge_outputs(
                     "cell_id",
                     "metric",
                     "version",
-                    "direction",
                     "overlap_share",
                     "participant_estimate",
                     "participant_usable_R",
                     "record_estimate",
                     "record_usable_R",
-                    "device_estimate",
-                    "device_usable_R",
+                    "device_w_to_p_estimate",
+                    "device_w_to_p_usable_R",
+                    "device_p_to_w_estimate",
+                    "device_p_to_w_usable_R",
                 },
             }
         )
@@ -767,9 +776,11 @@ def merge_outputs(
             stream = stack.enter_context(
                 compressed_text(path) if name in zipped else path.open("w", encoding="utf-8", newline="")
             )
-            writer = csv.DictWriter(
-                stream, sorted(columns[name]) or ["status", "reason"], lineterminator="\n"
-            )
+            fields = sorted(columns[name]) or ["status", "reason"]
+            if name == "consequence_inputs" and "frequency_distance_hz" in fields:
+                fields.remove("frequency_distance_hz")
+                fields.insert(fields.index("distance") + 1, "frequency_distance_hz")
+            writer = csv.DictWriter(stream, fields, lineterminator="\n")
             writer.writeheader()
             writers[name] = writer
         audit_stream = stack.enter_context(compressed_text(audit_path))

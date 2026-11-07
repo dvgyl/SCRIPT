@@ -11,8 +11,9 @@ from pathlib import Path
 from typing import Any
 
 from scriptkin import bench
-from scriptkin.bench.analysis import correction_model, decided_on
+from scriptkin.bench.analysis import correction_model, decided_on, feature_programs
 from scriptkin.bench.features import run_features
+from scriptkin.bench.inputs import Registry
 from scriptkin.bench.moves import MoveList, commanded_trial
 from scriptkin.bench.runs import CAMERA_FEATURES, LOG_SCALE
 from scriptkin.consequence.plan import FEATURES, LIMITS, CellSpec, ConsequencePlan, ProgramTarget
@@ -24,6 +25,7 @@ class Selection:
     program: bench.Design
     distance: float
     in_range: bool
+    frequency_distance_hz: float
 
 
 def select_program(target: ProgramTarget, programs: Sequence[bench.Design]) -> Selection:
@@ -43,7 +45,7 @@ def select_program(target: ProgramTarget, programs: Sequence[bench.Design]) -> S
             (target.oscillation_hz, [p.oscillation_hz for p in eligible]),
         )
     )
-    return Selection(p, distance(p), within)
+    return Selection(p, distance(p), within, abs(p.oscillation_hz - target.oscillation_hz))
 
 
 @dataclass(frozen=True)
@@ -108,7 +110,7 @@ def selected(feature: str, programs: Sequence[bench.Design] = bench.MAIN) -> Sel
     target = (
         ProgramTarget("line", oscillation_hz=8.0) if feature == "bench.band_power_mm2_s2" else ProgramTarget()
     )
-    return select_program(target, programs)
+    return select_program(target, feature_programs(feature, programs, tuple(p.id for p in programs)))
 
 
 def grid_inputs(plan: ConsequencePlan, cell: CellSpec, centers: Centers) -> BenchInputs:
@@ -122,9 +124,10 @@ def grid_inputs(plan: ConsequencePlan, cell: CellSpec, centers: Centers) -> Benc
     for feature in cell.features:
         limit = LIMITS[feature]
         bias = cell.bias_multiple * limit
-        alpha = bias + (0.5 * limit if cell.sensitivity == "misspecified" else 0)
         beta = 1.05 if cell.sensitivity == "misspecified" and feature != "bench.band_power_mm2_s2" else 1.0
         selection = selected(feature)
+        c = centers[(feature, selection.program.id)]
+        alpha = bias + (0.5 * limit - (beta - 1) * c if cell.sensitivity == "misspecified" else 0)
         rows.append(
             FeatureInputs(
                 feature,
@@ -158,7 +161,18 @@ def _interval(raw: Any) -> tuple[float, float, float]:
     return estimate, lower, upper
 
 
-def read_deliverables(path: Path, centers: Centers, *, expected_protocol: str) -> BenchInputs:
+def _program_ids(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list) or any(not isinstance(v, str) for v in value):
+        raise ValueError("Program identifiers must be a list of strings.")
+    registered = {p.id for p in bench.MAIN}
+    if set(value) - registered:
+        raise ValueError("A program identifier is not a registered main program.")
+    return tuple(value)
+
+
+def read_deliverables(
+    path: Path, centers: Centers, *, expected_protocol: str, registry: Registry | None = None
+) -> BenchInputs:
     if path.name.startswith("._"):
         raise ValueError("Metadata files are excluded.")
     payload = path.read_bytes()
@@ -170,6 +184,16 @@ def read_deliverables(path: Path, centers: Centers, *, expected_protocol: str) -
             raw[key]
         if set(raw["features"]) != set(FEATURES):
             raise ValueError("The bench feature set differs.")
+        constants = raw.get("constants", {})
+        excluded = set(_program_ids(constants.get("excludedPrograms", [])))
+        allowed_band = {p.id for p in bench.MAIN if p.geometry == "line"}
+        if "bandPowerPrograms" in constants:
+            allowed_band &= set(_program_ids(constants["bandPowerPrograms"]))
+        if registry is not None:
+            excluded.update(registry.constants.excluded_programs)
+            allowed_band &= set(registry.constants.band_power_programs)
+        registered = tuple(p for p in bench.MAIN if p.id not in excluded)
+        eligible: dict[str, tuple[str, ...]] = {}
         rows: list[FeatureInputs] = []
         for feature in FEATURES:
             f = raw["features"][feature]
@@ -180,20 +204,31 @@ def read_deliverables(path: Path, centers: Centers, *, expected_protocol: str) -
                 raise ValueError("The feature value basis differs.")
             for key in ("featureP", "equivalent", "range"):
                 f[key]
-            # Select before reading estimates. Missing nearest inputs must not change the selection.
-            selection = selected(feature, [bench.program(p) for p in f["programs"]])
-            p = f["programs"][selection.program.id]
-            required = [p["bias"][k] for k in ("estimate", "lower", "upper")]
-            required.extend(p["components"][d][c] for d in ("P", "W") for c in ("run", "mount"))
-            if any(v is None for v in required):
+            programs = feature_programs(feature, registered, tuple(sorted(allowed_band)))
+            eligible[feature] = tuple(p.id for p in programs)
+            selection = selected(feature, programs)
+            p = f["programs"].get(selection.program.id)
+            missing = p is None
+            if p is not None:
+                required = [(p.get("bias") or {}).get(k) for k in ("estimate", "lower", "upper")]
+                required.extend(
+                    ((p.get("components") or {}).get(d) or {}).get(c)
+                    for d in ("P", "W")
+                    for c in ("run", "mount")
+                )
+                required.append(p.get("se"))
+                if feature in LOG_SCALE:
+                    required.extend((p.get("factor") or {}).get(k) for k in ("estimate", "lower", "upper"))
+                missing = any(value is None for value in required)
+            if missing or p is None:
                 rows.append(
                     FeatureInputs(
                         feature,
                         selection,
                         centers[(feature, selection.program.id)],
-                        float("nan"),
-                        float("nan"),
-                        float("nan"),
+                        math.nan,
+                        math.nan,
+                        math.nan,
                         0.0,
                         0.0,
                         0.0,
@@ -241,12 +276,12 @@ def read_deliverables(path: Path, centers: Centers, *, expected_protocol: str) -
                     residual = correction["residual"]
                     support = (
                         "bench_supported"
-                        if set(residual) == set(f["programs"])
+                        if set(eligible[feature]) <= set(residual)
                         and all(
                             r["withinLimit"]
                             and -LIMITS[feature] < _interval(r)[1]
                             and _interval(r)[2] < LIMITS[feature]
-                            for r in residual.values()
+                            for r in (residual[pid] for pid in eligible[feature])
                         )
                         else "failed_lack_of_fit"
                     )
@@ -267,12 +302,23 @@ def read_deliverables(path: Path, centers: Centers, *, expected_protocol: str) -
                     bias_basis=basis,
                 )
             )
-    except (KeyError, TypeError, OverflowError) as error:
+    except (KeyError, TypeError, OverflowError, AttributeError) as error:
         raise ValueError(f"Invalid bench deliverables: {error}") from error
     return BenchInputs(
         tuple(rows),
         "measured",
-        hashlib.sha256(payload).hexdigest(),
+        hashlib.sha256(
+            json.dumps(
+                {
+                    "deliverables_sha256": hashlib.sha256(payload).hexdigest(),
+                    "selected_centers": [(f.feature, f.selection.program.id, f.center) for f in rows],
+                    "eligible_programs": eligible,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode()
+        ).hexdigest(),
         raw["postHoc"] is not None,
         payload.decode(),
     )

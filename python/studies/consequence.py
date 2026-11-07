@@ -9,6 +9,7 @@ from pathlib import Path
 from types import ModuleType
 
 from scriptkin import bench
+from scriptkin.bench.inputs import read_registry
 from scriptkin.bench.moves import MoveList, read_move_list
 from scriptkin.consequence.inputs import centers_for, read_deliverables
 from scriptkin.consequence.plan import ConsequencePlan, plan_digest
@@ -43,6 +44,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("grid", "measured"), required=True)
     parser.add_argument("--deliverables", type=Path)
+    parser.add_argument("--registry", type=Path)
     parser.add_argument("--expect-plan-sha256")
     parser.add_argument("--seed", type=int, default=20261107)
     parser.add_argument("--out", type=Path, required=True)
@@ -59,7 +61,10 @@ def main() -> None:
     if args.mode == "measured":
         if not args.deliverables or args.expect_plan_sha256 != plan_digest(plan):
             parser.error("Measured mode requires deliverables and the matching canonical plan SHA-256.")
-        inputs = read_deliverables(args.deliverables, centers, expected_protocol=bench.PROTOCOL_VERSION)
+        registry = read_registry(args.registry, args.registry.parent.parent) if args.registry else None
+        inputs = read_deliverables(
+            args.deliverables, centers, expected_protocol=bench.PROTOCOL_VERSION, registry=registry
+        )
     print(f"plan_sha256: {plan_digest(plan)}", flush=True)
     write_outputs(
         plan,

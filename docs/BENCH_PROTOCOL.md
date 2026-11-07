@@ -794,6 +794,7 @@ The bench delivers `bench/results/deliverables.json` with, for each feature and 
 - The correction model of the program set, and its coefficients α, β, γ_u, and γ_v on the raw device values. Each coefficient has its jackknife standard error. A term outside the model of section 11.5 is marked as not fitted. The β of the loops programs contains any speed dependence of the device difference over the bench speeds.
 - The held-out residual bias with its interval.
 - For each coefficient, whether it is fitted. For each feature, the values of its bias (`camera_referenced` or `raw_device`) and of its correction (`raw_device`).
+- The program constants of the registry: the excluded programs and the band-power program set (section 15).
 
 The deliverables give each difference per program, because the bench shows whether the difference depends on the task, the scale, and the speed. For each feature, the deliverables state the range in which the factors hold. The scales are 0.7 and 1.0. The speeds are 20 to 80 mm/s for the loops, or 20 to 40 mm/s without `loops-l-v80`. They are 20 to 40 mm/s for the spiral, and 20 mm/s with a 5 to 11 Hz oscillation for the line. The consequence experiment and the ParkinsonHW example of the plan apply the factor of the program closest to their data in task, scale, and speed. They state the choice.
 

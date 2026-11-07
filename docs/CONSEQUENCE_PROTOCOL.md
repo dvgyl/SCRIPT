@@ -91,6 +91,7 @@ Angle brackets denote typed placeholders, not literal JSON values.
   postHoc: null | {changedFiles: list[str]},
   library: str,
   analysis: "main",
+  constants: {excludedPrograms: list[str], bandPowerPrograms: list[str]},
   features: {
     <feature_name>: {
       limit: float,
@@ -148,12 +149,22 @@ Require finite correction terms and the section 11.5 fixed-term values.
 A nonfinite correction makes only the corrected version unavailable.
 A missing value makes that feature-program cell unavailable.
 Do not replace missing inputs with zero or another program's result.
+Select from the registered feature program set in BENCH_PROTOCOL section 9.1.
+Remove the exclusions named in deliverable `constants.excludedPrograms` or an explicitly supplied bench registry.
+For band power, also restrict the set to the named `bandPowerPrograms`.
+When both sources are supplied, apply both restrictions.
+Never use the presence of a result key to define program eligibility.
+Require the selected program entry and its bias, interval, factor, SE, and variance values.
+A missing selected entry or value gives `unavailable` with reason `missing_selected_program_value`.
+Older deliverables without constants use the full registered set unless a registry is supplied with `--registry`.
 
 Keep non-equivalent features in the analysis.
 Equivalence status is an output descriptor, not a feature selection rule.
 If `postHoc` is non-null, retain the run but label every measured result `post_hoc_bench`.
 Do not present that run as confirmation of an unchanged bench protocol.
-Hash the input bytes and preserve the selected values in the output manifest.
+Hash the deliverable bytes, selected program center values, and eligible program identifiers together.
+Keep the original deliverable text in the manifest and the selected centers in `consequence_inputs.csv`.
+A change to a selected center must change the measured input digest.
 
 Deliverables do not contain coefficient covariance, raw feature support, or joint-feature noise covariance.
 Do not invent these quantities.
@@ -187,7 +198,10 @@ Use this fixed program per feature for every participant and replicate.
 Do not use observed W speed to choose its own correction program.
 This prevents device noise from changing the assigned correction.
 
-Report the target, selected program, distance, and range status.
+Report the target, selected program, scale-and-speed distance, absolute frequency difference, and range status.
+Put `frequency_distance_hz` next to `distance` in the input table.
+A target of 8 Hz and a selected 5 Hz or 11 Hz program has a frequency difference of 3 Hz.
+Its scale-and-speed distance can still be zero.
 An out-of-range target is a marked extrapolation sensitivity analysis.
 It cannot support a claim within the tested range.
 
@@ -222,9 +236,13 @@ Use the required model name for each program set.
 This correction is an oracle control, not a fitted bench result.
 It removes the specified shift but does not remove random noise.
 
-Run a correction-misspecification sensitivity at `k = -1, 0, 1` with nominal noise [J3].
-Set the applied alpha to `b + 0.5 L`.
-For slope-capable models, also set beta to 1.05.
+Run a grid-only correction-misspecification control at `k = -1, 0, 1` with nominal noise [J3].
+Measured mode does not add this control.
+Let c be the selected program's noiseless comparison-scale center.
+For slope-capable models, set beta to 1.05 and alpha to `b + 0.5 L - 0.05 c`.
+For the shift model, keep beta at 1 and set alpha to `b + 0.5 L`.
+At correction input c, the error relative to the oracle correction `Z_W + b` is exactly 0.5 L.
+At another input z, the slope-capable control adds the error `0.5 L + 0.05 (z - c)`.
 Keep gamma terms zero.
 Label this sensitivity separately from the oracle correction.
 
@@ -248,11 +266,13 @@ Use six device-specific mounting blocks per cohort.
 Assign participants to blocks within site by a seeded random permutation, independent of labels and device assignment.
 Keep the block fixed across both sessions.
 Draw mounting effects independently between devices and features.
-Draw run errors independently between participants, sessions, devices, and features.
-
-Use shared standard-normal draws between reference and assigned-device versions.
-Scale them by each device's component standard deviation.
+Run-error draws are independent between participants, sessions, and features.
+For one session, P and W share a standard-normal run-error draw.
+Multiply it by each device's run standard deviation.
+Mounting draws remain independent between devices.
+Reuse the resulting device observations across the reference, uncorrected, and corrected versions.
 This pairing reduces simulation error without changing either marginal observation model.
+`test_zero_difference_pair` proves exact agreement only with zero bias, equal run variances, and zero mounting variance.
 Do not add P noise again to W observations.
 Do not divide run variance by five.
 One synthetic session represents one feature observation, not a bench average over five runs.
@@ -361,12 +381,18 @@ For measured inputs, run the same sensitivities without changing their bias or n
 
 Use master seed `20261107` [J7].
 Use `numpy.random.SeedSequence` with explicit integer keys.
-Keys identify generator, effect, size, prevalence, replicate, stream, feature, and model.
-Use stream identifiers for labels, traits, sessions, assignment, mounting, run noise, splits, and null checks.
+Keys use effect, cohort size, prevalence, replicate, and stream.
+The reserved feature and model fields stay at zero.
+Streams 1, 2, 3, and 4 identify population, observation, splits, and fitting.
+Streams 1000 to 1049 identify permutations.
+The population stream creates child streams for labels, traits, sessions, device assignment, and mounting blocks.
+For equal effect, size, prevalence, and replicate, single-feature cells share population and noise draws across features and models.
+These are common random numbers.
+Within a joint cell, feature traits and errors draw independently, conditional on the shared label.
 Reuse population and split keys across device settings and observation versions.
-Keep correction perturbation streams separate.
+Correction controls use fixed coefficients and need no random perturbation stream.
 Do not use Python's process-dependent string hash.
-Save each key and generated seed in the manifest.
+Save stream-to-seed values in each unit. The manifest gives the key fields and master seed.
 Adding a grid cell must not change existing cells.
 
 The primary generator is a feature-matrix generator. It does not use the `FeatureTable` catalog.
@@ -539,7 +565,10 @@ They are not confidence intervals for measured device parameters.
 For paired mean contrasts, report `mean ± t(0.975, R-1) SD/sqrt(R)`.
 This is Monte Carlo uncertainty in the simulated mean.
 Report the Monte Carlo standard error explicitly.
-For material-change shares, give Wilson 95% intervals and denominators.
+Calculate a material-change share only for `D_raw` and `D_corrected`, using the metric thresholds above.
+Leave the share and its Wilson bounds empty, without a reason, on every other row.
+This includes reference and other version rows, `removed`, and `absolute_reduction`.
+For permitted material-change shares, give Wilson 95% intervals and denominators.
 At R=200, the worst-case Monte Carlo standard error of a share is about 0.035.
 Do not add replicates because an interval crosses a preferred conclusion.
 
@@ -655,7 +684,7 @@ Measured cells leave `bias_multiple` empty and retain the measured bias column.
 | --- | --- |
 | `consequence_cells.csv` | One row per planned cell. Cell settings, planned replication, correction status, and input digest. |
 | `consequence_manifest.json` | Protocol text hash; source commit; package versions; input hashes; grid; judgments; seed keys; timing-log description; deviations; output hashes. |
-| `consequence_inputs.csv` | Feature and program; target geometry, scale, speed, frequency; distance; range flag; L; scale; bias and interval; factor; P/W variances. |
+| `consequence_inputs.csv` | Feature and program; target geometry, scale, speed, frequency; distance; frequency difference; range flag; L; scale; bias and interval; factor; P/W variances. |
 | `consequence_corrections.csv` | Feature; model; term; estimate; SE; fitted; program; residual bounds; withinLimit; whole-feature support status. |
 | `consequence_replicates.csv.gz` | K; replicate; seed; version; metric; estimate; tested participants; cases; failures; status; reason. |
 | `consequence_contrasts.csv.gz` | K; replicate; metric; reference; uncorrected; corrected; D_raw; D_corrected; removed; absolute_reduction; material flags. |
@@ -669,7 +698,7 @@ Measured cells leave `bias_multiple` empty and retain the measured bias column.
 | `figure_transfer_calibration.csv` | K; version; metric; mean; mean CI; simulation interval; usable R. |
 | `figure_decision_curves.csv` | K; version or contrast; threshold; mean NB; pointwise interval; usable R. |
 | `table_primary.csv` | Scenario; feature; source; primary metric; raw change; corrected change; absolute reduction; uncertainty; material share; status. |
-| `table_validation.csv` | K; metric; record-wise estimate; participant-wise estimate; directional device estimate; overlap share; status. |
+| `table_validation.csv` | One row per cell, metric, and version; record-wise estimate; participant-wise estimate; W-to-P estimate; P-to-W estimate; usable counts; overlap share. |
 | `parkinsonhw_summary.csv` | Optional; release hash; feature; program assumption; assignment; model; validation; version; metric; estimate; paired interval; status. |
 | `parkinsonhw_duplicates.csv` | Optional; public file hash; canonical trial hash; retained or duplicate; public participant code. |
 
@@ -701,7 +730,18 @@ A unit stores cell ID, replicate, stream seeds, metric values, failures, and com
 Group values by validation scheme, direction, and observation version.
 Store decision-curve values and calibration-bin values as arrays, without repeated row fields.
 Keep cell settings once in `consequence_cells.csv`.
-The folder identity holds plan, code, protocol, and input hashes. Each unit also holds its cell input hash.
+`identity.json` holds `code_sha256`, `protocol_sha256`, `plan_sha256`, and `input_sha256`.
+The code hash covers the running `scriptkin` package. The protocol hash covers this document.
+The plan hash covers the canonical plan, cells, and registered limits.
+For measured runs, the input hash covers deliverables, selected centers, and eligible programs.
+For grid runs, the folder input identifier is the literal `grid`.
+The manifest repeats these identifiers.
+`consequence_cells.csv` holds each cell's input digest and cell ID.
+The cell ID is the first 16 hexadecimal characters of the SHA-256 of its sorted field JSON.
+Each unit member holds that cell ID, an integer replicate index, and `inputs_sha256`.
+Its archive name and member name also identify the cell and replicate.
+The replicate index has no separate hash. Unit members do not repeat the folder hashes.
+A restart checks the folder identity and the unit's cell ID, replicate index, format, and input digest.
 Rebuild paired contrasts and summary rows from the unit values.
 Every replicate contributes to decision-curve summaries, including replicates without long-form exports.
 Write long-form decision curves and calibration bins only for replicate 0 and smoke.
@@ -816,6 +856,14 @@ When implementation is authorized, run the relevant tests and the repository's r
 Before bench results are available, approve and timestamp this protocol and its canonical plan hash.
 Lock all J1–J7 and J9–J12 choices, program-selection rules, feature definitions, models, splits, metrics, grids, and failure rules.
 Lock generator code, dependency versions, seed keys, tests, table schemas, and primary figure specifications.
+The bench lock includes `docs/CONSEQUENCE_PROTOCOL.md` and `python/studies/consequence.py`, like the other bench study scripts.
+Do not edit either file after the lock.
+Record a deviation as a row in `bench/DEVIATIONS.md`, as BENCH_PROTOCOL section 13 requires.
+After the lock, put a fix in the package `scriptkin.consequence`.
+A post hoc bench analysis may use changed package code.
+Regenerate deliverables with `scriptkin bench analyse ROOT --post-hoc` before the measured consequence run.
+Every output must identify the post hoc run. Compact rows and units link to the cell table's `post_hoc_bench` flag.
+Keep the fixed protocol and study script unchanged.
 Archive the complete grid results before reading measured deliverables.
 A hash identifies content; it does not prove the date of the lock.
 Use a dated external registration or an equivalent immutable project record.
@@ -824,7 +872,7 @@ The measured run replaces grid inputs with one delivered point estimate set.
 It does not choose a favorable grid cell or a new cohort setting.
 Run the locked study once with the measured inputs.
 Deterministic restarts of failed computation are permitted and logged.
-A scientific change requires a dated deviation entry and a separate exploratory output label.
+A scientific change requires a dated row in `bench/DEVIATIONS.md` and a separate exploratory output label.
 Do not overwrite the planned result.
 
 The paper may state the size of performance changes within the specified synthetic distributions.

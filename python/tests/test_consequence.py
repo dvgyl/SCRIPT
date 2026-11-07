@@ -9,11 +9,12 @@ from typing import Any
 import numpy as np
 import pytest
 import test_bench_moves as moves_tests
-from scipy.special import expit, logit
+from scipy.special import logit
 from scipy.stats import norm
 
 from scriptkin import bench
 from scriptkin.bench.analysis import correction_model
+from scriptkin.bench.inputs import Constants, Registry
 from scriptkin.bench.moves import MoveList
 from scriptkin.consequence.generate import correct_w, generate_cohort, observe
 from scriptkin.consequence.inputs import (
@@ -119,10 +120,12 @@ def fixture_document(centers: Centers) -> dict[str, Any]:
     }
 
 
-def read_fixture(tmp_path: Path, document: dict[str, Any], centers: Centers) -> Any:
+def read_fixture(
+    tmp_path: Path, document: dict[str, Any], centers: Centers, registry: Registry | None = None
+) -> Any:
     path = tmp_path / "deliverables.json"
     path.write_text(json.dumps(document))
-    return read_deliverables(path, centers, expected_protocol=bench.PROTOCOL_VERSION)
+    return read_deliverables(path, centers, expected_protocol=bench.PROTOCOL_VERSION, registry=registry)
 
 
 def prediction(scheme: str = "participant") -> PredictionSet:
@@ -336,11 +339,13 @@ def test_prior_shift() -> None:
 
 
 def test_calibration_offset() -> None:
-    # Defect: Calibration intercept uses a free slope.
-    p = np.tile(np.array([0.2, 0.8]), 100)
-    y = np.tile(np.array([0, 1]), 100)
+    # Defect: The calibration intercept fit omits the logit offset.
+    p = np.array([0.2] * 3 + [0.6] * 4)
+    y = np.array([1, 1, 0, 1, 1, 0, 0])
     a, _ = weighted_calibration(p, y, np.ones(len(y)))
-    assert abs(float(np.mean(y - expit(logit(p) + a)))) < 1e-7
+    # At a = ln(2), the offset model expects 3/3 + 4*3/4 = 4 cases.
+    assert a == pytest.approx(np.log(2), abs=1e-7)
+    assert abs(a - logit(4 / 7)) > 0.3
 
 
 def test_constant_slope() -> None:
@@ -768,3 +773,168 @@ def test_archive_collision(tmp_path: Path) -> None:
     write_compressed_json(path, {"estimate": 0.2})
     with pytest.raises(ValueError, match="differs"):
         archive_cell(stage, target, "cell")
+
+
+def test_missing_selected_program(tmp_path: Path, centers: Centers) -> None:
+    # Defect: The reader replaces a missing selected program with another one.
+    raw = fixture_document(centers)
+    programs = raw["features"][FEATURES[0]]["programs"]
+    programs["loops-l-v40"] = programs.pop("loops-l-v20")
+    result = read_fixture(tmp_path, raw, centers).features[0]
+    assert result.selection.program.id == "loops-l-v20"
+    assert result.support == "unavailable" and result.reason == "missing_selected_program_value"
+    assert np.isnan(result.bias)
+
+
+@pytest.mark.parametrize("field", ["bias", "components", "factor", "se"])
+def test_missing_selected_value(tmp_path: Path, centers: Centers, field: str) -> None:
+    # Defect: A missing selected value raises a schema error instead of marking the feature unavailable.
+    raw = fixture_document(centers)
+    raw["features"][FEATURES[0]]["programs"]["loops-l-v20"][field] = None
+    result = read_fixture(tmp_path, raw, centers).features[0]
+    assert result.reason == "missing_selected_program_value" and result.correction is None
+
+
+@pytest.mark.parametrize("use_registry", [False, True])
+def test_program_exclusions(tmp_path: Path, centers: Centers, use_registry: bool) -> None:
+    # Defect: An explicitly excluded program remains eligible for selection.
+    raw = fixture_document(centers)
+    f = raw["features"][FEATURES[0]]
+    f["programs"]["loops-l-v40"] = f["programs"]["loops-l-v20"]
+    excluded = ("loops-l-v20", "loops-s-v20")
+    registry = None
+    if use_registry:
+        registry = Registry(
+            tmp_path, (), Constants(("line-osc5", "line-osc8", "line-osc11"), excluded, False)
+        )
+    else:
+        raw["constants"] = {"excludedPrograms": list(excluded)}
+    result = read_fixture(tmp_path, raw, centers, registry).features[0]
+    assert result.selection.program.id == "loops-l-v40" and not result.reason
+
+
+def test_measured_has_no_misspecification() -> None:
+    # Defect: Measured mode repeats primary cells as an unchanged misspecification control.
+    assert all(c.sensitivity != "misspecified" for c in cells(replace(PLAN, source="measured")))
+    assert any(c.sensitivity == "misspecified" for c in cells(PLAN))
+
+
+@pytest.mark.parametrize("feature", FEATURES)
+def test_misspecification_at_center(centers: Centers, feature: str) -> None:
+    # Defect: The misspecified correction error at the centre is not 0.5 L.
+    cell = replace(CELL, features=(feature,), bias_multiple=1.0, sensitivity="misspecified")
+    f = grid_inputs(PLAN, cell, centers).features[0]
+    assert f.correction is not None
+    z = np.full((1, 2), f.center)
+    corrected = correct_w(z, np.ones(1, dtype=np.int64), f.correction, 0.0, 0.0)
+    np.testing.assert_allclose(corrected - (z + f.bias), 0.5 * LIMITS[feature], atol=1e-12, rtol=0)
+    assert f.correction.beta == (1.0 if feature == "bench.band_power_mm2_s2" else 1.05)
+
+
+@pytest.mark.parametrize(
+    "contrast",
+    ["D_raw", "D_corrected", "reference", "uncorrected", "corrected", "removed", "absolute_reduction"],
+)
+def test_material_share_scope(contrast: str) -> None:
+    # Defect: A material-change share is calculated for a value that is not a signed change from reference.
+    rows = [{"replicate": i, "metric": "auc", "estimate": v} for i, v in enumerate((0.0, 0.05, 0.1))]
+    result = summarize(rows, planned=3, contrast=contrast)
+    if contrast in ("D_raw", "D_corrected"):
+        assert result["material_share"] == pytest.approx(2 / 3)
+        assert result["wilson_lower"] is not None and result["wilson_upper"] is not None
+    else:
+        assert all(result[key] is None for key in ("material_share", "wilson_lower", "wilson_upper"))
+    assert "reason" not in result
+
+
+def test_weighted_record_auc() -> None:
+    # Defect: Record-wise AUC ignores unequal participant weights.
+    scores = np.array([0.9, 0.4, 0.6, 0.8, 0.3])
+    y = np.array([1, 1, 1, 0, 0])
+    weights = np.array([0.5, 0.5, 1.0, 1.0, 1.0])
+    # Weighted winning pairs total 1 + 0.5 + 1 = 2.5, out of 2*2 = 4.
+    assert weighted_auc(scores, y, np.zeros(5, dtype=np.int64), weights) == pytest.approx(2.5 / 4)
+
+
+def test_weighted_record_net_benefit() -> None:
+    # Defect: Record-wise net benefit ignores unequal participant weights.
+    from scriptkin.consequence.validation import FitAudit
+
+    cross = CrossFit(
+        np.array([[0.9, 0.1, 0.8, 0.9, 0.1, 0.1]]),
+        np.zeros((1, 6), dtype=np.int64),
+        (FoldFit(10, 0.3, 0),),
+        (),
+    )
+    prediction = PredictionSet(
+        cross, np.array([1, 1, 1, 0, 0, 0]), np.array([0.5, 0.5, 1.0, 0.5, 0.5, 1.0]), FitAudit((), (), ())
+    )
+    result = measure(prediction, prevalence=0.3, thresholds=np.array([0.2]))
+    # Sensitivity = 1.5/2. False-positive share = 0.5/2. Threshold odds = 0.2/0.8.
+    assert result.values["mean_nb"] == pytest.approx(0.75 * 0.3 - 0.25 * 0.7 * 0.2 / 0.8)
+
+
+def test_validation_directions_share_row() -> None:
+    # Defect: Device-held-out directions are separated from the internal validation estimates.
+    from scriptkin.consequence.report import summary_rows
+
+    records = []
+    for scheme, direction, value in (
+        ("record", "internal", 0.6),
+        ("participant", "internal", 0.7),
+        ("device", "W-to-P", 0.8),
+        ("device", "P-to-W", 0.9),
+    ):
+        records.append(
+            {
+                "cell_id": CELL.id,
+                "metric": "auc",
+                "version": "uncorrected",
+                "replicate": 0,
+                "estimate": value,
+                "planned_R": 1,
+                "validation": scheme,
+                "direction": direction,
+                "scenario": "transfer",
+                "sensitivity": "primary",
+                "effect": 0.8,
+                "bias_multiple": 0.0,
+            }
+        )
+    rows = summary_rows({"replicates": records, "contrasts": [], "decision_curves": []})["table_validation"]
+    assert len(rows) == 1
+    assert [
+        rows[0][key]
+        for key in (
+            "record_estimate",
+            "participant_estimate",
+            "device_w_to_p_estimate",
+            "device_p_to_w_estimate",
+        )
+    ] == [0.6, 0.7, 0.8, 0.9]
+
+
+def test_center_changes_input_digest(tmp_path: Path, centers: Centers) -> None:
+    # Defect: The measured digest does not cover the program centre values used by the experiment.
+    raw = fixture_document(centers)
+    first = read_fixture(tmp_path, raw, centers)
+    changed = dict(centers)
+    changed[(FEATURES[0], "loops-l-v20")] += 0.1
+    second = read_fixture(tmp_path, raw, changed)
+    assert first.raw == second.raw and first.digest != second.digest
+
+
+def test_band_frequency_distance(tmp_path: Path, centers: Centers) -> None:
+    # Defect: A nonzero frequency mismatch is reported only as a zero scale-and-speed distance.
+    raw = fixture_document(centers)
+    f = raw["features"][FEATURES[5]]
+    sample = f["programs"].pop("line-osc8")
+    f["programs"].update({"line-osc5": sample, "line-osc11": sample})
+    raw["constants"] = {"bandPowerPrograms": ["line-osc5", "line-osc11"]}
+    result = read_fixture(tmp_path, raw, centers).features[5]
+    assert result.selection.program.id == "line-osc11"
+    assert result.selection.distance == 0 and result.selection.frequency_distance_hz == 3
+    from scriptkin.consequence.report import input_tables
+
+    rows = input_tables({}, read_fixture(tmp_path, raw, centers))["inputs"]
+    assert next(r for r in rows if r["feature"] == FEATURES[5])["frequency_distance_hz"] == 3

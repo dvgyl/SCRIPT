@@ -129,7 +129,9 @@ def paired_contrasts(versions: Mapping[str, MetricSet]) -> tuple[dict[str, objec
     return tuple(rows)
 
 
-def summarize(rows: Sequence[Mapping[str, object]], *, planned: int = 200) -> dict[str, object]:
+def summarize(
+    rows: Sequence[Mapping[str, object]], *, planned: int = 200, contrast: str | None = None
+) -> dict[str, object]:
     ids = [r["replicate"] for r in rows]
     if len(set(ids)) != len(ids):
         raise ValueError("A summary repeats a replicate identifier.")
@@ -159,8 +161,6 @@ def summarize(rows: Sequence[Mapping[str, object]], *, planned: int = 200) -> di
         sd = float(values.std(ddof=1)) if n > 1 else float("nan")
         se = sd / np.sqrt(n)
         half = float(t.ppf(0.975, n - 1)) * se if n > 1 else float("nan")
-        metric = str(rows[0].get("metric", ""))
-        share = wilson(float(np.sum(np.abs(values) >= MATERIAL.get(metric, float("inf")))), n)
         result.update(
             mean=mean,
             sd=sd,
@@ -169,8 +169,9 @@ def summarize(rows: Sequence[Mapping[str, object]], *, planned: int = 200) -> di
             mcse=se,
             mean_lower=mean - half,
             mean_upper=mean + half,
-            material_share=share.point,
-            wilson_lower=share.low,
-            wilson_upper=share.high,
         )
+        metric = str(rows[0].get("metric", ""))
+        if contrast in ("D_raw", "D_corrected") and metric in MATERIAL:
+            share = wilson(float(np.sum(np.abs(values) >= MATERIAL[metric])), n)
+            result.update(material_share=share.point, wilson_lower=share.low, wilson_upper=share.high)
     return result

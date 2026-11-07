@@ -101,7 +101,8 @@ def cells(plan: ConsequencePlan) -> tuple[CellSpec, ...]:
             if effect == 0.8:
                 result.append(replace(base, effect=0.4, sensitivity="effect04"))
             result.append(replace(base, model="knn", sensitivity="knn"))
-            result.append(replace(base, sensitivity="misspecified"))
+            if plan.source == "grid":
+                result.append(replace(base, sensitivity="misspecified"))
             if f == "bench.speed_cv":
                 result.append(replace(base, sensitivity="floor_cv"))
             if scenario == "confounded":
