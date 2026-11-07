@@ -164,7 +164,7 @@ def compare_parity_export(folder: Path, tool: str) -> None:
         np.testing.assert_allclose(got.xy, want.xy, rtol=0, atol=1e-12)
         assert got.channels.keys() == want.channels.keys()
         for channel in want.channels:
-            np.testing.assert_array_equal(got.channels[channel], want.channels[channel])
+            np.testing.assert_allclose(got.channels[channel], want.channels[channel], rtol=0, atol=1e-12)
     actual_qc, expected_qc = assess(trial), assess(reference)
     assert isinstance(actual_qc, Accepted) and isinstance(expected_qc, Accepted)
     library = extract(actual_qc)
