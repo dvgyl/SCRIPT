@@ -281,15 +281,20 @@ final class SessionFlowTests: XCTestCase {
         element.tap()
     }
 
-    /// Types `text` over the field's value. A triple tap selects the whole value, so typing replaces it.
+    /// Types `text` over the field's value. A triple tap selects the whole value, so typing replaces it. The simulator
+    /// can drop keys while its keyboard starts, so the keyboard must show first, and a short value is typed again.
     @MainActor private func replace(_ field: XCUIElement, with text: String) {
         XCTAssertTrue(field.waitForExistence(timeout: 10))
-        field.tap()
-        let old = field.value as? String ?? ""
-        if !old.isEmpty, old != field.placeholderValue {
-            field.tap(withNumberOfTaps: 3, numberOfTouches: 1)
+        for _ in 0..<3 {
+            field.tap()
+            XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10))
+            let old = field.value as? String ?? ""
+            if !old.isEmpty, old != field.placeholderValue {
+                field.tap(withNumberOfTaps: 3, numberOfTouches: 1)
+            }
+            field.typeText(text)
+            if field.value as? String == text { return }
         }
-        field.typeText(text)
         XCTAssertEqual(field.value as? String, text)
     }
 
