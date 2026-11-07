@@ -1,0 +1,1048 @@
+from __future__ import annotations
+
+import csv
+import hashlib
+import importlib.util
+import json
+import sys
+from dataclasses import replace
+from pathlib import Path
+from types import ModuleType
+from typing import Any
+
+import numpy as np
+import pytest
+import test_bench_moves as moves_tests
+from scipy.special import logit
+from scipy.stats import norm
+
+from scriptkin import bench
+from scriptkin.bench.analysis import correction_model, feature_programs
+from scriptkin.bench.inputs import Constants, Registry
+from scriptkin.bench.moves import MoveList
+from scriptkin.consequence.generate import correct_w, generate_cohort, observe
+from scriptkin.consequence.inputs import (
+    Centers,
+    Coefficients,
+    centers_for,
+    grid_inputs,
+    read_deliverables,
+    select_program,
+)
+from scriptkin.consequence.metrics import (
+    MetricSet,
+    measure,
+    paired_contrasts,
+    summarize,
+    weighted_auc,
+    weighted_calibration,
+)
+from scriptkin.consequence.plan import (
+    FEATURES,
+    LIMITS,
+    CellSpec,
+    ConsequencePlan,
+    ProgramTarget,
+    SeedKey,
+    cells,
+    plan_digest,
+    planned_replicates,
+    seed_for,
+)
+from scriptkin.consequence.report import run_unit, write_csv, write_json, write_outputs
+from scriptkin.consequence.validation import (
+    Failure,
+    PredictionSet,
+    audit_fits,
+    evaluate_matrix,
+    make_splits,
+    matrix,
+    participant_weights,
+    permute_participants,
+)
+from scriptkin.evaluate.screening import CrossFit, FitRecord, FoldFit
+
+programs_folder = moves_tests.programs_folder
+move_lists = moves_tests.move_lists
+
+
+@pytest.fixture(scope="session")
+def centers(move_lists: dict[str, MoveList]) -> Centers:
+    return centers_for(move_lists)
+
+
+@pytest.fixture
+def study_script() -> ModuleType:
+    path = Path(__file__).resolve().parents[1] / "studies/consequence.py"
+    spec = importlib.util.spec_from_file_location("consequence_study_test", path)
+    assert spec is not None and spec.loader is not None
+    script = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = script
+    spec.loader.exec_module(script)
+    return script
+
+
+PLAN = ConsequencePlan()
+CELL = CellSpec(n=120, effect=0.8)
+
+
+def fixture_document(centers: Centers) -> dict[str, Any]:
+    features: dict[str, Any] = {}
+    for i, name in enumerate(FEATURES):
+        f = grid_inputs(PLAN, CellSpec(features=(name,)), centers=centers).features[0]
+        model = correction_model(name)
+        program = {
+            "bias": {"estimate": 0.0, "lower": -0.001, "upper": 0.001},
+            "se": 0.001,
+            "factor": {"estimate": 1.0, "lower": float(np.exp(-0.001)), "upper": float(np.exp(0.001))},
+            "components": {d: {"run": 0.0001, "mount": 0.0001} for d in ("P", "W")},
+        }
+        features[name] = {
+            "limit": LIMITS[name],
+            "scale": "absolute" if i == 4 else "ln",
+            "values": {"bias": f.bias_basis, "correction": "raw_device"},
+            "featureP": 1.0,
+            "equivalent": {"adjusted": False, "unadjusted": False},
+            "range": {},
+            "programs": {f.selection.program.id: program},
+            "correction": {
+                "model": model.value,
+                "coefficients": {
+                    term: {"estimate": value, "se": 0.001, "fitted": fitted}
+                    for term, value, fitted in (
+                        ("alpha", 0.0, True),
+                        ("beta", 1.0, model.fits_slope),
+                        ("gamma_u", 0.0, model.fits_covariates),
+                        ("gamma_v", 0.0, model.fits_covariates),
+                    )
+                },
+                "residual": {
+                    p.id: {
+                        "estimate": 0.0,
+                        "lower": -0.001,
+                        "upper": 0.001,
+                        "withinLimit": True,
+                    }
+                    for p in feature_programs(name, bench.MAIN, tuple(p.id for p in bench.MAIN))
+                },
+            },
+        }
+    return {
+        "protocol": {"version": bench.PROTOCOL_VERSION},
+        "analysis": "main",
+        "lock": {"commit": "a" * 40},
+        "library": "scriptkin",
+        "postHoc": None,
+        "features": features,
+    }
+
+
+def read_fixture(
+    tmp_path: Path, document: dict[str, Any], centers: Centers, registry: Registry | None = None
+) -> Any:
+    path = tmp_path / "deliverables.json"
+    path.write_text(json.dumps(document))
+    return read_deliverables(path, centers, expected_protocol=bench.PROTOCOL_VERSION, registry=registry)
+
+
+def prediction(scheme: str = "participant") -> PredictionSet:
+    cohort = generate_cohort(CELL, seed=5)
+    data = matrix(cohort, cohort.x, scheme)
+    splits = make_splits(data, scheme, seed=7)
+    result = evaluate_matrix(data, PLAN, splits, seed=9)
+    assert isinstance(result, PredictionSet)
+    return result
+
+
+def test_input_shape(tmp_path: Path, centers: Centers) -> None:
+    # Defect: The reader accepts a missing required field.
+    raw = fixture_document(centers)
+    del raw["analysis"]
+    with pytest.raises(ValueError):
+        read_fixture(tmp_path, raw, centers)
+
+
+def test_variance_units(centers: Centers) -> None:
+    # Defect: Noise uses a variance as a standard deviation.
+    c = generate_cohort(replace(CELL, n=50000), seed=4)
+    inputs = grid_inputs(PLAN, CELL, centers=centers)
+    f = replace(inputs.features[0], run_p=0.04, mount_p=0)
+    observed = observe(c, replace(inputs, features=(f,)), seed=8)
+    residual = observed.reference[:, :, 0] - c.x[:, :, 0] - f.center
+    assert abs(float(residual.var()) - 0.04) < 5 * 0.04 * np.sqrt(2 / 100000)
+
+
+def test_bias_direction(centers: Centers) -> None:
+    # Defect: W receives the P/W factor in the wrong direction.
+    cell = replace(CELL, bias_multiple=1.0, noise_id="zero")
+    c = generate_cohort(cell, seed=5)
+    o = observe(c, grid_inputs(PLAN, cell, centers=centers), seed=6)
+    np.testing.assert_allclose(o.reference - o.uncorrected, LIMITS[FEATURES[0]])
+
+
+def test_absolute_scale(centers: Centers) -> None:
+    # Defect: Speed CV receives a logarithmic transform.
+    cell = replace(CELL, features=(FEATURES[4],), bias_multiple=1.0, noise_id="zero")
+    c = generate_cohort(cell, seed=5)
+    o = observe(c, grid_inputs(PLAN, cell, centers=centers), seed=6)
+    np.testing.assert_allclose(o.reference - o.uncorrected, 0.030)
+
+
+def test_missing_program() -> None:
+    # Defect: An absent geometry is silently replaced.
+    with pytest.raises(ValueError):
+        select_program(ProgramTarget(), [bench.MAIN[-1]])
+
+
+def test_program_tie() -> None:
+    # Defect: Program ties depend on input order.
+    p = bench.MAIN[0]
+    a, b = replace(p, id="a"), replace(p, id="b")
+    assert select_program(ProgramTarget(), [b, a]).program == a
+    assert select_program(ProgramTarget(), [a, b]).program == a
+
+
+def test_program_outside_range() -> None:
+    # Defect: An extrapolated target is marked within range.
+    assert not select_program(ProgramTarget(speed_mm_s=100.0), bench.MAIN).in_range
+
+
+def test_raw_correction_basis(tmp_path: Path, centers: Centers) -> None:
+    # Defect: The reader accepts a camera difference as a raw correction input.
+    raw = fixture_document(centers)
+    raw["features"][FEATURES[0]]["values"]["correction"] = "camera_referenced"
+    with pytest.raises(ValueError):
+        read_fixture(tmp_path, raw, centers)
+
+
+def test_fixed_terms(tmp_path: Path, centers: Centers) -> None:
+    # Defect: A shift model changes beta.
+    raw = fixture_document(centers)
+    raw["features"][FEATURES[5]]["correction"]["coefficients"]["beta"]["estimate"] = 1.1
+    with pytest.raises(ValueError):
+        read_fixture(tmp_path, raw, centers)
+
+
+def test_correction_formula() -> None:
+    # Defect: Correction omits gamma covariates or changes P values.
+    x = np.ones((2, 2))
+    np.testing.assert_allclose(
+        correct_w(x, np.array([0, 1]), Coefficients(2, 3, 4, 5), 2, 3), [[1, 1], [28, 28]]
+    )
+
+
+def test_passing_correction_supported(tmp_path: Path, centers: Centers) -> None:
+    # Defect: The reader never reports bench support for a passing correction.
+    features = read_fixture(tmp_path, fixture_document(centers), centers).features
+    assert all(f.support == "bench_supported" and not f.reason for f in features)
+
+
+def test_failed_check_retained(tmp_path: Path, centers: Centers) -> None:
+    # Defect: The reader ignores a failed residual outside the selected program.
+    raw = fixture_document(centers)
+    residual = raw["features"][FEATURES[0]]["correction"]["residual"]
+    residual["loops-l-v40"]["withinLimit"] = False
+    features = read_fixture(tmp_path, raw, centers).features
+    f = features[0]
+    assert f.correction is not None and f.support == "failed_lack_of_fit"
+    assert all(other.support == "bench_supported" for other in features[1:])
+
+
+def test_missing_residual_reason(tmp_path: Path, centers: Centers) -> None:
+    # Defect: Missing residual coverage has no reason code.
+    raw = fixture_document(centers)
+    del raw["features"][FEATURES[0]]["correction"]["residual"]["loops-l-v40"]
+    features = read_fixture(tmp_path, raw, centers).features
+    assert features[0].support == "failed_lack_of_fit"
+    assert features[0].reason == "residual_programs_differ_from_eligible_set"
+    assert features[0].correction is not None
+    assert all(f.support == "bench_supported" and not f.reason for f in features[1:])
+    registry = Registry(
+        tmp_path,
+        (),
+        Constants(("line-osc5", "line-osc8", "line-osc11"), ("loops-l-v40",), False),
+    )
+    restored = read_fixture(tmp_path, raw, centers, registry).features
+    assert all(f.support == "bench_supported" and not f.reason for f in restored)
+
+
+def test_mounting_dependence(centers: Centers) -> None:
+    # Defect: Mounting effects are redrawn per session.
+    c = generate_cohort(CELL, seed=4)
+    inputs = grid_inputs(PLAN, CELL, centers=centers)
+    f = replace(inputs.features[0], run_w=0.0, mount_w=0.1)
+    o = observe(c, replace(inputs, features=(f,)), seed=9)
+    error = o.uncorrected[:, :, 0] - c.x[:, :, 0] - f.center
+    np.testing.assert_allclose(error[:, 0], error[:, 1], atol=1e-14)
+    for block in range(6):
+        assert np.ptp(error[c.block == block]) < 1e-14
+
+
+def test_rule_b_control() -> None:
+    # Defect: The L-sized shift gives the wrong theoretical scalar AUC.
+    c = generate_cohort(replace(CELL, n=50000, effect=0), seed=1)
+    scale = LIMITS[FEATURES[0]] / (np.sqrt(2) * norm.ppf(0.55))
+    assert norm.cdf(LIMITS[FEATURES[0]] / (np.sqrt(2) * scale)) == pytest.approx(0.55)
+    assert abs(float(c.x[:, 0, 0].var()) - scale**2) < 5 * scale**2 * np.sqrt(2 / 50000)
+
+
+def test_zero_difference_pair(centers: Centers) -> None:
+    # Defect: Equal device inputs give different paired observations.
+    c = generate_cohort(CELL, seed=2)
+    inputs = grid_inputs(PLAN, CELL, centers=centers)
+    f = replace(inputs.features[0], mount_p=0.0, mount_w=0.0)
+    o = observe(c, replace(inputs, features=(f,)), seed=3)
+    np.testing.assert_array_equal(o.reference, o.uncorrected)
+
+
+def test_oracle_shift_noise(centers: Centers) -> None:
+    # Defect: Oracle correction removes random W noise.
+    c = generate_cohort(CELL, seed=2)
+    inputs = grid_inputs(PLAN, replace(CELL, bias_multiple=1.0), centers=centers)
+    o = observe(c, inputs, seed=3)
+    assert o.corrected is not None
+    np.testing.assert_allclose(o.corrected - o.uncorrected, LIMITS[FEATURES[0]])
+    assert np.std(o.corrected[:, :, 0] - c.x[:, :, 0]) > 0
+
+
+def test_participant_label() -> None:
+    # Defect: Labels change between sessions.
+    c = generate_cohort(CELL, seed=2)
+    d = matrix(c, c.x, "record").design
+    np.testing.assert_array_equal(d.y[::2], d.y[1::2])
+
+
+def test_seed_stability() -> None:
+    # Defect: Adding a cell changes an existing seed.
+    key = SeedKey(0.8, 600, 0.3, 4, 1)
+    value = seed_for(PLAN.seed, key)
+    seed_for(PLAN.seed, replace(key, stream=99))
+    assert seed_for(PLAN.seed, key) == value
+    a, b = generate_cohort(CELL, seed=value), generate_cohort(replace(CELL, bias_multiple=2.0), seed=value)
+    np.testing.assert_array_equal(a.x, b.x)
+
+
+def test_participant_split() -> None:
+    # Defect: A participant crosses a protected outer split.
+    c = generate_cohort(CELL, seed=2)
+    d = matrix(c, c.x, "participant")
+    for fold in make_splits(d, "participant", seed=3).folds:
+        assert not {d.design.ids[i] for i in fold.train} & {d.design.ids[i] for i in fold.test}
+
+
+def test_device_split() -> None:
+    # Defect: A held-out device appears in training.
+    c = generate_cohort(replace(CELL, scenario="transfer"), seed=2)
+    d = matrix(c, c.x, "device")
+    for fold in make_splits(d, "device", seed=3).folds:
+        assert not set(d.device[fold.train]) & set(d.device[fold.test])
+
+
+def test_record_overlap_reported() -> None:
+    # Defect: Record validation hides participant overlap.
+    assert sum(prediction("record").audit.overlaps) > 0
+
+
+def test_inner_witness() -> None:
+    # Defect: A calibration fit accesses an outer test row.
+    c = generate_cohort(CELL, seed=5)
+    d = matrix(c, c.x, "record")
+    splits = make_splits(d, "record", seed=7)
+    p = prediction("record")
+    wrong = FitRecord(
+        0,
+        "calibration",
+        frozenset(d.design.ids[i] for i in splits.folds[0].train),
+        frozenset([int(splits.folds[0].test[0])]),
+    )
+    with pytest.raises(ValueError, match="test row"):
+        audit_fits(replace(p.cross, log=(*p.cross.log, wrong)), d, splits)
+
+
+def test_fold_auc() -> None:
+    # Defect: AUC compares scores from separate outer models.
+    assert (
+        weighted_auc(
+            np.array([0.1, 0.2, 0.8, 0.9]), np.array([0, 1, 0, 1]), np.array([0, 0, 1, 1]), np.ones(4)
+        )
+        == 1
+    )
+
+
+def test_record_weights() -> None:
+    # Defect: More records give a participant more metric weight.
+    w = participant_weights(("a", "a", "a", "b"), np.arange(4))
+    assert w[:3].sum() == w[3] == 1
+
+
+def test_prior_shift() -> None:
+    # Defect: Risk adjustment uses pooled training prevalence.
+    c = CrossFit(np.array([[0.2, 0.7]]), np.array([[0, 1]]), (FoldFit(10, 0.2, 0), FoldFit(10, 0.7, 0)), ())
+    np.testing.assert_allclose(c.shifted(0.3), 0.3)
+
+
+def test_calibration_offset() -> None:
+    # Defect: The calibration intercept fit omits the logit offset.
+    p = np.array([0.2] * 3 + [0.6] * 4)
+    y = np.array([1, 1, 0, 1, 1, 0, 0])
+    a, _ = weighted_calibration(p, y, np.ones(len(y)))
+    # At a = ln(2), the offset model expects 3/3 + 4*3/4 = 4 cases.
+    assert a == pytest.approx(np.log(2), abs=1e-7)
+    assert abs(a - logit(4 / 7)) > 0.3
+
+
+def test_constant_slope() -> None:
+    # Defect: Constant predictions get a finite calibration slope.
+    _, slope = weighted_calibration(np.full(10, 0.3), np.array([0] * 7 + [1] * 3), np.ones(10))
+    assert np.isnan(slope)
+
+
+def test_net_benefit() -> None:
+    # Defect: False positives use the wrong threshold odds penalty.
+    c = CrossFit(
+        np.array([[0.9, 0.9, 0.1, 0.1]]), np.zeros((1, 4), dtype=np.int64), (FoldFit(10, 0.5, 0),), ()
+    )
+    from scriptkin.consequence.validation import FitAudit
+
+    p = PredictionSet(c, np.array([1, 0, 1, 0]), np.ones(4), FitAudit((), (), ()))
+    m = measure(p, prevalence=0.5, thresholds=np.array([0.2]))
+    assert m.values["mean_nb"] == pytest.approx(0.25 - 0.25 * 0.2 / 0.8)
+
+
+def test_cluster_permutation() -> None:
+    # Defect: Permutation gives two sessions of one participant different labels.
+    c = generate_cohort(CELL, seed=5)
+    d = permute_participants(matrix(c, c.x, "record"), seed=4)
+    np.testing.assert_array_equal(d.design.y[::2], d.design.y[1::2])
+
+
+def test_one_class_holdout() -> None:
+    # Defect: Full confounding gives a fabricated device metric.
+    c = generate_cohort(replace(CELL, scenario="confounded", association=1.0), seed=5)
+    d = matrix(c, c.x, "device")
+    result = evaluate_matrix(d, PLAN, make_splits(d, "device", seed=3), seed=4)
+    assert isinstance(result, Failure) and result.reason == "one_class_holdout"
+
+
+def test_paired_summary() -> None:
+    # Defect: A summary pairs different replicate identifiers.
+    with pytest.raises(ValueError):
+        summarize([{"replicate": 1, "estimate": 0.1}, {"replicate": 1, "estimate": 0.2}])
+    m = {
+        v: MetricSet({"auc": x}, (), ())
+        for v, x in (("reference", 0.5), ("uncorrected", 0.7), ("corrected", 0.6))
+    }
+    assert paired_contrasts(m)[0]["absolute_reduction"] == pytest.approx(0.1)
+
+
+def test_failure_denominator() -> None:
+    # Defect: Summary hides failed pairs.
+    s = summarize([{"replicate": 0, "estimate": 0.1}, {"replicate": 1, "estimate": None}], planned=2)
+    assert s["planned_R"] == 2 and s["usable_R"] == 1 and s["status"] == "incomplete"
+
+
+def test_output_roundtrip(tmp_path: Path) -> None:
+    # Defect: Export changes an estimate or unavailable status.
+    rows = [{"estimate": 0.1234567891234567, "status": "ok"}, {"estimate": None, "status": "unavailable"}]
+    path = tmp_path / "test.csv"
+    write_csv(path, rows)
+    with path.open() as stream:
+        result = list(csv.DictReader(stream))
+    assert float(result[0]["estimate"]) == rows[0]["estimate"]
+    assert result[1] == {"estimate": "", "status": "unavailable"}
+    write_json(tmp_path / "test.json", {"estimate": float("nan")})
+    assert json.loads((tmp_path / "test.json").read_text()) == {"estimate": None}
+
+
+def test_smoke_tables(tmp_path: Path, centers: Centers) -> None:
+    # Defect: A smoke run creates a primary table.
+    cell = next(c for c in cells(PLAN) if c.noise_id == "zero")
+    write_outputs(PLAN, tmp_path, cell_id=cell.id, replicate=0, smoke=True, centers=centers)
+    assert not (tmp_path / "table_primary.csv").exists()
+    with pytest.raises(ValueError, match="different plan"):
+        write_outputs(replace(PLAN, seed=1), tmp_path, cell_id=cell.id, smoke=True, centers=centers)
+
+
+def test_failed_run_rows(centers: Centers) -> None:
+    # Defect: Structural holdout failures disappear from exports.
+    cell = replace(CELL, noise_id="zero")
+    unit = run_unit(PLAN, cell, 0, grid_inputs(PLAN, cell, centers=centers), smoke=True)
+    assert any(r["reason"] == "not_applicable_one_device" for r in unit["tables"]["failures"])
+
+
+def test_value_bases(centers: Centers) -> None:
+    # Defect: Band power is treated as a camera-referenced difference.
+    assert (
+        grid_inputs(PLAN, CellSpec(features=(FEATURES[5],)), centers=centers).features[0].bias_basis
+        == "raw_device"
+    )
+    assert (
+        grid_inputs(PLAN, CellSpec(features=(FEATURES[3],)), centers=centers).features[0].bias_basis
+        == "camera_referenced"
+    )
+
+
+def test_completed_unit_collision(tmp_path: Path, centers: Centers) -> None:
+    # Defect: A restart reuses a completed unit with a different input hash.
+    cell = next(c for c in cells(PLAN) if c.noise_id == "zero")
+    write_outputs(PLAN, tmp_path, cell_id=cell.id, replicate=0, smoke=True, centers=centers)
+    import gzip
+    from zipfile import ZipFile
+
+    from scriptkin.consequence.storage import read_restart_unit, unit_name
+
+    unit = read_restart_unit(tmp_path / "units", cell.id, 0)
+    assert unit is not None
+    unit["inputs_sha256"] = "different"
+    with ZipFile(tmp_path / "units" / f"{cell.id}.zip", "w") as archive:
+        archive.writestr(unit_name(cell.id, 0), gzip.compress(json.dumps(unit).encode(), mtime=0))
+    with pytest.raises(ValueError, match="different input"):
+        write_outputs(PLAN, tmp_path, cell_id=cell.id, replicate=0, smoke=True, centers=centers)
+
+
+def test_no_all_p_cells() -> None:
+    # Defect: The grid includes an all-P cell that repeats its reference.
+    assert {c.scenario for c in cells(PLAN)} == {"all_w", "transfer", "confounded"}
+    with pytest.raises(ValueError, match="scenario"):
+        CellSpec(scenario="all_p")
+
+
+def test_registered_limits(monkeypatch: pytest.MonkeyPatch, centers: Centers) -> None:
+    # Defect: The consequence experiment keeps an old registered limit.
+    from scriptkin.bench.analysis import LIMITS as bench_limits
+    from scriptkin.bench.runs import FEATURE_SET
+
+    assert FEATURES is FEATURE_SET and LIMITS is bench_limits
+    monkeypatch.setitem(bench_limits, FEATURES[0], 0.123)
+    c = replace(CELL, bias_multiple=1.0)
+    assert grid_inputs(PLAN, c, centers).features[0].bias == 0.123
+
+
+def test_joint_features() -> None:
+    # Defect: A joint cell loses its explicit feature set.
+    joint = next(c for c in cells(PLAN) if c.sensitivity == "joint")
+    assert joint.features == FEATURES
+    assert generate_cohort(joint, seed=9).x.shape[-1] == len(FEATURES)
+
+
+def test_cell_replicates() -> None:
+    # Defect: A sensitivity uses the primary replicate count.
+    assert all(
+        planned_replicates(PLAN, c) == (200 if c.sensitivity == "primary" else 100) for c in cells(PLAN)
+    )
+
+
+def test_compact_audit(centers: Centers) -> None:
+    # Defect: A later replicate writes full membership instead of its hashes.
+    from scriptkin.consequence.report import membership_hash
+
+    cell = replace(CELL, n=60, scenario="transfer", bias_multiple=1.0, noise_id="zero")
+    inputs = grid_inputs(PLAN, cell, centers)
+    compact = run_unit(PLAN, cell, 1, inputs, smoke=False)
+    full = run_unit(PLAN, cell, 1, inputs, smoke=True)
+    assert compact["audit_detail"] == "compact" and full["audit_detail"] == "full"
+    assert all("row_id" not in row for row in compact["tables"]["splits"])
+    keys = ("validation", "direction", "version", "fold", "stage")
+    for row in compact["audit"]:
+        matches = [r for r in full["full_audit"] if all(r[k] == row[k] for k in keys)]
+        train = sorted({i for r in matches for i in r["training_rows"]})
+        test = sorted(
+            r["row_id"]
+            for r in full["tables"]["splits"]
+            if r["role"] == "test" and all(r[k] == row[k] for k in ("validation", "direction", "fold"))
+        )
+        assert row["training_sha256"] == membership_hash(train)
+        assert row["test_sha256"] == membership_hash(test)
+        assert row["training_count"] == len(train) and row["test_count"] == len(test)
+        assert row["fit_count"] == len(matches)
+        assert "training_rows" not in row and "training_participants" not in row
+    assert len({tuple(r[k] for k in keys) for r in compact["audit"]}) == len(compact["audit"])
+    assert any(r["test_overlap"] for r in compact["audit"] if r["validation"] == "record")
+
+
+def test_replicate_zero_audit(centers: Centers) -> None:
+    # Defect: Replicate zero loses its full fit record.
+    cell = replace(CELL, n=60, bias_multiple=1.0, noise_id="zero")
+    result = run_unit(PLAN, cell, 0, grid_inputs(PLAN, cell, centers), smoke=False)
+    assert result["audit_detail"] == "full"
+    assert all("training_rows" in r for r in result["full_audit"])
+    assert all("row_id" in r for r in result["tables"]["splits"])
+
+
+def test_compact_leakage_check(monkeypatch: pytest.MonkeyPatch, centers: Centers) -> None:
+    # Defect: Compact output bypasses the fit leakage check.
+    import scriptkin.consequence.validation as validation
+
+    def refuse(*args: object) -> None:
+        raise ValueError("injected leakage")
+
+    monkeypatch.setattr(validation, "audit_fits", refuse)
+    cell = replace(CELL, bias_multiple=1.0, noise_id="zero")
+    with pytest.raises(ValueError, match="injected leakage"):
+        run_unit(PLAN, cell, 1, grid_inputs(PLAN, cell, centers), smoke=False)
+
+
+def test_worker_count(tmp_path: Path, centers: Centers) -> None:
+    # Defect: The result depends on the worker count.
+    specs = (
+        replace(CELL, n=60, bias_multiple=1.0, noise_id="zero"),
+        replace(
+            CELL, n=60, bias_multiple=1.0, noise_id="zero", sensitivity="share095", participant_share=0.95
+        ),
+    )
+    plan = ConsequencePlan(replicates=2, sensitivity_replicates=1, folds=3, inner_folds=2, cell_specs=specs)
+    first, second = tmp_path / "one", tmp_path / "two"
+    write_outputs(plan, first, centers=centers, workers=1)
+    write_outputs(plan, second, centers=centers, workers=2)
+
+    def contents(folder: Path) -> dict[str, bytes]:
+        return {
+            p.relative_to(folder).as_posix(): p.read_bytes()
+            for p in folder.rglob("*")
+            if p.is_file() and not any(part.startswith("._") for part in p.parts)
+        }
+
+    assert contents(first) == contents(second)
+    with (first / "consequence_summary.csv").open() as stream:
+        rows = list(csv.DictReader(stream))
+    for row in rows:
+        assert int(row["planned_R"]) == (2 if row["sensitivity"] == "primary" else 1)
+    write_outputs(plan, first, centers=centers, workers=2)
+    assert contents(first) == contents(second)
+
+
+def test_sensitivity_completeness(tmp_path: Path, centers: Centers) -> None:
+    # Defect: Sensitivity completeness uses the primary replicate denominator.
+    spec = replace(CELL, n=60, bias_multiple=1.0, noise_id="zero", sensitivity="share095")
+    plan = ConsequencePlan(replicates=200, sensitivity_replicates=2, cell_specs=(spec,))
+    write_outputs(plan, tmp_path, centers=centers)
+    with (tmp_path / "consequence_summary.csv").open() as stream:
+        rows = [
+            r for r in csv.DictReader(stream) if r["validation"] == "participant" and r["metric"] == "auc"
+        ]
+    assert rows and all(r["planned_R"] == "2" and r["status"] == "ok" for r in rows)
+
+
+def test_study_move_lists(
+    tmp_path: Path, move_lists: dict[str, MoveList], programs_folder: Path, study_script: ModuleType
+) -> None:
+    # Defect: The study loader changes a registered move list when it builds it in memory.
+    built = study_script.load_move_lists(tmp_path)
+    read = study_script.load_move_lists(programs_folder)
+    assert set(built) == set(read) == {d.id for d in bench.MAIN}
+    for pid in built:
+        assert built[pid] == read[pid] == move_lists[pid]
+
+
+def test_grid_refuses_registry(
+    tmp_path: Path,
+    study_script: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Defect: Grid mode silently ignores a supplied bench registry.
+    out = tmp_path / "out"
+    monkeypatch.setattr(
+        sys, "argv", ["consequence.py", "--mode", "grid", "--registry", "registry.json", "--out", str(out)]
+    )
+    with pytest.raises(SystemExit) as error:
+        study_script.main()
+    assert error.value.code == 2
+    assert "--registry requires --mode measured." in capsys.readouterr().err
+    assert not out.exists()
+
+
+def test_measured_registry_digest(
+    tmp_path: Path,
+    centers: Centers,
+    move_lists: dict[str, MoveList],
+    study_script: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Defect: The measured manifest omits the supplied bench registry file hash.
+    plan = replace(PLAN, source="measured", cell_specs=())
+    monkeypatch.setattr(
+        study_script,
+        "ConsequencePlan",
+        lambda seed=plan.seed, source=plan.source: replace(plan, seed=seed, source=source),
+    )
+    monkeypatch.setattr(study_script, "load_move_lists", lambda: move_lists)
+    registry = tmp_path / "registry.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "studyStore": "store",
+                "mountings": [],
+                "constants": {
+                    "bandPowerPrograms": ["line-osc5", "line-osc8", "line-osc11"],
+                    "excludedPrograms": [],
+                    "faultDwellGapsOnP": False,
+                },
+            }
+        )
+    )
+    deliverables = tmp_path / "deliverables.json"
+    deliverables.write_text(json.dumps(fixture_document(centers)))
+    out = tmp_path / "out"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "consequence.py",
+            "--mode",
+            "measured",
+            "--deliverables",
+            str(deliverables),
+            "--registry",
+            str(registry),
+            "--expect-plan-sha256",
+            plan_digest(plan),
+            "--out",
+            str(out),
+        ],
+    )
+    study_script.main()
+    manifest = json.loads((out / "consequence_manifest.json").read_text())
+    assert manifest["bench_registry_sha256"] == hashlib.sha256(registry.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize(
+    ("scheme", "version", "replicate", "sensitivity", "bias", "noise", "smoke", "expected"),
+    [
+        ("participant", "uncorrected", 0, "primary", 0.0, "nominal", False, True),
+        ("device", "uncorrected", 19, "primary", 0.0, "nominal", False, True),
+        ("record", "uncorrected", 0, "primary", 0.0, "nominal", False, False),
+        ("participant", "reference", 0, "primary", 0.0, "nominal", False, False),
+        ("device", "corrected", 0, "primary", 0.0, "nominal", False, False),
+        ("participant", "uncorrected", 20, "primary", 0.0, "nominal", False, False),
+        ("participant", "uncorrected", 0, "joint", 0.0, "nominal", False, False),
+        ("participant", "uncorrected", 0, "knn", 0.0, "nominal", False, False),
+        ("participant", "uncorrected", 0, "primary", 1.0, "nominal", False, False),
+        ("participant", "uncorrected", 0, "primary", 0.0, "stress", False, False),
+        ("participant", "uncorrected", 0, "primary", 0.0, "nominal", True, False),
+    ],
+)
+def test_null_schedule(
+    scheme: str,
+    version: str,
+    replicate: int,
+    sensitivity: str,
+    bias: float,
+    noise: str,
+    smoke: bool,
+    expected: bool,
+) -> None:
+    # Defect: A permutation diagnostic runs outside its fixed schedule.
+    from scriptkin.consequence.report import runs_null
+
+    cell = replace(CELL, sensitivity=sensitivity, bias_multiple=bias, noise_id=noise)
+    assert runs_null(cell, replicate, scheme, version, smoke=smoke) == expected
+
+
+def test_null_procedure_count(centers: Centers) -> None:
+    # Defect: An eligible diagnostic omits a permutation or runs an extra validation scheme.
+    cell = replace(CELL, n=60, scenario="transfer")
+    plan = replace(PLAN, folds=3, inner_folds=2)
+    raw = run_unit(plan, cell, 1, grid_inputs(plan, cell, centers), smoke=False)
+    checks = [r for r in raw["audit"] if r["stage"] == "null_check"]
+    assert {(r["validation"], r["direction"], r["version"]) for r in checks} == {
+        ("participant", "internal", "uncorrected"),
+        ("device", "W-to-P", "uncorrected"),
+        ("device", "P-to-W", "uncorrected"),
+    }
+    assert all(len(r["aucs"]) == 50 for r in checks)
+    fits = [r for r in raw["audit"] if "permutation" in r]
+    assert {r["permutation"] for r in fits} == set(range(50))
+    assert all(r["version"] == "uncorrected" and r["validation"] != "record" for r in fits)
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_packed_unit_roundtrip(centers: Centers, failed: bool) -> None:
+    # Defect: Compact storage changes a metric, curve, calibration bin, or unavailable value.
+    from scriptkin.consequence.storage import clean, expand_unit, pack_unit
+
+    cell = replace(CELL, n=60, scenario="transfer", bias_multiple=1.0)
+    inputs = grid_inputs(PLAN, cell, centers)
+    if failed:
+        inputs = replace(inputs, features=tuple(replace(f, correction=None) for f in inputs.features))
+    raw = run_unit(PLAN, cell, 1, inputs, smoke=False)
+    packed = pack_unit(raw)
+    cell_row = {k: v for k, v in raw["common"].items() if k not in ("replicate", "negative_cv")}
+    restored = expand_unit(packed, cell_row, PLAN.thresholds)
+
+    def ordered(rows: list[dict[str, Any]]) -> list[str]:
+        return sorted(json.dumps(row, sort_keys=True, allow_nan=False) for row in clean(rows))
+
+    for name in ("replicates", "contrasts", "decision_curves", "calibration", "failures"):
+        assert ordered(restored[name]) == ordered(raw["tables"][name]), name
+    assert "tables" not in packed and "identity" not in packed
+    for group in packed["groups"]:
+        assert "n" not in group and "cell_id" not in group
+        for packet in group["versions"].values():
+            assert all(isinstance(a, list) for a in packet.get("decision_curves", {}).values())
+            assert all(isinstance(a, list) for a in packet.get("calibration", {}).values())
+
+
+def test_later_curves_reach_summary(tmp_path: Path, centers: Centers) -> None:
+    # Defect: Suppressing later long-form rows also removes their contribution to the summary.
+    import gzip
+
+    from scriptkin.consequence.report import cell_metadata, summary_rows
+    from scriptkin.consequence.storage import expand_unit, read_restart_unit
+
+    cell = replace(CELL, n=60, scenario="transfer", bias_multiple=1.0)
+    plan = replace(PLAN, replicates=2, cell_specs=(cell,))
+    write_outputs(plan, tmp_path, centers=centers)
+    inputs = grid_inputs(plan, cell, centers)
+    all_rows: dict[str, list[dict[str, Any]]] = {
+        k: [] for k in ("replicates", "contrasts", "decision_curves")
+    }
+    for r in range(2):
+        unit = read_restart_unit(tmp_path / "units", cell.id, r)
+        assert unit is not None
+        expanded = expand_unit(unit, cell_metadata(plan, cell, inputs), plan.thresholds)
+        for k in all_rows:
+            all_rows[k].extend(expanded[k])
+    expected = summary_rows(all_rows)["figure_decision_curves"]
+    with (tmp_path / "figure_decision_curves.csv").open() as stream:
+        actual = list(csv.DictReader(stream))
+    assert len(actual) == len(expected)
+    for got, want in zip(actual, expected, strict=True):
+        assert got["usable_R"] == str(want["usable_R"])
+        assert float(got["mean"]) == want["mean"]
+    for name in ("consequence_decision_curves.csv", "consequence_calibration.csv"):
+        with (tmp_path / name).open() as stream:
+            assert {row["replicate"] for row in csv.DictReader(stream)} == {"0"}
+    for name in ("consequence_replicates.csv.gz", "consequence_contrasts.csv.gz"):
+        with gzip.open(tmp_path / name, "rt") as stream:
+            assert {row["replicate"] for row in csv.DictReader(stream)} == {"0", "1"}
+    assert not (tmp_path / "details" / f"{cell.id}-001.json.gz").exists()
+
+
+def test_restart_unit_size(tmp_path: Path, centers: Centers) -> None:
+    # Defect: A restart unit retains repeated cell fields or full membership and exceeds its storage budget.
+    from scriptkin.consequence.storage import pack_unit, read_unit, write_compressed_json
+
+    cell = replace(CELL, n=120, scenario="transfer", bias_multiple=1.0, noise_id="stress", features=FEATURES)
+    raw = run_unit(PLAN, cell, 1, grid_inputs(PLAN, cell, centers), smoke=False)
+    packet = pack_unit(raw)
+    path = tmp_path / "unit.json.gz"
+    write_compressed_json(path, packet)
+    assert read_unit(path) == packet
+    assert path.stat().st_size < 20_000
+    serialized = json.dumps(packet)
+    assert '"training_rows"' not in serialized and '"training_participants"' not in serialized
+    assert '"participant_share"' not in serialized and '"features"' not in serialized
+
+
+def test_cell_archive_allocation(tmp_path: Path, centers: Centers) -> None:
+    # Defect: Separate small restart files exceed the storage target on exFAT.
+    from zipfile import ZIP_STORED, ZipFile
+
+    from scriptkin.consequence.storage import (
+        archive_cell,
+        pack_unit,
+        read_restart_unit,
+        unit_name,
+        write_compressed_json,
+    )
+
+    cell = replace(CELL, n=60, bias_multiple=1.0)
+    packet = pack_unit(run_unit(PLAN, cell, 1, grid_inputs(PLAN, cell, centers), smoke=False))
+    stage, target = tmp_path / "stage", tmp_path / "units"
+    stage.mkdir()
+    target.mkdir()
+    for r in range(200):
+        write_compressed_json(stage / unit_name(cell.id, r), {**packet, "replicate": r})
+    archive_cell(stage, target, cell.id)
+    path = target / f"{cell.id}.zip"
+    assert not list(stage.glob("*.json.gz"))
+    assert len(list(target.glob("*"))) == 1
+    with ZipFile(path) as archive:
+        assert len(archive.infolist()) == 200
+        assert all(member.compress_type == ZIP_STORED for member in archive.infolist())
+    for r in (0, 199):
+        restored = read_restart_unit(target, cell.id, r)
+        assert restored == {**packet, "replicate": r}
+    block = 131072
+    assert ((path.stat().st_size + block - 1) // block) * block < 200 * block / 4
+
+
+def test_archive_collision(tmp_path: Path) -> None:
+    # Defect: A completed archive member is overwritten with different data.
+    from scriptkin.consequence.storage import archive_cell, write_compressed_json
+
+    stage, target = tmp_path / "stage", tmp_path / "units"
+    stage.mkdir()
+    target.mkdir()
+    path = stage / "cell-000.json.gz"
+    write_compressed_json(path, {"estimate": 0.1})
+    archive_cell(stage, target, "cell")
+    write_compressed_json(path, {"estimate": 0.2})
+    with pytest.raises(ValueError, match="differs"):
+        archive_cell(stage, target, "cell")
+
+
+def test_missing_selected_program(tmp_path: Path, centers: Centers) -> None:
+    # Defect: The reader replaces a missing selected program with another one.
+    raw = fixture_document(centers)
+    programs = raw["features"][FEATURES[0]]["programs"]
+    programs["loops-l-v40"] = programs.pop("loops-l-v20")
+    result = read_fixture(tmp_path, raw, centers).features[0]
+    assert result.selection.program.id == "loops-l-v20"
+    assert result.support == "unavailable" and result.reason == "missing_selected_program_value"
+    assert np.isnan(result.bias)
+
+
+@pytest.mark.parametrize("field", ["bias", "components", "factor", "se"])
+def test_missing_selected_value(tmp_path: Path, centers: Centers, field: str) -> None:
+    # Defect: A missing selected value raises a schema error instead of marking the feature unavailable.
+    raw = fixture_document(centers)
+    raw["features"][FEATURES[0]]["programs"]["loops-l-v20"][field] = None
+    result = read_fixture(tmp_path, raw, centers).features[0]
+    assert result.reason == "missing_selected_program_value" and result.correction is None
+
+
+@pytest.mark.parametrize("use_registry", [False, True])
+def test_program_exclusions(tmp_path: Path, centers: Centers, use_registry: bool) -> None:
+    # Defect: An explicitly excluded program remains eligible for selection.
+    raw = fixture_document(centers)
+    f = raw["features"][FEATURES[0]]
+    f["programs"]["loops-l-v40"] = f["programs"]["loops-l-v20"]
+    excluded = ("loops-l-v20", "loops-s-v20")
+    registry = None
+    if use_registry:
+        registry = Registry(
+            tmp_path, (), Constants(("line-osc5", "line-osc8", "line-osc11"), excluded, False)
+        )
+    else:
+        raw["constants"] = {"excludedPrograms": list(excluded)}
+    result = read_fixture(tmp_path, raw, centers, registry).features[0]
+    assert result.selection.program.id == "loops-l-v40" and not result.reason
+
+
+def test_measured_has_no_misspecification() -> None:
+    # Defect: Measured mode repeats primary cells as an unchanged misspecification control.
+    assert all(c.sensitivity != "misspecified" for c in cells(replace(PLAN, source="measured")))
+    assert any(c.sensitivity == "misspecified" for c in cells(PLAN))
+
+
+@pytest.mark.parametrize("feature", FEATURES)
+def test_misspecification_at_center(centers: Centers, feature: str) -> None:
+    # Defect: The misspecified correction error at the centre is not 0.5 L.
+    cell = replace(CELL, features=(feature,), bias_multiple=1.0, sensitivity="misspecified")
+    f = grid_inputs(PLAN, cell, centers).features[0]
+    assert f.correction is not None
+    z = np.full((1, 2), f.center)
+    corrected = correct_w(z, np.ones(1, dtype=np.int64), f.correction, 0.0, 0.0)
+    np.testing.assert_allclose(corrected - (z + f.bias), 0.5 * LIMITS[feature], atol=1e-12, rtol=0)
+    assert f.correction.beta == (1.0 if feature == "bench.band_power_mm2_s2" else 1.05)
+
+
+@pytest.mark.parametrize(
+    "contrast",
+    ["D_raw", "D_corrected", "reference", "uncorrected", "corrected", "removed", "absolute_reduction"],
+)
+def test_material_share_scope(contrast: str) -> None:
+    # Defect: A material-change share is calculated for a value that is not a signed change from reference.
+    rows = [{"replicate": i, "metric": "auc", "estimate": v} for i, v in enumerate((0.0, 0.05, 0.1))]
+    result = summarize(rows, planned=3, contrast=contrast)
+    if contrast in ("D_raw", "D_corrected"):
+        assert result["material_share"] == pytest.approx(2 / 3)
+        assert result["wilson_lower"] is not None and result["wilson_upper"] is not None
+    else:
+        assert all(result[key] is None for key in ("material_share", "wilson_lower", "wilson_upper"))
+    assert "reason" not in result
+
+
+def test_weighted_record_auc() -> None:
+    # Defect: Record-wise AUC ignores unequal participant weights.
+    scores = np.array([0.9, 0.4, 0.6, 0.8, 0.3])
+    y = np.array([1, 1, 1, 0, 0])
+    weights = np.array([0.5, 0.5, 1.0, 1.0, 1.0])
+    # Weighted winning pairs total 1 + 0.5 + 1 = 2.5, out of 2*2 = 4.
+    assert weighted_auc(scores, y, np.zeros(5, dtype=np.int64), weights) == pytest.approx(2.5 / 4)
+
+
+def test_weighted_record_net_benefit() -> None:
+    # Defect: Record-wise net benefit ignores unequal participant weights.
+    from scriptkin.consequence.validation import FitAudit
+
+    cross = CrossFit(
+        np.array([[0.9, 0.1, 0.8, 0.9, 0.1, 0.1]]),
+        np.zeros((1, 6), dtype=np.int64),
+        (FoldFit(10, 0.3, 0),),
+        (),
+    )
+    prediction = PredictionSet(
+        cross, np.array([1, 1, 1, 0, 0, 0]), np.array([0.5, 0.5, 1.0, 0.5, 0.5, 1.0]), FitAudit((), (), ())
+    )
+    result = measure(prediction, prevalence=0.3, thresholds=np.array([0.2]))
+    # Sensitivity = 1.5/2. False-positive share = 0.5/2. Threshold odds = 0.2/0.8.
+    assert result.values["mean_nb"] == pytest.approx(0.75 * 0.3 - 0.25 * 0.7 * 0.2 / 0.8)
+
+
+def test_validation_directions_share_row() -> None:
+    # Defect: Device-held-out directions are separated from the internal validation estimates.
+    from scriptkin.consequence.report import summary_rows
+
+    records = []
+    for scheme, direction, value in (
+        ("record", "internal", 0.6),
+        ("participant", "internal", 0.7),
+        ("device", "W-to-P", 0.8),
+        ("device", "P-to-W", 0.9),
+    ):
+        records.append(
+            {
+                "cell_id": CELL.id,
+                "metric": "auc",
+                "version": "uncorrected",
+                "replicate": 0,
+                "estimate": value,
+                "planned_R": 1,
+                "validation": scheme,
+                "direction": direction,
+                "scenario": "transfer",
+                "sensitivity": "primary",
+                "effect": 0.8,
+                "bias_multiple": 0.0,
+            }
+        )
+    rows = summary_rows({"replicates": records, "contrasts": [], "decision_curves": []})["table_validation"]
+    assert len(rows) == 1
+    assert [
+        rows[0][key]
+        for key in (
+            "record_estimate",
+            "participant_estimate",
+            "device_w_to_p_estimate",
+            "device_p_to_w_estimate",
+        )
+    ] == [0.6, 0.7, 0.8, 0.9]
+
+
+def test_center_changes_input_digest(tmp_path: Path, centers: Centers) -> None:
+    # Defect: The measured digest does not cover the program centre values used by the experiment.
+    raw = fixture_document(centers)
+    first = read_fixture(tmp_path, raw, centers)
+    changed = dict(centers)
+    changed[(FEATURES[0], "loops-l-v20")] += 0.1
+    second = read_fixture(tmp_path, raw, changed)
+    assert first.raw == second.raw and first.digest != second.digest
+
+
+def test_band_frequency_distance(tmp_path: Path, centers: Centers) -> None:
+    # Defect: A nonzero frequency mismatch is reported only as a zero scale-and-speed distance.
+    raw = fixture_document(centers)
+    f = raw["features"][FEATURES[5]]
+    sample = f["programs"].pop("line-osc8")
+    f["programs"].update({"line-osc5": sample, "line-osc11": sample})
+    raw["constants"] = {"bandPowerPrograms": ["line-osc5", "line-osc11"]}
+    result = read_fixture(tmp_path, raw, centers).features[5]
+    assert result.selection.program.id == "line-osc11"
+    assert result.selection.distance == 0 and result.selection.frequency_distance_hz == 3
+    from scriptkin.consequence.report import input_tables
+
+    rows = input_tables({}, read_fixture(tmp_path, raw, centers))["inputs"]
+    assert next(r for r in rows if r["feature"] == FEATURES[5])["frequency_distance_hz"] == 3

@@ -783,6 +783,10 @@ def deliverables(study: Study, result: AnalysisResult) -> dict[str, Any]:
         "postHoc": {"changedFiles": list(study.changed_code)} if study.post_hoc else None,
         "library": f"scriptkin {__version__}",
         "analysis": result.analysis.name,
+        "constants": {
+            "excludedPrograms": list(study.registry.constants.excluded_programs),
+            "bandPowerPrograms": list(study.registry.constants.band_power_programs),
+        },
         "features": features,
     }
 

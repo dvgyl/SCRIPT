@@ -66,6 +66,8 @@ Working title: *Do Apple Pencil and Wacom measure the same drawing movement? A r
 - **Correction.** Per-feature Deming regression from W to P with speed and scale as covariates, checked for lack of fit on held-out mountings. The residual difference is tested against the same limits.
 - **Consequence experiment.** Synthetic cohorts with the measured per-feature device bias and noise, in three scenarios: one device for everyone, training on W and testing on P, and device confounded with case status. Report AUC, calibration, and decision curves under record-wise, participant-wise, and device-held-out validation, without and with the correction.
 
+The consequence experiment follows [CONSEQUENCE_PROTOCOL.md](CONSEQUENCE_PROTOCOL.md).
+
 ### 2.4 Ethics
 
 The project cannot get ethics approval. The paper therefore uses no new data from people.

@@ -117,6 +117,8 @@ def lock_root(root: Path, extra: tuple[str, ...] = ()) -> Path:
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f"content of {rel}\n", encoding="utf-8")
+    assert (root / "docs/CONSEQUENCE_PROTOCOL.md").is_file()
+    assert (root / "python/studies/consequence.py").is_file()
     programs = root / "bench" / "programs"
     programs.mkdir(parents=True)
     move_list = {
@@ -287,6 +289,8 @@ def test_the_lock_hashes_every_file_and_the_check_finds_a_change(tmp_path: Path)
     # build, a check that passes a changed or missing file, or a build check that passes another build.
     root = lock_root(tmp_path, ("tools/translate.py",))
     lock = write_lock(root, BUILDS, COMMIT, ["tools/translate.py"])
+    assert "docs/CONSEQUENCE_PROTOCOL.md" in lock.files
+    assert "python/studies/consequence.py" in lock.files
     expected = {
         *LOCK_FILES,
         "bench/programs/loops-s-v40.json",
