@@ -48,14 +48,14 @@
   axis equal image, xmin=0, xmax=104, ymin=0, ymax=104]
 \addplot[black, thin] table[x=x, y=y] {figures/path_spiral.dat};
 \nextgroupplot[width=6.2cm, title={(d) Commanded speed}, xlabel={Time (s)}, ylabel={Speed (mm/s)},
-  xmin=0, xmax=4, ymin=0, ymax=36, legend style={font=\tiny, at={(0.98,0.03)}, anchor=south east, draw=none, fill=none},
+  xmin=0, xmax=3, ymin=0, ymax=42, legend style={font=\tiny, at={(0.5,0.97)}, anchor=north, draw=none, fill=none},
   legend columns=3]
-\addplot[black, thin] table[x=t, y=v] {figures/speed_line.dat};
+\addplot[gray, thin] table[x=t, y=v] {figures/speed_line.dat};
 \addplot[black, very thick] table[x=t, y=v] {figures/speed_loops.dat};
 \addplot[black, densely dashed, thick] table[x=t, y=v] {figures/speed_spiral.dat};
-\legend{Line, Loops, Spiral}
+\legend{Line 8~Hz, Loops, Spiral}
 \end{groupplot}
 \end{tikzpicture}
-\caption{The bench and the movement programs. (a) Side view of the bench. The motion system moves the stylus over the device, which stays still. A free vertical slide sets the load, and the holder sets the angle. The camera above the device tracks a marker near the nib. A clock light (LED) in the field of view gives the frame times. (b), (c) Commanded paths of the loops and the spiral at scale 1.0. (d) Commanded speed during the first four seconds of the loops and the spiral at 20~mm/s and of the line with the 8~Hz oscillation. The figure shows the design, not a measurement.}
+\caption{The bench and the movement programs. (a) Side view of the bench. The motion system moves the stylus over the device, which stays still. A free vertical slide sets the load, and the holder sets the angle. The camera above the device tracks a marker near the nib. A clock light (LED) in the field of view gives the frame times. (b), (c) Commanded paths of the loops and the spiral at scale 1.0. (d) Commanded speed during the first three seconds of the loops and the spiral at 20~mm/s and of the line with the 8~Hz oscillation. The figure shows the design, not a measurement.}
 \label{fig:bench}
 \end{figure}

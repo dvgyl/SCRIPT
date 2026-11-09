@@ -80,6 +80,8 @@ SCENARIO_LABEL = {
 SUPPORT_LABEL = {
     "bench_supported": "supported",
     "failed_lack_of_fit": "failed check",
+    "oracle_control": "known shift",
+    "misspecified_control": "wrong shift",
     "unavailable": "unavailable",
 }
 NA = "n/a"
@@ -128,6 +130,16 @@ def significant(number: float | None, digits: int = 2) -> str:
     return f"${mantissa:.{digits - 1}f}\\times10^{{{exponent}}}$"
 
 
+def estimate_with_error(estimate: float | None, error: float | None) -> str:
+    """An estimate with its standard error in parentheses, both to two significant digits of the error."""
+    if estimate is None:
+        return NA
+    if error is None or error <= 0:
+        return significant(estimate, 3)
+    decimals = min(8, max(0, 1 - math.floor(math.log10(error))))
+    return f"{fixed(estimate, decimals)} ({fixed(error, decimals)})"
+
+
 def p_value(number: float | None) -> str:
     if number is None:
         return NA
@@ -143,6 +155,11 @@ def interval(low: float | None, high: float | None, digits: int, *, sign: bool =
 def percent_ratio(log_difference: float | None) -> float | None:
     """A difference on the natural-logarithm scale as a percent difference of the ratio."""
     return None if log_difference is None else 100.0 * math.expm1(log_difference)
+
+
+def lower_label(label: str) -> str:
+    """A feature label inside a sentence. The abbreviation CV keeps its capitals."""
+    return label.lower().replace(" cv", " CV")
 
 
 def code(program: str) -> str:
@@ -189,7 +206,7 @@ def completeness(results: Path, out: Output, numbers: dict[str, str]) -> None:
     status = read_csv(results / "run_status.csv")
     agreement = main_rows(read_csv(results / "agreement.csv"))
     lines = [
-        r"\begin{tabular}{@{}lrr@{}}",
+        r"\begin{adjustbox}{max width=\linewidth}\begin{tabular}{@{}lrr@{}}",
         r"\toprule",
         r"Count & Device P & Device W \\",
         r"\midrule",
@@ -212,7 +229,7 @@ def completeness(results: Path, out: Output, numbers: dict[str, str]) -> None:
         table["Fault runs"][device] = sum(r["kind"] == "fault" for r in rows)
     for label, counts in table.items():
         lines.append(f"{label} & {counts['P']} & {counts['W']} \\\\")
-    lines += [r"\bottomrule", r"\end{tabular}"]
+    lines += [r"\bottomrule", r"\end{tabular}\end{adjustbox}"]
     not_estimable = sorted(
         {(r["feature"], r["program"]) for r in agreement if r["level"] == "program" and r["estimable"] == "false"}
     )
@@ -282,13 +299,14 @@ def sampling(results: Path, out: Output, numbers: dict[str, str]) -> None:
         cells["5th to 95th percentile interval, ms"][device] = (
             NA if low is None or high is None else f"{fixed(low * 1000, 2)} to {fixed(high * 1000, 2)}"
         )
-        cells["Intervals above 30 ms, \\%"][device] = fixed(
-            _range([value(r["share_above_30ms"]) for r in intervals])[2], 2
-        ) if intervals else NA
         gap = _range([value(r["share_above_max_gap"]) for r in intervals])[2]
-        cells["Intervals above 50 ms, \\%"][device] = fixed(None if gap is None else 100 * gap, 2)
         share30 = _range([value(r["share_above_30ms"]) for r in intervals])[2]
-        cells["Intervals above 30 ms, \\%"][device] = fixed(None if share30 is None else 100 * share30, 2)
+        cells["Intervals above 30 ms, \\%, largest program value"][device] = fixed(
+            None if share30 is None else 100 * share30, 2
+        )
+        cells["Intervals above 50 ms, \\%, largest program value"][device] = fixed(
+            None if gap is None else 100 * gap, 2
+        )
         for kind, label in (
             ("noise_floor_hold", "Noise floor at rest, (mm/s)$^2$"),
             ("noise_floor_spiral", "Noise floor in spiral runs, (mm/s)$^2$"),
@@ -325,22 +343,25 @@ def sampling(results: Path, out: Output, numbers: dict[str, str]) -> None:
             sum(int(r["deviations"] or 0) for r in rotation)
         )
     lines = [
-        r"\begin{tabular}{@{}lll@{}}",
+        r"\begin{adjustbox}{max width=\linewidth}\begin{tabular}{@{}lll@{}}",
         r"\toprule",
         r"Measure & Device P & Device W \\",
         r"\midrule",
     ]
     lines += [f"{label} & {both.get('P', NA)} & {both.get('W', NA)} \\\\" for label, both in cells.items()]
-    lines += [r"\bottomrule", r"\end{tabular}"]
+    lines += [r"\bottomrule", r"\end{tabular}\end{adjustbox}"]
     body = "\n".join(
         [
             r"\begin{table}[t]",
             r"\centering",
             out.caption(
                 "Sampling and spatial accuracy of each device over the valid main runs. "
-                "An entry with a range is the median of the program medians, with the smallest and the "
-                "largest run value. The interval rows give the median of the program medians and the "
-                "widest percentile range. These measures have no acceptance limit."
+                "The sample interval is the median of the program medians, with the smallest and the "
+                "largest program median. The percentile row gives the smallest 5th and the largest "
+                "95th percentile of a run. The two share rows give the largest program value, where "
+                "the program value is the median of the run shares. An accuracy entry is the median "
+                "of the program medians, with the smallest and the largest run value. These measures "
+                "have no acceptance criterion."
             ),
             r"\label{tab:sampling}",
             *lines,
@@ -366,10 +387,10 @@ def _natural(feature_scale: str, number: float | None) -> str:
 def agreement(results: Path, out: Output, numbers: dict[str, str]) -> None:
     rows = main_rows(read_csv(results / "agreement.csv"))
     lines = [
-        r"\begin{tabular}{@{}llrrllrll@{}}",
+        r"\begin{adjustbox}{max width=\linewidth}\begin{tabular}{@{}llrrllrll@{}}",
         r"\toprule",
-        r"Feature & Scale & $L$ & Programs & Deciding & Bias in units of $L$ & Bias & $p$ & Equivalent \\",
-        r" & & & & program & (90\,\% CI) & & & (Holm) \\",
+        r"Feature & Scale & $L$ & Programs & Deciding & Bias in units of $L$ & Bias, & Feature & Equivalent \\",
+        r" & & & & program & (90\,\% CI) & natural & $p$ & (Holm) \\",
         r"\midrule",
     ]
     equivalent: list[str] = []
@@ -379,14 +400,19 @@ def agreement(results: Path, out: Output, numbers: dict[str, str]) -> None:
         decision = next((r for r in rows if r["feature"] == feature and r["level"] == "feature"), None)
         if decision is None:
             continue
-        limit = value(decision["limit"]) or float("nan")
+        limit = value(decision["limit"])
         estimable = [r for r in programs if r["estimable"] == "true"]
+        missing = [r for r in programs if r["estimable"] != "true"]
         deciding = max(
             estimable,
             key=lambda r: (value(r["p"]) or 0.0, abs(value(r["bias"]) or 0.0)),
             default=None,
         )
-        if deciding is None:
+        if missing:
+            # A program that is not estimable has an equivalence p-value of 1 and decides the feature.
+            names = ", ".join(code(r["program"]) for r in sorted(missing, key=lambda r: program_key(r["program"])))
+            middle = [names + " (not estimable)", NA, NA]
+        elif deciding is None or not limit:
             middle = [NA, NA, NA]
         else:
             bias, low, high = value(deciding["bias"]), value(deciding["lower"]), value(deciding["upper"])
@@ -421,7 +447,7 @@ def agreement(results: Path, out: Output, numbers: dict[str, str]) -> None:
             )
             + r" \\"
         )
-    lines += [r"\bottomrule", r"\end{tabular}"]
+    lines += [r"\bottomrule", r"\end{tabular}\end{adjustbox}"]
     body = "\n".join(
         [
             r"\begin{table*}[t]",
@@ -431,9 +457,13 @@ def agreement(results: Path, out: Output, numbers: dict[str, str]) -> None:
                 "90\\,\\% interval of the bias (P minus W) lies inside $\\pm L$ on every program of its "
                 "set, after the Holm adjustment across the six features. `Programs' gives the estimable "
                 "programs and the size of the program set. The deciding program has the largest "
-                "equivalence $p$-value; the table gives its bias. For a logarithmic feature, the bias "
-                "is also given as a percent difference. \\textsuperscript{a}The unadjusted decision "
-                "differs from the adjusted decision."
+                "equivalence $p$-value; the table gives its bias. A program that is not estimable "
+                "decides its feature. `Bias, natural' is the percent difference of P from W for a "
+                "logarithmic feature and the difference for the speed CV; for the four "
+                "camera-referenced features it is the difference of the camera-referenced values. "
+                "`Feature $p$' is the largest $p$-value over the program set, before the Holm "
+                "adjustment. \\textsuperscript{a}The unadjusted decision differs from the adjusted "
+                "decision."
             ),
             r"\label{tab:agreement}",
             *lines,
@@ -442,11 +472,18 @@ def agreement(results: Path, out: Output, numbers: dict[str, str]) -> None:
     )
     out.write("tab_agreement", body)
     numbers["EquivalentCount"] = str(len(equivalent))
-    numbers["EquivalentList"] = ", ".join(equivalent).lower() or "none"
-    numbers["NotShownList"] = ", ".join(not_shown).lower() or "none"
+    numbers["EquivalentList"] = ", ".join(lower_label(x) for x in equivalent) or "none"
+    numbers["NotShownList"] = ", ".join(lower_label(x) for x in not_shown) or "none"
 
     # The figure: one panel per feature, the bias of each program in units of the limit.
     panels: list[str] = []
+    extent = 1.2
+    for r in rows:
+        if r["level"] == "program" and value(r["limit"]):
+            for key in ("lower", "upper"):
+                bound = value(r[key])
+                if bound is not None:
+                    extent = max(extent, abs(bound) / (value(r["limit"]) or 1.0) + 0.2)
     for feature in FEATURES:
         programs = sorted(
             (r for r in rows if r["feature"] == feature and r["level"] == "program"),
@@ -454,7 +491,9 @@ def agreement(results: Path, out: Output, numbers: dict[str, str]) -> None:
         )
         if not programs:
             continue
-        limit = value(programs[0]["limit"]) or float("nan")
+        limit = value(programs[0]["limit"])
+        if not limit:
+            continue
         coordinates = []
         for index, r in enumerate(programs, start=1):
             bias, low, high = value(r["bias"]), value(r["lower"]), value(r["upper"])
@@ -487,9 +526,9 @@ def agreement(results: Path, out: Output, numbers: dict[str, str]) -> None:
             r"\centering",
             r"\begin{tikzpicture}",
             r"\begin{groupplot}[group style={group size=3 by 2, horizontal sep=1.3cm, vertical sep=1.6cm},",
-            r"  width=0.36\textwidth, height=4.2cm, ylabel={Bias / $L$}, enlarge y limits=0.15,",
+            r"  width=0.36\textwidth, height=4.2cm, ylabel={Bias / $L$},",
             r"  x tick label style={rotate=60, anchor=east, font=\scriptsize}, title style={font=\small},",
-            r"  ymin=-1.2, ymax=1.2, clip=false, y tick label style={font=\scriptsize}, ylabel style={font=\small}]",
+            rf"  ymin={-extent:.2f}, ymax={extent:.2f}, y tick label style={{font=\scriptsize}}, ylabel style={{font=\small}}]",
             *panels,
             r"\end{groupplot}",
             r"\end{tikzpicture}",
@@ -510,7 +549,7 @@ def bland_altman(results: Path, out: Output) -> None:
     rows = main_rows(read_csv(results / "bland_altman.csv"))
     panels: list[str] = []
     table = [
-        r"\begin{tabular}{@{}lrrrrr@{}}",
+        r"\begin{adjustbox}{max width=\linewidth}\begin{tabular}{@{}lrrrrr@{}}",
         r"\toprule",
         r"Feature & Mean difference & \multicolumn{2}{c}{Mounting means} & \multicolumn{2}{c}{Single runs} \\",
         r" & & Lower & Upper & Lower & Upper \\",
@@ -557,7 +596,7 @@ def bland_altman(results: Path, out: Output) -> None:
                 ]
             )
         )
-    table += [r"\bottomrule", r"\end{tabular}"]
+    table += [r"\bottomrule", r"\end{tabular}\end{adjustbox}"]
     out.write(
         "tab_bland_altman",
         "\n".join(
@@ -604,6 +643,111 @@ def bland_altman(results: Path, out: Output) -> None:
         )
 
 
+def camera_control(results: Path, out: Output) -> None:
+    """The executed movement of the two features without a camera reference, as the camera saw it.
+
+    The table is a control, not a test. It shows whether the motion system executed the same speed
+    variation and the same oscillation on the two surfaces."""
+    features_path = results / "bench_features.csv"
+    if not features_path.is_file():
+        return
+    valid = {
+        r["run_id"]
+        for r in read_csv(results / "run_status.csv")
+        if r["kind"] == "main" and r["valid"] == "true" and r["camera"] == "valid"
+    }
+    limits = {
+        r["feature"]: value(r["limit"])
+        for r in main_rows(read_csv(results / "agreement.csv"))
+        if r["level"] == "feature"
+    }
+    sets = {
+        f: sorted(
+            {r["program"] for r in main_rows(read_csv(results / "agreement.csv")) if r["feature"] == f and r["program"]},
+            key=program_key,
+        )
+        for f in ("bench.speed_cv", "bench.band_power_mm2_s2")
+    }
+    runs: dict[tuple[str, str, str, str], list[float]] = defaultdict(list)
+    for r in read_csv(features_path):
+        if r["source"] != "camera" or r["run_id"] not in valid or r["feature"] not in sets:
+            continue
+        number = value(r["value"])
+        if number is None or r["program"] not in sets[r["feature"]]:
+            continue
+        if r["feature"] == "bench.band_power_mm2_s2":
+            if number <= 0:
+                continue
+            number = math.log(number)
+        runs[(r["feature"], r["program"], r["device"], r["mounting"])].append(number)
+    lines = [
+        r"\begin{adjustbox}{max width=\linewidth}\begin{tabular}{@{}llrrrrr@{}}",
+        r"\toprule",
+        r"Feature & Program & Mountings & Mountings & Camera value, & SD between & SD between \\",
+        r" & & P & W & P minus W, / $L$ & mountings P, / $L$ & mountings W, / $L$ \\",
+        r"\midrule",
+    ]
+    rows = 0
+    for feature, programs in sets.items():
+        limit = limits.get(feature)
+        for program in programs:
+            means: dict[str, list[float]] = {"P": [], "W": []}
+            for (f, g, device, _), values in runs.items():
+                if f == feature and g == program and values:
+                    means[device].append(sum(values) / len(values))
+
+            def spread(values: list[float]) -> float | None:
+                if len(values) < 2:
+                    return None
+                centre = sum(values) / len(values)
+                return math.sqrt(sum((v - centre) ** 2 for v in values) / (len(values) - 1))
+
+            both = means["P"] and means["W"] and limit
+            difference = (
+                (sum(means["P"]) / len(means["P"]) - sum(means["W"]) / len(means["W"])) / limit if both else None
+            )
+            sd_p, sd_w = spread(means["P"]), spread(means["W"])
+            lines.append(
+                " & ".join(
+                    [
+                        FEATURE_LABEL[feature],
+                        code(program),
+                        str(len(means["P"])),
+                        str(len(means["W"])),
+                        fixed(difference, 2, sign=True),
+                        fixed(None if sd_p is None or not limit else sd_p / limit, 2),
+                        fixed(None if sd_w is None or not limit else sd_w / limit, 2),
+                    ]
+                )
+                + r" \\"
+            )
+            rows += 1
+    if not rows:
+        return
+    lines += [r"\bottomrule", r"\end{tabular}\end{adjustbox}"]
+    out.write(
+        "tab_camera_control",
+        "\n".join(
+            [
+                r"\begin{table}[t]",
+                r"\centering",
+                out.caption(
+                    "Control of the executed movement for the two features without a camera reference. "
+                    "The camera value of each feature is computed from the camera track of each run. "
+                    "The table gives the difference between the runs on device P and the runs on "
+                    "device W, and the standard deviation (SD) between mountings, on the comparison "
+                    "scale in units of the equivalence limit $L$. A difference near zero shows that the "
+                    "motion system executed the same movement on both surfaces, as far as the camera "
+                    "resolves it. The table is descriptive."
+                ),
+                r"\label{tab:cameracontrol}",
+                *lines,
+                r"\end{table}",
+            ]
+        ),
+    )
+
+
 # ----------------------------------------------------------------------------------------------------
 # Correction and quality gate
 
@@ -616,7 +760,7 @@ def correction(results: Path, out: Output, numbers: dict[str, str]) -> None:
         if r["level"] == "feature"
     }
     lines = [
-        r"\begin{tabular}{@{}llllllll@{}}",
+        r"\begin{adjustbox}{max width=\linewidth}\begin{tabular}{@{}llllllll@{}}",
         r"\toprule",
         r"Feature & Model & $\alpha$ & $\beta$ & $\gamma_u$ & $\gamma_v$ & Largest residual / $L$ & Check \\",
         r"\midrule",
@@ -628,14 +772,14 @@ def correction(results: Path, out: Output, numbers: dict[str, str]) -> None:
             continue
         coefficients = {r["term"]: r for r in mine if r["kind"] == "coefficient" and r["term"]}
         residuals = [r for r in mine if r["kind"] == "residual"]
-        limit = limits.get(feature) or float("nan")
+        limit = limits.get(feature)
         terms = []
         for term in ("alpha", "beta", "gamma_u", "gamma_v"):
             r = coefficients.get(term)
             if r is None or value(r["estimate"]) is None:
                 terms.append(NA)
             elif r["fitted"] == "true":
-                terms.append(f"{significant(value(r['estimate']), 4)} ({significant(value(r['se']), 2)})")
+                terms.append(estimate_with_error(value(r["estimate"]), value(r["se"])))
             else:
                 terms.append(f"{significant(value(r['estimate']), 3)} (fixed)")
         worst = max(
@@ -643,22 +787,23 @@ def correction(results: Path, out: Output, numbers: dict[str, str]) -> None:
             key=lambda r: max(abs(value(r["lower"]) or 0.0), abs(value(r["upper"]) or 0.0)),
             default=None,
         )
-        if worst is None:
+        if worst is None or not limit:
             residual, check = NA, "unavailable"
         else:
+            estimate, low, high = value(worst["estimate"]), value(worst["lower"]), value(worst["upper"])
             residual = (
-                f"{fixed((value(worst['estimate']) or 0.0) / limit, 2, sign=True)} "
+                f"{fixed(None if estimate is None else estimate / limit, 2, sign=True)} "
                 + interval(
-                    (value(worst["lower"]) or 0.0) / limit, (value(worst["upper"]) or 0.0) / limit, 2, sign=True
+                    None if low is None else low / limit, None if high is None else high / limit, 2, sign=True
                 )
                 + f" ({code(worst['program'])})"
             )
-            ok = all(r["within_limit"] == "true" for r in residuals)
+            ok = len(residuals) > 0 and all(r["within_limit"] == "true" for r in residuals)
             passed += ok
             check = "passed" if ok else "failed"
         model = MODEL_LABEL.get(mine[0]["model"], NA)
         lines.append(" & ".join([FEATURE_LABEL[feature], model, *terms, residual, check]) + r" \\")
-    lines += [r"\bottomrule", r"\end{tabular}"]
+    lines += [r"\bottomrule", r"\end{tabular}\end{adjustbox}"]
     body = "\n".join(
         [
             r"\begin{table*}[t]",
@@ -667,7 +812,7 @@ def correction(results: Path, out: Output, numbers: dict[str, str]) -> None:
                 "Cross-device correction from device W to device P on the comparison scale, with "
                 "jackknife standard errors in parentheses. A fixed term is not fitted in its model. "
                 "The residual is the mean bias that remains on held-out mountings, with its 90\\,\\% "
-                "interval, for the program with the widest interval. The check passes when the "
+                "interval, for the program whose interval reaches farthest from zero. The check passes when the "
                 "interval of every program lies inside $\\pm L$. It is a lack-of-fit check, not an "
                 "independent validation."
             ),
@@ -695,7 +840,7 @@ def gate(results: Path, out: Output) -> None:
         )
 
     lines = [
-        r"\begin{tabular}{@{}lll@{}}",
+        r"\begin{adjustbox}{max width=\linewidth}\begin{tabular}{@{}lll@{}}",
         r"\toprule",
         r"Check & Device P & Device W \\",
         r"\midrule",
@@ -703,7 +848,7 @@ def gate(results: Path, out: Output) -> None:
     ]
     for fault, label in FAULT_LABEL.items():
         lines.append(f"{label} detected & {cell('P', fault, 'detected')} & {cell('W', fault, 'detected')} \\\\")
-    lines += [r"\bottomrule", r"\end{tabular}"]
+    lines += [r"\bottomrule", r"\end{tabular}\end{adjustbox}"]
     body = "\n".join(
         [
             r"\begin{table}[t]",
@@ -743,14 +888,27 @@ def _summary_rows(folder: Path) -> Rows:
     return read_csv(path) if path.is_file() else []
 
 
+GRID_BIAS_MULTIPLE = 1.0
+GRID_NOISE = "nominal"
+
+
 def consequence_table(folder: Path, out: Output, name: str, label: str, numbers: dict[str, str]) -> None:
     primary_path = folder / "table_primary.csv"
     rows = read_csv(primary_path) if primary_path.is_file() else [r for r in _summary_rows(folder) if _is_primary(r)]
+    rows = [r for r in rows if r.get("sensitivity", "primary") == "primary"]
+    if label == "grid":
+        # The grid holds one cell for each bias and noise setting. The table shows one labelled setting.
+        rows = [
+            r for r in rows if value(r["bias_multiple"]) == GRID_BIAS_MULTIPLE and r["noise_id"] == GRID_NOISE
+        ]
     if not rows:
         return
+    keys = Counter((r["scenario"], r["feature"], r["effect"], r["contrast"]) for r in rows)
+    if any(count > 1 for count in keys.values()):
+        raise SystemExit("make_results: the primary consequence table holds more than one cell for a row.")
     incomplete = 0
     lines = [
-        r"\begin{tabular}{@{}llrlllrl@{}}",
+        r"\begin{adjustbox}{max width=\linewidth}\begin{tabular}{@{}llrlllrl@{}}",
         r"\toprule",
         r"Scenario and metric & Feature & Effect & Raw change & Corrected change & Absolute reduction "
         r"& Pairs & Correction \\",
@@ -800,8 +958,12 @@ def consequence_table(folder: Path, out: Output, name: str, label: str, numbers:
                 first = False
         if scenario != "confounded":
             lines.append(r"\addlinespace")
-    lines += [r"\bottomrule", r"\end{tabular}"]
-    source = "the measured bench bias and noise" if label == "measured" else "the assumed grid of bias and noise"
+    lines += [r"\bottomrule", r"\end{tabular}\end{adjustbox}"]
+    source = (
+        "the measured bench bias and noise"
+        if label == "measured"
+        else f"an assumed bias of ${GRID_BIAS_MULTIPLE:g}L$ at the {GRID_NOISE} noise setting"
+    )
     body = "\n".join(
         [
             r"\begin{table*}[t]",
@@ -809,7 +971,8 @@ def consequence_table(folder: Path, out: Output, name: str, label: str, numbers:
             out.caption(
                 f"Primary summaries of the consequence experiment with {source}. Each change is a "
                 "paired difference from the reference cohort, in which every record uses device P: the "
-                "mean over the generated cohorts with the 95\\,\\% interval of the mean. A negative "
+                "mean over the generated cohorts with the 95\\,\\% confidence interval of that mean, "
+                "which shows the simulation error only. A negative "
                 "absolute reduction means that the correction moved the metric away from the "
                 "reference. `Effect' is the standardised case-control difference. `Pairs' gives the "
                 "usable and the planned cohort pairs. \\textsuperscript{b}Fewer than 95\\,\\% of the "
@@ -874,7 +1037,11 @@ def consequence_figure(grid: Path, measured: Path | None, out: Output) -> None:
                 if series:
                     lines.append(_plot(series, f"{style}, {dash}"))
         if measured is not None and (measured / "consequence_inputs.csv").is_file():
-            inputs = {r["feature"]: r for r in read_csv(measured / "consequence_inputs.csv")}
+            inputs = {
+                r["feature"]: r
+                for r in read_csv(measured / "consequence_inputs.csv")
+                if r.get("sensitivity", "primary") == "primary"
+            }
             marks = []
             for r in _summary_rows(measured):
                 if (
@@ -889,7 +1056,7 @@ def consequence_figure(grid: Path, measured: Path | None, out: Output) -> None:
                 ):
                     bias, limit = value(inputs[r["feature"]]["bias"]), value(inputs[r["feature"]]["limit"])
                     mean = value(r["mean"])
-                    if bias is not None and limit and mean is not None and abs(bias / limit) <= 2.2:
+                    if bias is not None and limit and mean is not None:
                         marks.append(f"({bias / limit:.5g},{mean:.5g})")
             if marks:
                 lines.append(
@@ -971,9 +1138,10 @@ def program_selection(folder: Path, out: Output) -> None:
         return
     seen: dict[str, dict[str, str]] = {}
     for r in read_csv(path):
-        seen.setdefault(r["feature"], r)
+        if r.get("sensitivity", "primary") == "primary":
+            seen.setdefault(r["feature"], r)
     lines = [
-        r"\begin{tabular}{@{}llrrrl@{}}",
+        r"\begin{adjustbox}{max width=\linewidth}\begin{tabular}{@{}llrrrl@{}}",
         r"\toprule",
         r"Feature & Program & Distance & Frequency & Bias / $L$ & In range \\",
         r" & & & difference, Hz & & \\",
@@ -997,7 +1165,7 @@ def program_selection(folder: Path, out: Output) -> None:
             )
             + r" \\"
         )
-    lines += [r"\bottomrule", r"\end{tabular}"]
+    lines += [r"\bottomrule", r"\end{tabular}\end{adjustbox}"]
     out.write(
         "tab_selection",
         "\n".join(
@@ -1066,12 +1234,13 @@ def run(arguments: Iterable[str] | None = None) -> int:
     if dry and (target == REPOSITORY or REPOSITORY in target.parents):
         print("make_results: a dry run must not be written inside the repository.", file=sys.stderr)
         return 1
-    out = Output(target, source=str(results), dry_run=dry)
+    out = Output(target, source=f"the result folder {results.name}", dry_run=dry)
     numbers: dict[str, str] = {}
     completeness(results, out, numbers)
     sampling(results, out, numbers)
     agreement(results, out, numbers)
     bland_altman(results, out)
+    camera_control(results, out)
     correction(results, out, numbers)
     gate(results, out)
     if measured.is_dir():
