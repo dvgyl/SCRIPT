@@ -67,8 +67,7 @@ struct DeviceDiagnostics {
         ]
     }
 
-    /// Writes the diagnostics file and returns its name. The folder has the protection and the backup exclusion of
-    /// the exports.
+    /// Writes the diagnostics file and returns its name. The folder is outside device backups.
     @MainActor static func save(store: SessionStore, display: Display, at: WallTime = Clock.now,
                                 freeBytes: Int64?) throws -> String {
         let document = document(store: store, display: display, at: at, freeBytes: freeBytes)

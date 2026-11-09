@@ -675,10 +675,8 @@ extension SessionState {
                session.safety.unactionedFlags > 0 {
                 return .failure(.unactionedFlag)
             }
+            // A flag that waits for the crisis list is always inside a block or after one, so this rule covers it.
             if session.safety.crisisListDue { return .failure(.crisisListNotShown) }
-            if case .participant(let person) = opened.subject, let waiting = crisisListWaiting(person) {
-                return .failure(waiting)
-            }
             return .success([.sessionClosed(SessionClosed(t: t, counts: session.counts))])
 
         case .expire(let at, let t):
@@ -728,8 +726,8 @@ extension SessionState {
     }
 
     /// The refusal for a step that goes on in a self-administered session while a safety flag waits for the crisis
-    /// list. No operator is present, so the list comes before the next item, trial, block, or the close
-    /// (docs/DESIGN.md section 15.3). The app records the display when the list shows, after the flag is on storage.
+    /// list. No operator is present, so the list comes before the next item, trial, or block
+    /// (docs/DESIGN.md section 15.3). The close has its own rule, `crisisListDue`. The app records the display when the list shows, after the flag is on storage.
     private func crisisListWaiting(_ person: ParticipantFacts) -> Rejection? {
         person.administration == .selfAdministered && session.safety.flaggedSinceCrisisList ? .crisisListNotShown : nil
     }

@@ -464,7 +464,8 @@ final class SessionStore {
             core = Core(state: state, recorder: InkRecorder(resuming: state.session), digest: digest)
             live = LiveSession(opened: opened, rules: rules, participant: participant, url: url, sink: sink, stage: stage)
             reconciled[id] = nil
-            failedCodes = stage == .confirmCode ? (try? storage.failedResumes(of: id)) ?? 0 : 0
+            // A count that cannot be read gives no try, as a wrong code that cannot be counted gives none.
+            failedCodes = stage == .confirmCode ? (try? storage.failedResumes(of: id)) ?? Self.resumeCodeAttempts : 0
             revision += 1
             refresh()
             if stage == .review { showOperatorAlert() }
@@ -573,8 +574,13 @@ final class SessionStore {
         guard let live, live.stage == .confirmCode else { return false }
         let id = live.opened.sessionID
         if ParticipantCode(text.trimmingCharacters(in: .whitespaces).uppercased()) == live.opened.participant {
-            // The participant is known now, so a count that cannot be reset costs nothing.
-            _ = try? storage.recordResume(of: id, wrong: false)
+            // The participant is known now, so the session goes on when the count cannot be reset. The earlier
+            // wrong codes then still count at the next resume.
+            do {
+                try storage.recordResume(of: id, wrong: false)
+            } catch {
+                log.error("resume reset failed: \(String(describing: error), privacy: .public)")
+            }
             failedCodes = 0
             self.live?.stage = .ready
             return true
@@ -626,7 +632,7 @@ final class SessionStore {
 
     /// Starts the next trial once the capture view has its size, so `trialStarted` records the real geometry.
     func startTrial(view: ViewSize) {
-        guard sceneActive else { return }
+        guard sceneActive, settling == nil else { return }
         guard let live, live.stage == .working, let flow = live.participant, let person = live.opened.person,
               let state = core?.state, case .task(let step, open: false) = flow.plan.next(state.session),
               let spec = live.rules.battery.task(step.task) else { return }
@@ -1162,7 +1168,8 @@ extension SessionStore {
 
     /// The task of the current step, open or about to start.
     var currentTask: TaskModel? {
-        guard let live, let flow = live.participant, let state, case .task(let step, let open) = flow.plan.next(state.session),
+        // While an answer is on its way to storage, the screen of its item stays, also when a task follows the block.
+        guard settling == nil, let live, let flow = live.participant, let state, case .task(let step, let open) = flow.plan.next(state.session),
               let spec = live.rules.battery.task(step.task) else { return nil }
         let locale = live.opened.person.flatMap { flow.configuration.locales[$0.locale.rawValue] }
         let text = locale?.instructions[step.task.rawValue] ?? spec.instruction

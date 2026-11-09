@@ -435,13 +435,17 @@ private func answerUntil(_ item: ItemID, in store: SessionStore) async {
     #expect(await gate.waitForSync())
     store.returnToParticipant()
     store.leave()
-    await store.endEarly()
+    // A second End that the store did not ignore would wait at the gate, so it runs in its own task.
+    let second = Task { await store.endEarly() }
+    for _ in 0..<50 { await Task.yield() }
     #expect(store.live?.stage == .paused && store.live?.away == false)
     #expect(store.state?.session.safety.crisisListShown == 0)
     gate.open()
     await ending.value
+    await second.value
     #expect(store.live?.stage == .flagCrisisList)
     #expect(store.state?.session.safety.flags == 1 && store.state?.session.safety.crisisListShown == 1)
+    #expect(store.state?.summary.questionnaires.count == 1)
 }
 
 @Test @MainActor func aResumeEndsAfterFiveWrongCodesAndARelaunchGivesNoNewTry() async throws {
@@ -696,4 +700,55 @@ private func answerUntil(_ item: ItemID, in store: SessionStore) async {
     #expect(store.currentItem?.item.id == "difficulty")
     await store.answer(0)
     #expect(store.state?.summary.questionnaires.first?.outcome == .completed)
+}
+
+@Test @MainActor func theItemScreenStaysWhenATaskFollowsTheBlock() async throws {
+    // Detects a task screen that shows, and a trial that starts with its time limit, while the last answer of a
+    // block before the tasks is on its way to storage.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let gate = SyncGate(open: true)
+    let store = try makeStore(root: root) { _, _ in GatedSink(gate: gate) }
+    let url = Bundle.main.url(forResource: "demo", withExtension: "json")!
+    var file = try JSONSerialization.jsonObject(with: try Data(contentsOf: url)) as! [String: Any]
+    file["questionnaires"] = [["administration": "supervised", "ageBand": "18-24", "position": "beforeTasks",
+                               "instruments": ["gad7"]]]
+    let config = try store.importConfiguration(try JSONSerialization.data(withJSONObject: file)).get()
+    store.open(opened(configuration: config, battery: store.contract.battery), configuration: config, dominant: .right)
+    store.start()
+    let last = try #require(store.currentItem?.instrument.items.last?.id)
+    await answerUntil(last, in: store)
+    gate.close()
+    let answering = Task { await store.answer(last, 0) }
+    #expect(await gate.waitForSync())
+    #expect(store.state?.summary.questionnaires.first?.outcome == .completed)
+    #expect(store.currentTask == nil && store.currentItem?.item.id == last)
+    store.startTrial(view: ViewSize(width: 834, height: 1000)!)
+    #expect(store.state?.session.trials.isEmpty == true && gate.appendedWhileHeld.isEmpty)
+    gate.open()
+    await answering.value
+    #expect(store.currentItem == nil && store.currentTask != nil)
+    store.startTrial(view: ViewSize(width: 834, height: 1000)!)
+    #expect(store.state?.session.trials.count == 1)
+}
+
+@Test @MainActor func aRelaunchAfterTheFifthWrongCodeGivesNoResume() async throws {
+    // Detects an app that stops after the fifth wrong code is on storage and before the session ends, and then
+    // takes a sixth code at the next launch.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let first = try makeStore(root: root)
+    let demo = first.contract.demo
+    first.open(opened(.selfAdministered, participant: "T-OWNER", configuration: demo, battery: first.contract.battery),
+               configuration: demo, dominant: .left)
+    let id = first.live!.opened.sessionID
+    first.start()
+    try await first.live!.sink.close()
+    for _ in 1...5 { try first.storage.recordResume(of: id, wrong: true) }
+
+    let second = try makeStore(root: root)
+    second.launch()
+    #expect(second.live?.stage == .finished)
+    #expect(!second.confirmCode("T-OWNER"))
+    #expect(second.state?.status == .closed)
 }
