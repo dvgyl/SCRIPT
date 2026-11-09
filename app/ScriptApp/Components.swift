@@ -103,6 +103,10 @@ struct OperatorControl: View {
             .accessibilityLabel(Text("Operator"))
             .accessibilityHint(Text("Double-tap and hold for 2 seconds."))
             .accessibilityAddTraits(.isButton)
+            // Switch Control and Voice Control cannot press and hold, so the same step is also a named action.
+            .accessibilityAction(named: Text("Open the operator screens")) {
+                if pin == nil { onUnlock(false) } else { askingPIN = true }
+            }
             .accessibilityIdentifier("operatorControl")
             .sheet(isPresented: $askingPIN) {
                 if let pin { PINSheet(pin: pin) { onUnlock(true) } }

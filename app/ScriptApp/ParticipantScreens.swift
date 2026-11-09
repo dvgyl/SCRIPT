@@ -21,7 +21,12 @@ struct SessionView: View {
         case .review: ReviewScreen(store: store, live: live)
         case .bench: BenchScreen(store: store, live: live)
         case .sampleTiming: SampleTimingScreen(store: store, live: live)
-        case .stopped: StoppedScreen(store: store, live: live)
+        case .stopped:
+            if live.opened.person?.administration == .selfAdministered {
+                StoppedForParticipantScreen(store: store, live: live)
+            } else {
+                StoppedScreen(store: store, live: live)
+            }
         }
     }
 }
@@ -37,6 +42,13 @@ extension StudyConfiguration.RemoteReview {
     /// The monitoring disclosure that the participant reads before the first block.
     var disclosure: AttributedString {
         AttributedString(localized: "A \(reviewerRole) from the study team reads the answers to some questions. This happens within ^[\(workingDays) working day](inflect: true).")
+    }
+}
+
+extension SessionStore {
+    /// The message under a wrong resume code, with the number of tries that are left.
+    var wrongCodeMessage: AttributedString {
+        AttributedString(localized: "This code is not the code of this session. You can try ^[\(codeAttemptsLeft) more time](inflect: true).")
     }
 }
 
@@ -62,7 +74,7 @@ struct ConfirmCodeScreen: View {
                     .onChange(of: code) { if !code.isEmpty { wrong = false } }
                     .accessibilityIdentifier("confirmCode")
                 if wrong {
-                    Text("This code is not the code of this session.")
+                    Text(store.wrongCodeMessage)
                         .font(.title3)
                         .foregroundStyle(.red)
                         .accessibilityIdentifier("codeWrong")
@@ -201,6 +213,8 @@ struct TaskScreen: View {
                 CaptureSurface(store: store, drawing: drawing, accepting: task.began)
                     .onAppear { start(geometry.size) }
                     .onChange(of: geometry.size) { _, size in start(size) }
+                    // The store starts no trial in the background, so the trial starts when the app is in front again.
+                    .onChange(of: store.sceneActive) { _, active in if active { start(geometry.size) } }
             }
             .overlay(alignment: .top) { Divider() }
             .overlay(alignment: .bottom) { Divider() }
@@ -279,10 +293,10 @@ struct ItemScreen: View {
                 case .skip: .some(nil)
                 case nil: nil
                 }
-                if let value { Task { await store.answer(value) } }
+                if let value { Task { await store.answer(item.item.id, value) } }
             }
             .buttonStyle(PrimaryButtonStyle())
-            .disabled(choice == nil)
+            .disabled(choice == nil || store.settling != nil)
             .accessibilityIdentifier("next")
         }
     }
@@ -333,26 +347,63 @@ struct CrisisListScreen: View {
                     .font(.largeTitle.weight(.semibold))
                     .accessibilityAddTraits(.isHeader)
                     .accessibilityIdentifier("crisisList")
-                ForEach(live.rules.crisisList?.entries ?? [], id: \.self) { entry in
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(entry.name).font(.title2.weight(.semibold))
-                        Text(entry.contact).font(.title3)
-                        if let text = entry.url, let url = URL(string: text) {
-                            Link(text, destination: url).font(.title3).tint(Palette.accent)
-                        }
-                    }
-                    .padding(20)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(UIColor.secondarySystemBackground),
-                                in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    .accessibilityElement(children: .combine)
-                }
+                SupportList(live: live)
             }
             .fixedSize(horizontal: false, vertical: true)
         } actions: {
             Button("Continue", action: store.continueAfterCrisisList)
                 .buttonStyle(PrimaryButtonStyle())
                 .accessibilityIdentifier("continue")
+        }
+    }
+}
+
+/// The services of the crisis list for the session's jurisdiction and locale.
+struct SupportList: View {
+    let live: LiveSession
+
+    var body: some View {
+        ForEach(live.rules.crisisList?.entries ?? [], id: \.self) { entry in
+            VStack(alignment: .leading, spacing: 6) {
+                Text(entry.name).font(.title2.weight(.semibold))
+                Text(entry.contact).font(.title3)
+                if let text = entry.url, let url = URL(string: text) {
+                    Link(text, destination: url).font(.title3).tint(Palette.accent)
+                }
+            }
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(UIColor.secondarySystemBackground),
+                        in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .accessibilityElement(children: .combine)
+        }
+    }
+}
+
+/// A write failed in a self-administered session. No operator is present and the journal can take no line, so the
+/// participant sees the support list here when the session had a questionnaire block. The operator control opens
+/// Home.
+struct StoppedForParticipantScreen: View {
+    let store: SessionStore
+    let live: LiveSession
+
+    var body: some View {
+        ParticipantFrame(step: nil, pin: live.pin, onOperator: store.operatorTookOver) {
+            VStack(alignment: .leading, spacing: 20) {
+                Text("The session stopped. Please tell the study team.")
+                    .font(.largeTitle.weight(.semibold))
+                    .accessibilityAddTraits(.isHeader)
+                    .accessibilityIdentifier("stoppedForParticipant")
+                if live.supportListOnStop {
+                    Text("If you want to talk to someone")
+                        .font(.title.weight(.semibold))
+                        .accessibilityAddTraits(.isHeader)
+                    SupportList(live: live)
+                }
+            }
+            .fixedSize(horizontal: false, vertical: true)
+        } actions: {
+            EmptyView()
         }
     }
 }

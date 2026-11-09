@@ -73,6 +73,9 @@ struct LiveSession {
     var trialGeometry: (index: TrialIndex, view: ViewSize, origin: Point)?
     /// True while the operator is on Home and the session stays open.
     var away = false
+    /// True for a self-administered session that stopped after a questionnaire block started. Its stopped screen
+    /// shows the support list, because the journal can take no line and no operator is present.
+    var supportListOnStop = false
     /// The close of the writer. Reconcile waits for it, because it must never read a journal that is open.
     var closing: Task<Void, Never>?
 }
@@ -166,6 +169,18 @@ final class SessionStore {
     @ObservationIgnored private(set) var rebuild: Task<Void, Never>?
     /// True after the operator unlocked with the PIN in this launch. Home then shows participant codes in full.
     private(set) var codesUnlocked = false
+    /// The item whose answer is on its way to storage. Its screen stays until the answer is on storage, so no screen
+    /// that follows a flag shows before the flag is durable, and a second tap answers nothing.
+    private(set) var settling: ItemModel?
+    /// True while the operator's end of the session is on its way to storage.
+    private(set) var endingEarly = false
+    /// False from the move to the background until the app is active again. No trial starts in between, because
+    /// its time limit would run while nobody can draw.
+    private(set) var sceneActive = true
+    /// The wrong codes that the resume screen of the open session got since its last correct code.
+    private(set) var failedCodes = 0
+    /// A resume ends after this number of wrong codes. The count is on storage, so a relaunch gives no new try.
+    static let resumeCodeAttempts = 5
 
     init(contract: BundledContract, storage: Storage, device: DeviceFacts, configurations: ConfigurationLibrary,
          qualifications: QualificationRegistry = QualificationRegistry(),
@@ -283,11 +298,17 @@ final class SessionStore {
                       openedAt: opened.openedAt.text, encrypted: nil, participant: opened.participant)
     }
 
-    /// The name of a Home row. A participant code shows only its last 4 characters until the operator unlocks with
-    /// the PIN in this launch, so a configuration without a PIN always masks it.
+    /// The name of a Home row. A participant code is masked until the operator unlocks with the PIN in this launch,
+    /// so a configuration without a PIN always masks it.
     func title(of row: Listed) -> String {
-        guard let code = row.participant, !codesUnlocked else { return row.title }
-        return "•••" + code.rawValue.suffix(4)
+        row.participant.map(shown) ?? row.title
+    }
+
+    /// A participant code as an operator screen shows it. Until the PIN unlocks the codes, it shows at most the
+    /// last 4 characters and hides at least 4, so a code of 3 or 4 characters shows none.
+    func shown(_ code: ParticipantCode) -> String {
+        guard !codesUnlocked else { return code.rawValue }
+        return "•••" + code.rawValue.suffix(max(0, min(4, code.rawValue.count - 4)))
     }
 
     /// The operator entered the PIN of the configuration.
@@ -443,10 +464,12 @@ final class SessionStore {
             core = Core(state: state, recorder: InkRecorder(resuming: state.session), digest: digest)
             live = LiveSession(opened: opened, rules: rules, participant: participant, url: url, sink: sink, stage: stage)
             reconciled[id] = nil
+            failedCodes = stage == .confirmCode ? (try? storage.failedResumes(of: id)) ?? 0 : 0
             revision += 1
             refresh()
             if stage == .review { showOperatorAlert() }
             if stage == .working { advance() }
+            if stage == .confirmCode, failedCodes >= Self.resumeCodeAttempts { endWithoutResume() }
         } catch {
             log.error("resume failed: \(String(describing: error), privacy: .public)")
             notice = .storageFailure
@@ -510,6 +533,8 @@ final class SessionStore {
     private func stop(_ url: URL, _ error: any Error) {
         guard let live, live.url == url, live.stage != .stopped else { return }
         log.error("journal write failed: \(String(describing: error), privacy: .public)")
+        self.live?.supportListOnStop = live.opened.person?.administration == .selfAdministered
+            && core?.state.session.blocks.isEmpty == false
         self.live?.stage = .stopped
         self.live?.away = false
         notice = .storageFailure
@@ -541,14 +566,38 @@ final class SessionStore {
     // MARK: Participant
 
     /// The participant types their code to resume a self-administered session. False when it is not the code of the
-    /// session, and the screen asks again.
+    /// session, and the screen asks again. Each wrong code is counted on storage before the answer, and the session
+    /// ends after `resumeCodeAttempts` of them, so a person who does not know the code cannot try every code.
     @discardableResult
     func confirmCode(_ text: String) -> Bool {
-        guard let live, live.stage == .confirmCode,
-              ParticipantCode(text.trimmingCharacters(in: .whitespaces).uppercased()) == live.opened.participant
-        else { return false }
-        self.live?.stage = .ready
-        return true
+        guard let live, live.stage == .confirmCode else { return false }
+        let id = live.opened.sessionID
+        if ParticipantCode(text.trimmingCharacters(in: .whitespaces).uppercased()) == live.opened.participant {
+            // The participant is known now, so a count that cannot be reset costs nothing.
+            _ = try? storage.recordResume(of: id, wrong: false)
+            failedCodes = 0
+            self.live?.stage = .ready
+            return true
+        }
+        do {
+            failedCodes = try storage.recordResume(of: id, wrong: true)
+        } catch {
+            // A wrong code that cannot be counted must not be free, so the resume ends.
+            log.error("resume count failed: \(String(describing: error), privacy: .public)")
+            failedCodes = Self.resumeCodeAttempts
+        }
+        if failedCodes >= Self.resumeCodeAttempts { endWithoutResume() }
+        return false
+    }
+
+    /// How many more wrong codes the resume screen takes.
+    var codeAttemptsLeft: Int { max(0, Self.resumeCodeAttempts - failedCodes) }
+
+    /// Ends a session whose resume got too many wrong codes. It ends as a self-administered session ends: with the
+    /// support list when it had a questionnaire block, and then the close, so its flags reach the reviewer.
+    private func endWithoutResume() {
+        guard let state = core?.state else { return }
+        if state.session.blocks.isEmpty { close() } else { showClosingCrisisList() }
     }
 
     func start() {
@@ -577,6 +626,7 @@ final class SessionStore {
 
     /// Starts the next trial once the capture view has its size, so `trialStarted` records the real geometry.
     func startTrial(view: ViewSize) {
+        guard sceneActive else { return }
         guard let live, live.stage == .working, let flow = live.participant, let person = live.opened.person,
               let state = core?.state, case .task(let step, open: false) = flow.plan.next(state.session),
               let spec = live.rules.battery.task(step.task) else { return }
@@ -612,26 +662,31 @@ final class SessionStore {
         advance()
     }
 
-    /// Answers the current item, or skips it when `value` is nil. The last item ends the block.
-    func answer(_ value: Int?) async {
-        guard live?.stage == .working, let current = currentItem, let before = core?.state.session.safety else { return }
-        guard perform(.respond(item: current.item.id, value: value, t: uptime())) else { return }
+    /// Answers `item`, or skips it when `value` is nil. The last item ends the block. Nothing happens when `item` is
+    /// not the item on the screen, so a second tap cannot answer an item that the participant did not see. Every
+    /// answer waits for storage in the same way, so the flow is the same with and without a flag.
+    func answer(_ item: ItemID, _ value: Int?) async {
+        guard live?.stage == .working, settling == nil, let current = currentItem, current.item.id == item else { return }
+        settling = current
+        defer { settling = nil }
+        guard perform(.respond(item: item, value: value, t: uptime())) else {
+            // A refused answer must not leave the participant at a screen that takes no answer. `advance` shows
+            // what the session needs first, for example the crisis list that a flag waits for.
+            settling = nil
+            advance()
+            return
+        }
         if current.number == current.count {
             guard perform(.endQuestionnaire(reason: .completed, t: uptime())) else { return }
         }
-        guard await syncedFlags(since: before), live?.stage == .working,
-              let after = core?.state.session.safety else { return }
-        if after.crisisListShown > before.crisisListShown {
-            live?.stage = .flagCrisisList
-        } else {
-            advance()
-        }
+        guard await synced(), live?.stage == .working else { return }
+        settling = nil
+        advance()
     }
 
-    /// Waits until every new safety flag is on storage, so that no screen that follows a flag shows before the flag
-    /// is durable. False when the write failed, which stops the session.
-    private func syncedFlags(since before: SafetyRecord) async -> Bool {
-        guard let live, let after = core?.state.session.safety, after.flags > before.flags else { return true }
+    /// Waits until every line so far is on storage. False when the write failed, which stops the session.
+    private func synced() async -> Bool {
+        guard let live else { return false }
         do {
             try await live.sink.sync()
             return true
@@ -655,7 +710,8 @@ final class SessionStore {
     /// self-administered session first shows the crisis list for a flag that has not had it, as after a recovery. A
     /// bench session has no plan, so it stays where it is.
     func advance() {
-        guard let live, let flow = live.participant, live.stage != .stopped, let state = core?.state else { return }
+        guard settling == nil, let live, let flow = live.participant, live.stage != .stopped,
+              let state = core?.state else { return }
         if live.opened.person?.administration == .selfAdministered, state.session.safety.flaggedSinceCrisisList {
             if perform(.show(.crisisList, t: uptime())) { self.live?.stage = .flagCrisisList }
             return
@@ -819,16 +875,20 @@ final class SessionStore {
     }
 
     func returnToParticipant() {
-        guard let flow = live?.participant, live?.stage == .paused else { return }
+        guard !endingEarly, let flow = live?.participant, live?.stage == .paused else { return }
         guard perform(.handoff(to: .participant, t: uptime())) else { return }
         self.live?.stage = flow.participantStage
+        // The operator can take over while an answer is on its way to storage. The step that the answer left
+        // open, for example the crisis list after a flag, then comes first.
+        if flow.participantStage == .working { advance() }
     }
 
     /// Ends the open trial or block for the operator and opens the review, which leads to the close. A block that
     /// ends before its safety item flags the item; a self-administered session then shows the crisis list first.
     func endEarly() async {
-        guard live?.stage == .paused, let state = core?.state else { return }
-        let before = state.session.safety
+        guard live?.stage == .paused, !endingEarly, let state = core?.state else { return }
+        endingEarly = true
+        defer { endingEarly = false }
         switch state.phase {
         case .drawing:
             let t = uptime()
@@ -840,10 +900,10 @@ final class SessionStore {
         default:
             break
         }
-        guard await syncedFlags(since: before), live?.stage == .paused,
-              let after = core?.state.session.safety else { return }
+        guard await synced(), live?.stage == .paused, let after = core?.state.session.safety else { return }
         live?.participant?.endedEarly = true
-        if after.crisisListShown > before.crisisListShown {
+        if live?.opened.person?.administration == .selfAdministered, after.flaggedSinceCrisisList,
+           perform(.show(.crisisList, t: uptime())) {
             live?.stage = .flagCrisisList
         } else {
             live?.stage = .review
@@ -882,7 +942,7 @@ final class SessionStore {
     /// The operator goes to Home. An open session stays open and is listed as open. A closed or stopped session
     /// leaves memory once its writer has closed.
     func leave() {
-        guard let live, let state = core?.state else { return }
+        guard !endingEarly, let live, let state = core?.state else { return }
         if state.session.isClosed || live.stage == .stopped {
             let closing = closeSink()
             self.live = nil
@@ -904,8 +964,14 @@ final class SessionStore {
 
     // MARK: Scene
 
+    /// The app is in front again, so the next trial can start.
+    func becomeActive() {
+        sceneActive = true
+    }
+
     /// The iPad left the app: an open trial ends as backgrounded, and every line reaches storage.
     func enterBackground() {
+        sceneActive = false
         if case .drawing = core?.state.phase, live?.stage.showsTrials == true {
             endTrial(.backgrounded)
         }
@@ -981,6 +1047,18 @@ final class SessionStore {
         try? state.summary.jsonData().write(to: file)
     }
 
+    /// Saves the device diagnostics to Files and returns the file name, or nil with a notice when the file could not
+    /// be written.
+    func saveDiagnostics() -> String? {
+        do {
+            return try DeviceDiagnostics.save(store: self, display: .current(), freeBytes: freeSpace())
+        } catch {
+            log.error("diagnostics failed: \(String(describing: StorageFailure(error)), privacy: .public)")
+            notice = .failed(String(localized: "The device diagnostics could not be saved."))
+            return nil
+        }
+    }
+
     func withdraw(_ code: ParticipantCode) -> Storage.Withdrawal? {
         guard live == nil else {
             notice = .sessionOpen
@@ -997,13 +1075,23 @@ final class SessionStore {
         }
     }
 
-    func verifyWithdrawal(_ code: ParticipantCode) -> Bool? {
+    func verifyWithdrawal(_ code: ParticipantCode) -> Storage.WithdrawalCheck? {
         do {
             return try storage.verifyWithdrawal(participant: code)
         } catch {
             notice = .failed(String(localized: "The deletion log could not be read."))
             return nil
         }
+    }
+}
+
+/// An error as its domain and code only, because its description can hold a file path.
+private struct StorageFailure: CustomStringConvertible {
+    let description: String
+
+    init(_ error: any Error) {
+        let error = error as NSError
+        description = "\(error.domain) \(error.code)"
     }
 }
 
@@ -1130,6 +1218,7 @@ extension SessionStore {
 
     /// The item to answer in the open block. Items are answered in order and once.
     var currentItem: ItemModel? {
+        if let settling { return settling }
         guard let live, let state, case .answering(let open) = state.phase,
               let instrument = live.rules.instruments.instrument(open.instrument) else { return nil }
         let record = state.session.blocks[open.block.rawValue]

@@ -189,6 +189,9 @@
     "Device qualification" : {
 
     },
+    "Diagnostics saved" : {
+
+    },
     "Digest" : {
 
     },
@@ -238,6 +241,9 @@
 
     },
     "Fault programs" : {
+
+    },
+    "Files shows %@ under On My iPad > SCRIPT Capture > Diagnostics." : {
 
     },
     "Finish or end the open session first." : {
@@ -393,10 +399,16 @@
     "Not known" : {
 
     },
+    "OK" : {
+
+    },
     "On My iPad › SCRIPT Capture › Exports" : {
 
     },
     "Open" : {
+
+    },
+    "Open the operator screens" : {
 
     },
     "Operator" : {
@@ -517,6 +529,9 @@
     "Save a copy to another place in Files" : {
 
     },
+    "Save the device diagnostics" : {
+
+    },
     "Save to Files" : {
 
     },
@@ -627,10 +642,16 @@
     "The deletion log could not be read." : {
 
     },
-    "The deletion log on this iPad has a withdrawal for this code." : {
+    "The deletion log on this iPad has a withdrawal for this code, and this iPad has no recording of this code." : {
+
+    },
+    "The deletion log on this iPad has a withdrawal for this code, but this iPad still has a recording of this code. Withdraw the code again." : {
 
     },
     "The deletion log on this iPad has no withdrawal for this code." : {
+
+    },
+    "The device diagnostics could not be saved." : {
 
     },
     "The export could not be verified. The session stays on this iPad." : {
@@ -654,6 +675,9 @@
     "The session stopped" : {
 
     },
+    "The session stopped. Please tell the study team." : {
+
+    },
     "The sessions could not be read." : {
 
     },
@@ -669,7 +693,7 @@
     "This cannot be undone. Copies outside this iPad are not deleted." : {
 
     },
-    "This code is not the code of this session." : {
+    "This code is not the code of this session. You can try ^[%lld more time](inflect: true)." : {
 
     },
     "This session already has this run ID." : {

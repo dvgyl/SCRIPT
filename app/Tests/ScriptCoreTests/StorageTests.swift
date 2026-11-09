@@ -27,10 +27,12 @@ private let reconcileSteps: [Storage.Step] = [
 ]
 /// The steps that the writer tests stop at.
 private let writerSteps: [Storage.Step] = [.journalWrite, .journalSync]
+/// The steps that the withdrawal tests stop at.
+private let withdrawalSteps: [Storage.Step] = [.withdrawalItemRemoved]
 
 @Test func everyFaultStepHasATestThatStopsAtIt() {
     // Detects a new crash point or write fault that no test stops at.
-    #expect(Set(publishSteps + reconcileSteps + writerSteps) == Set(Storage.Step.allCases))
+    #expect(Set(publishSteps + reconcileSteps + writerSteps + withdrawalSteps) == Set(Storage.Step.allCases))
 }
 
 @Test func theWriterKeepsCallOrderAndFlushesAtContactEnded() async throws {
@@ -323,13 +325,83 @@ func reconcileConvergesFromEveryCrashPointAndASecondLaunchChangesNoByte(step: St
     let secret = MemoryDeviceSecret()
     let s = storage(in: root, secret: secret)
     try s.createDirectories()
-    #expect(try !s.verifyWithdrawal(participant: "WD-DELTA"))
+    #expect(try s.verifyWithdrawal(participant: "WD-DELTA") == .notLogged)
     _ = try s.withdraw(participant: "WD-DELTA", at: Fixed.at)
     _ = try s.withdraw(participant: "WD-ECHO", at: Fixed.at)
-    #expect(try s.verifyWithdrawal(participant: "WD-DELTA"))
-    #expect(try storage(in: root, secret: secret).verifyWithdrawal(participant: "WD-ECHO"))
-    #expect(try !s.verifyWithdrawal(participant: "WD-FOXTROT"))
-    #expect(try !storage(in: root, secret: MemoryDeviceSecret()).verifyWithdrawal(participant: "WD-DELTA"))
+    #expect(try s.verifyWithdrawal(participant: "WD-DELTA") == .complete)
+    #expect(try storage(in: root, secret: secret).verifyWithdrawal(participant: "WD-ECHO") == .complete)
+    #expect(try s.verifyWithdrawal(participant: "WD-FOXTROT") == .notLogged)
+    #expect(try storage(in: root, secret: MemoryDeviceSecret()).verifyWithdrawal(participant: "WD-DELTA") == .notLogged)
+}
+
+@Test func aWithdrawalThatStopsPartWayIsNotConfirmedUntilARerunFinishesIt() throws {
+    // Detects a check that confirms a withdrawal from its log line alone, while a journal of the code is still on
+    // the device because the deletion stopped part way.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let secret = MemoryDeviceSecret()
+    let clean = storage(in: root, secret: secret)
+    try clean.createDirectories()
+    let ids = (1...2).map { SessionID(UUID(uuidString: "4F00000\($0)-0000-4000-8000-000000000000")!) }
+    for id in ids { try session(id, participant: "WD-GOLF", close: false).journal.write(to: clean.journalURL(id)) }
+
+    let stopping = storage(in: root, secret: secret) { $0 == .withdrawalItemRemoved }
+    #expect(throws: Storage.InjectedCrash(step: .withdrawalItemRemoved)) {
+        try stopping.withdraw(participant: "WD-GOLF", at: Fixed.at)
+    }
+    #expect(FileManager.default.fileExists(atPath: clean.journalURL(ids[1]).path))
+    #expect(try clean.verifyWithdrawal(participant: "WD-GOLF") == .copiesRemain)
+
+    #expect(try clean.withdraw(participant: "WD-GOLF", at: Fixed.at).sessions == [ids[1]])
+    #expect(try clean.verifyWithdrawal(participant: "WD-GOLF") == .complete)
+}
+
+@Test func withdrawalDeletesADamagedPackageThatACrashLeftInStaging() throws {
+    // Detects a withdrawal that leaves a copy of a damaged journal in `Staging/`: the package of a damaged export
+    // that stopped before the export index had its name.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let secret = MemoryDeviceSecret()
+    let clean = storage(in: root, secret: secret)
+    try clean.createDirectories()
+    let id = SessionID(UUID(uuidString: "50000001-0000-4000-8000-000000000000")!)
+    let file = "\(id).jsonl"
+    let damaged = Contract.lines(try session(id, participant: "WD-HOTEL").journal)[0] + Data("\n{not json\n".utf8)
+    try damaged.write(to: clean.damaged.appendingPathComponent(file))
+    let stopping = storage(in: root, secret: secret) { $0 == .stagedVerified }
+    #expect(throws: Storage.InjectedCrash(step: .stagedVerified)) { try stopping.publishDamaged(file, policy: .demo) }
+    let staged = clean.staging.appendingPathComponent(Storage.damagedExportName(file))
+    #expect(FileManager.default.fileExists(atPath: staged.path))
+
+    #expect(try clean.withdraw(participant: "WD-HOTEL", at: Fixed.at).sessions == [id])
+    #expect(!FileManager.default.fileExists(atPath: staged.path))
+    #expect(try snapshot(root).keys.sorted() == ["Support/Deletions.jsonl"])
+    #expect(try clean.verifyWithdrawal(participant: "WD-HOTEL") == .complete)
+}
+
+@Test func wrongResumeCodesAreCountedOnStorageUntilACorrectCode() throws {
+    // Detects a count of wrong resume codes that a relaunch resets, that mixes two sessions, or that holds a code.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let first = SessionID(UUID(uuidString: "51000001-0000-4000-8000-000000000000")!)
+    let second = SessionID(UUID(uuidString: "51000002-0000-4000-8000-000000000000")!)
+    #expect(try storage(in: root).failedResumes(of: first) == 0)
+    #expect(try storage(in: root).recordResume(of: first, wrong: true) == 1)
+    #expect(try storage(in: root).recordResume(of: second, wrong: true) == 1)
+    #expect(try storage(in: root).recordResume(of: first, wrong: true) == 2)
+    // A new `Storage` value stands for a relaunch.
+    #expect(try storage(in: root).failedResumes(of: first) == 2)
+    #expect(try storage(in: root).recordResume(of: first, wrong: false) == 0)
+    #expect(try storage(in: root).failedResumes(of: second) == 1)
+    #expect(try storage(in: root).recordResume(of: first, wrong: true) == 1)
+
+    let log = try snapshot(root)
+    #expect(log.keys.sorted() == ["Support/ResumeAttempts.jsonl"])
+    for line in Contract.lines(log["Support/ResumeAttempts.jsonl"]!) {
+        let entry = try Fields(try JSON.decodeDocument(line), path: "")
+        #expect(throws: Never.self) { try entry.only(["sessionID", "wrong"]) }
+    }
+    #expect(try storage(in: root).resumeLog.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup == true)
 }
 
 @Test func oneJournalThatFailsDoesNotStopTheLaunch() throws {
@@ -610,4 +682,27 @@ func aDamagedJournalLeavesTheDeviceAsFoundUnderTheExportPolicy(kind: ExportKind)
     }
     #expect(state.summary.safety.flags == 1)
     #expect(state.summary.counts[.recovered] == 1)
+}
+
+@Test func theItemFactsReportEachResearchFolderAndLogWithoutReadingContent() throws {
+    // Detects device diagnostics that miss a research folder or log, or that report a backup exclusion that the file
+    // system does not have.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let s = storage(in: root)
+    #expect(s.itemFacts().allSatisfy { !$0.exists && $0.excludedFromBackup == nil })
+    try s.createDirectories()
+    _ = try s.withdraw(participant: "WD-INDIA", at: Fixed.at)
+    let facts = Dictionary(uniqueKeysWithValues: s.itemFacts().map { ($0.name, $0) })
+    #expect(facts.keys.sorted() == ["Damaged", "Deletions.jsonl", "ExportIndex.jsonl", "Exports", "ResumeAttempts.jsonl",
+                                    "Sessions", "Staging"])
+    for name in ["Sessions", "Staging", "Exports", "Damaged", "Deletions.jsonl"] {
+        #expect(facts[name]?.exists == true && facts[name]?.excludedFromBackup == true, "\(name)")
+    }
+    #expect(facts["ExportIndex.jsonl"]?.exists == false)
+    var values = URLResourceValues()
+    values.isExcludedFromBackup = false
+    var sessions = s.sessions
+    try sessions.setResourceValues(values)
+    #expect(s.itemFacts().first { $0.name == "Sessions" }?.excludedFromBackup == false)
 }

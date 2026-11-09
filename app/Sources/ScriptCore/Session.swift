@@ -74,9 +74,10 @@ public struct OpenTrial: Hashable, Sendable {
 public struct OpenBlock: Hashable, Sendable {
     public let block: BlockIndex
     public let instrument: InstrumentID
-    /// The items with a response or a safety flag in this block. A safety item outside this set gets a flag when the
-    /// block ends, and a flag that a torn recovery left is never repeated.
-    public internal(set) var settled: Set<ItemID> = []
+    /// The latest response to each item of this block. A skipped item has the value nil.
+    public internal(set) var answers: [ItemID: Int?] = [:]
+    /// The items with a safety flag in this block, so that no item gets a second flag.
+    public internal(set) var flagged: Set<ItemID> = []
     /// The uptime of the block's latest `questionnaireStarted` or `response` line.
     public internal(set) var last: Double
 }
@@ -165,11 +166,12 @@ public struct Session: Hashable, Sendable {
         let update: UpdateIndex
     }
 
-    /// The samples that share one key. A correction with the key sets the bits that stay pending for all of them.
+    /// The samples that share one key, each with the bits that stay pending for it. A correction with the key sets
+    /// the bits of every sample that came before it. A later sample with the key keeps its own bits, as in the
+    /// Python fold.
     struct PendingEstimate: Hashable, Sendable {
         let trial: TrialIndex
-        var remaining: TouchProperties
-        var samples: Int
+        var remaining: [TouchProperties]
     }
 }
 
@@ -268,19 +270,15 @@ extension SessionState {
             session.trials[trial.rawValue].samples += 1
             if estimates, let p = e.pending {
                 let key = Session.PendingKey(contact: e.contact, update: p.update)
-                if session.pending[key] == nil {
-                    session.pending[key] = Session.PendingEstimate(trial: trial, remaining: p.expect, samples: 1)
-                } else {
-                    session.pending[key]!.remaining.formUnion(p.expect)
-                    session.pending[key]!.samples += 1
-                }
+                session.pending[key, default: Session.PendingEstimate(trial: trial, remaining: [])].remaining
+                    .append(p.expect)
             }
 
         case .correction(let e):
             guard estimates else { break }
             let key = e.contact.map { Session.PendingKey(contact: $0, update: e.update) }
             if let key, let estimate = session.pending[key] {
-                session.pending[key]!.remaining = e.expect
+                session.pending[key]!.remaining = Array(repeating: e.expect, count: estimate.remaining.count)
                 session.trials[estimate.trial.rawValue].corrections += 1
             } else {
                 session.unmatchedCorrections += 1
@@ -307,7 +305,7 @@ extension SessionState {
 
         case .response(let e):
             var open = try openBlock(e.block, notAllowed: notAllowed, fail: fail)
-            open.settled.insert(e.item)
+            open.answers.updateValue(e.value, forKey: e.item)
             open.last = e.t
             phase = .answering(open)
             if e.skipped {
@@ -324,7 +322,7 @@ extension SessionState {
 
         case .safetyFlagged(let e):
             var open = try openBlock(e.block, notAllowed: notAllowed, fail: fail)
-            open.settled.insert(e.item)
+            open.flagged.insert(e.item)
             phase = .answering(open)
             session.safety.flags += 1
             session.safety.unactionedFlags += 1
@@ -526,7 +524,8 @@ public enum Rejection: Error, Hashable, Sendable {
     case unknownTrial(TrialIndex)
     /// A supervised session has a safety flag without a `safetyAction`.
     case unactionedFlag
-    /// The session had a questionnaire block, and the crisis list has not been shown since the last one.
+    /// The session had a questionnaire block, and the crisis list has not been shown since the last one. Or a
+    /// self-administered session has a safety flag, and the crisis list has not been shown since the flag.
     case crisisListNotShown
     /// A resume window closes self-administered sessions only.
     case notSelfAdministered
@@ -550,6 +549,9 @@ extension SessionState {
 
         case .startTrial(let plan, let t):
             if let busy = busyRejection { return .failure(busy) }
+            if case .participant(let person) = opened.subject, let waiting = crisisListWaiting(person) {
+                return .failure(waiting)
+            }
             guard rules.battery.sha256 == opened.battery.sha256 else { return .failure(.otherBattery) }
             guard let spec = rules.battery.task(plan.task) else { return .failure(.unknownTask(plan.task)) }
             guard rules.battery.tasks(for: opened.purpose).contains(plan.task) else {
@@ -605,6 +607,7 @@ extension SessionState {
         case .startQuestionnaire(let id, let t):
             if let busy = busyRejection { return .failure(busy) }
             guard case .participant(let person) = opened.subject else { return .failure(.noParticipant) }
+            if let waiting = crisisListWaiting(person) { return .failure(waiting) }
             guard let instrument = rules.instruments.instrument(id) else { return .failure(.unknownInstrument(id)) }
             guard instrument.isVerified else { return .failure(.unverifiedInstrument(id)) }
             guard person.ageBand.lowestAge >= instrument.minimumAge else { return .failure(.instrumentNotForAgeBand(id)) }
@@ -627,24 +630,17 @@ extension SessionState {
             if let value, !item.options.contains(where: { $0.value == value }) {
                 return .failure(.invalidValue(itemID, value))
             }
+            if let waiting = crisisListWaiting(person) { return .failure(waiting) }
             var events: [Event] = [.response(Response(t: t, block: open.block, item: itemID, value: value))]
-            if item.safety, value.map({ $0 >= 1 }) ?? true {
+            if item.safety, Self.raisesFlag(value), !open.flagged.contains(itemID) {
                 events.append(.safetyFlagged(SafetyFlagged(t: t, block: open.block, item: itemID, value: value)))
-                if person.administration == .selfAdministered {
-                    guard let list = rules.crisisList else { return .failure(.noCrisisList) }
-                    events.append(.safetyShown(SafetyShown(t: t, what: .crisisList, listVersion: list.version)))
-                }
             }
             return .success(events)
 
         case .endQuestionnaire(let reason, let t):
-            guard case .participant(let person) = opened.subject else { return .failure(.noParticipant) }
+            guard case .participant = opened.subject else { return .failure(.noParticipant) }
             guard case .answering(let open) = phase else { return .failure(.noOpenBlock) }
-            var events = Self.unreachedFlags(open, instruments: rules.instruments, t: t)
-            if !events.isEmpty, person.administration == .selfAdministered {
-                guard let list = rules.crisisList else { return .failure(.noCrisisList) }
-                events.append(.safetyShown(SafetyShown(t: t, what: .crisisList, listVersion: list.version)))
-            }
+            var events = Self.missingFlags(open, instruments: rules.instruments, t: t)
             events.append(.questionnaireEnded(QuestionnaireEnded(t: t, block: open.block, reason: reason)))
             return .success(events)
 
@@ -680,6 +676,9 @@ extension SessionState {
                 return .failure(.unactionedFlag)
             }
             if session.safety.crisisListDue { return .failure(.crisisListNotShown) }
+            if case .participant(let person) = opened.subject, let waiting = crisisListWaiting(person) {
+                return .failure(waiting)
+            }
             return .success([.sessionClosed(SessionClosed(t: t, counts: session.counts))])
 
         case .expire(let at, let t):
@@ -709,13 +708,30 @@ extension SessionState {
                                  clip: ClipName(runOf: plan.program, run: plan.run, in: facts)))
     }
 
-    /// A flag for each safety item of the open block's instrument that has no response. An unreached safety item
-    /// counts as a flag, as a skipped one does (docs/DESIGN.md section 15.2).
-    private static func unreachedFlags(_ open: OpenBlock, instruments: InstrumentSet, t: Double) -> [Event] {
+    /// True for an answer to a safety item that raises a flag: a skip, or a value of 1 or more.
+    private static func raisesFlag(_ value: Int?) -> Bool { value.map { $0 >= 1 } ?? true }
+
+    /// A flag for each safety item of the open block's instrument that needs one and has none. An unreached safety
+    /// item counts as a flag, as a skipped one does (docs/DESIGN.md section 15.2). An endorsed or skipped item has no
+    /// flag when a failed write kept its `response` line and lost its `safetyFlagged` line. Its flag carries the
+    /// value of the response.
+    private static func missingFlags(_ open: OpenBlock, instruments: InstrumentSet, t: Double) -> [Event] {
         let items = instruments.instrument(open.instrument)?.items ?? []
-        return items.filter { $0.safety && !open.settled.contains($0.id) }.map { item in
-            .safetyFlagged(SafetyFlagged(t: t, block: open.block, item: item.id, value: nil))
+        return items.filter { $0.safety && !open.flagged.contains($0.id) }.compactMap { item in
+            var value: Int?
+            if let answer = open.answers[item.id] {
+                guard raisesFlag(answer) else { return nil }
+                value = answer
+            }
+            return .safetyFlagged(SafetyFlagged(t: t, block: open.block, item: item.id, value: value))
         }
+    }
+
+    /// The refusal for a step that goes on in a self-administered session while a safety flag waits for the crisis
+    /// list. No operator is present, so the list comes before the next item, trial, block, or the close
+    /// (docs/DESIGN.md section 15.3). The app records the display when the list shows, after the flag is on storage.
+    private func crisisListWaiting(_ person: ParticipantFacts) -> Rejection? {
+        person.administration == .selfAdministered && session.safety.flaggedSinceCrisisList ? .crisisListNotShown : nil
     }
 
     private var busyRejection: Rejection? {
@@ -729,8 +745,9 @@ extension SessionState {
 
     /// The lines for a relaunch that adopts this open journal, or none when there is nothing to record: the session
     /// is closed, or it is already suspended in this boot and no bytes were removed. An interrupted block first flags
-    /// each safety item that has no response. The flag carries the time of the block's latest line, so it stays in
-    /// the boot of its block, and the `recovered` line follows.
+    /// each safety item that has no response, and each endorsed or skipped one whose flag did not reach storage. The
+    /// flag carries the time of the block's latest line, so it stays in the boot of its block, and the `recovered`
+    /// line follows.
     public func recovery(t: Double, at: WallTime, boot: BootID, truncatedBytes: Int,
                          instruments: InstrumentSet) -> [Event] {
         switch phase {
@@ -744,7 +761,7 @@ extension SessionState {
             var block: BlockIndex?
             if case .answering(let open) = phase {
                 block = open.block
-                events = Self.unreachedFlags(open, instruments: instruments, t: open.last)
+                events = Self.missingFlags(open, instruments: instruments, t: open.last)
             }
             events.append(.recovered(Recovered(t: t, at: at, boot: boot, truncatedBytes: truncatedBytes,
                                                interrupted: trial, interruptedBlock: block)))
@@ -827,8 +844,8 @@ public struct FoldSummary: Hashable, Sendable {
 extension SessionState {
     public var summary: FoldSummary {
         var unresolved = [Int](repeating: 0, count: session.trials.count)
-        for estimate in session.pending.values where !estimate.remaining.isEmpty {
-            unresolved[estimate.trial.rawValue] += estimate.samples
+        for estimate in session.pending.values {
+            unresolved[estimate.trial.rawValue] += estimate.remaining.count { !$0.isEmpty }
         }
         let administration: Administration? = switch session.opened.subject {
         case .participant(let facts): facts.administration

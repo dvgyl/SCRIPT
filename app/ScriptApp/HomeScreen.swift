@@ -53,6 +53,11 @@ extension Notice {
     }
 }
 
+/// The name of a diagnostics file that Home just saved.
+struct SavedDiagnostics: Hashable {
+    let name: String
+}
+
 struct HomeScreen: View {
     let store: SessionStore
     @State private var importing = false
@@ -60,6 +65,7 @@ struct HomeScreen: View {
     @State private var exportResult: ExportResult?
     @State private var exportingID: String?
     @State private var askingPIN = false
+    @State private var diagnostics: SavedDiagnostics?
     /// A bench session runs under no configuration, so its Setup shows no demo banner.
     @State private var benchSetupShown = false
 
@@ -94,6 +100,12 @@ struct HomeScreen: View {
                     NavigationLink("Verify a withdrawal") { VerifyWithdrawalScreen(store: store) }
                         .accessibilityIdentifier("verifyWithdrawal")
                 }
+                Section("Device") {
+                    Button("Save the device diagnostics") {
+                        diagnostics = store.saveDiagnostics().map(SavedDiagnostics.init)
+                    }
+                    .accessibilityIdentifier("saveDiagnostics")
+                }
             }
             .navigationTitle("SCRIPT Capture")
             .fileImporter(isPresented: $importing, allowedContentTypes: [.json]) { result in
@@ -105,6 +117,12 @@ struct HomeScreen: View {
             }
             .sheet(item: $imported) { outcome in ImportResultScreen(outcome: outcome) }
             .sheet(item: $exportResult) { result in ExportScreen(result: result) }
+            .alert("Diagnostics saved", isPresented: Binding(get: { diagnostics != nil }, set: { if !$0 { diagnostics = nil } }),
+                   presenting: diagnostics) { _ in
+                Button("OK") { diagnostics = nil }
+            } message: { saved in
+                Text("Files shows \(saved.name) under On My iPad > SCRIPT Capture > Diagnostics.")
+            }
             .toolbar {
                 if store.activeConfiguration.operatorPin != nil, !store.codesUnlocked {
                     ToolbarItem(placement: .primaryAction) {
@@ -362,7 +380,7 @@ struct WithdrawalScreen: View {
 struct VerifyWithdrawalScreen: View {
     let store: SessionStore
     @State private var code = ""
-    @State private var found: Bool?
+    @State private var found: Storage.WithdrawalCheck?
 
     var body: some View {
         Form {
@@ -380,10 +398,19 @@ struct VerifyWithdrawalScreen: View {
             }
             if let found {
                 Section {
-                    Label(found ? "The deletion log on this iPad has a withdrawal for this code."
-                                : "The deletion log on this iPad has no withdrawal for this code.",
-                          systemImage: found ? "checkmark.circle" : "xmark.circle")
-                    .accessibilityIdentifier(found ? "verifyFound" : "verifyNotFound")
+                    switch found {
+                    case .complete:
+                        Label("The deletion log on this iPad has a withdrawal for this code, and this iPad has no recording of this code.",
+                              systemImage: "checkmark.circle")
+                            .accessibilityIdentifier("verifyFound")
+                    case .copiesRemain:
+                        Label("The deletion log on this iPad has a withdrawal for this code, but this iPad still has a recording of this code. Withdraw the code again.",
+                              systemImage: "exclamationmark.triangle")
+                            .accessibilityIdentifier("verifyIncomplete")
+                    case .notLogged:
+                        Label("The deletion log on this iPad has no withdrawal for this code.", systemImage: "xmark.circle")
+                            .accessibilityIdentifier("verifyNotFound")
+                    }
                 }
             }
         }

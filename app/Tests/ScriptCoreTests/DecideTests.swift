@@ -45,22 +45,45 @@ private func driver(administration: Administration = .supervised, configuration:
     var remote = try driver(administration: .selfAdministered, configuration: try Contract.remoteReviewConfiguration())
     try remote.answerAll("phq9", t: 200, values: ["phq9-9": nil])
     #expect(remote.state.session.safety.crisisListShown == 1)
+    #expect(!remote.state.session.safety.flaggedSinceCrisisList)
     #expect(remote.state.decide(.close(t: 230), rules: remote.rules).rejection == .crisisListNotShown)
     try remote.run(.show(.crisisList, t: 231))
     #expect(throws: Never.self) { try remote.state.decide(.close(t: 232), rules: remote.rules).get() }
 }
 
-@Test func aSelfAdministeredFlagShowsTheCrisisListAtOnce() throws {
-    // Detects a self-administered session that records a flag without showing the crisis list immediately (section 15.3).
+@Test func aSelfAdministeredFlagAllowsNoStepBeforeTheCrisisList() throws {
+    // Detects a self-administered session that goes on after a flag without the crisis list (section 15.3), or a
+    // crisis-list display that the journal records with the flag, before the flag is on storage and the list shows.
     var d = try driver(administration: .selfAdministered, configuration: try Contract.remoteReviewConfiguration())
     try d.run(.startQuestionnaire("phq9", t: 200))
     let block = BlockIndex(count: 0)
-    let events = try d.state.decide(.respond(item: "phq9-9", value: nil, t: 209), rules: d.rules).get()
+    let events = try d.run(.respond(item: "phq9-9", value: nil, t: 209))
     #expect(events == [
         .response(Response(t: 209, block: block, item: "phq9-9", value: nil)),
         .safetyFlagged(SafetyFlagged(t: 209, block: block, item: "phq9-9", value: nil)),
-        .safetyShown(SafetyShown(t: 209, what: .crisisList, listVersion: "US-2026-11-03")),
     ])
+    #expect(d.state.decide(.respond(item: "difficulty", value: 0, t: 210), rules: d.rules).rejection == .crisisListNotShown)
+    try d.run(.endQuestionnaire(reason: .declined, t: 211))
+    for command in [Command.startTrial(Driver.plan("spiral-trace"), t: 212), .startQuestionnaire("gad7", t: 212),
+                    .close(t: 212)] {
+        #expect(d.state.decide(command, rules: d.rules).rejection == .crisisListNotShown, "\(command)")
+    }
+    try d.run(.show(.crisisList, t: 213))
+    #expect(throws: Never.self) { try d.state.decide(.startQuestionnaire("gad7", t: 214), rules: d.rules).get() }
+    #expect(throws: Never.self) { try d.state.decide(.close(t: 214), rules: d.rules).get() }
+}
+
+@Test func aRepeatedAnswerToAFlaggedItemRaisesNoSecondFlag() throws {
+    // Detects two flags for one safety item of one block, which would ask the operator for two actions.
+    var d = try driver()
+    try d.run(.startQuestionnaire("phq9", t: 200))
+    try d.run(.respond(item: "phq9-9", value: 2, t: 209))
+    let block = BlockIndex(count: 0)
+    #expect(try d.run(.respond(item: "phq9-9", value: 3, t: 210)) == [
+        .response(Response(t: 210, block: block, item: "phq9-9", value: 3)),
+    ])
+    try d.run(.endQuestionnaire(reason: .completed, t: 211))
+    #expect(d.state.session.safety.flags == 1)
 }
 
 @Test func aSupervisedFlagChangesNothingThatTheParticipantSees() throws {
@@ -148,13 +171,11 @@ func aBlockThatEndsBeforeItsSafetyItemFlagsTheItemFirst(reason: QuestionnaireEnd
     let block = BlockIndex(count: 0)
     let ended = Event.questionnaireEnded(QuestionnaireEnded(t: 210, block: block, reason: reason))
     let flag = Event.safetyFlagged(SafetyFlagged(t: 210, block: block, item: "phq9-9", value: nil))
-    let list = Event.safetyShown(SafetyShown(t: 210, what: .crisisList, listVersion: "US-2026-11-03"))
     for administration in [Administration.supervised, .selfAdministered] {
         var d = try driver(administration: administration, configuration: try Contract.remoteReviewConfiguration())
         try d.run(.startQuestionnaire("phq9", t: 200))
         for n in 1...4 { try d.run(.respond(item: ItemID("phq9-\(n)")!, value: 1, t: 200 + Double(n))) }
-        let expected = administration == .supervised ? [flag, ended] : [flag, list, ended]
-        #expect(try d.state.decide(.endQuestionnaire(reason: reason, t: 210), rules: d.rules).get() == expected,
+        #expect(try d.state.decide(.endQuestionnaire(reason: reason, t: 210), rules: d.rules).get() == [flag, ended],
                 "\(administration)")
         try d.run(.respond(item: "phq9-9", value: 0, t: 209))
         #expect(try d.state.decide(.endQuestionnaire(reason: reason, t: 210), rules: d.rules).get() == [ended],
@@ -163,6 +184,37 @@ func aBlockThatEndsBeforeItsSafetyItemFlagsTheItemFirst(reason: QuestionnaireEnd
     var gad = try driver()
     try gad.run(.startQuestionnaire("gad7", t: 200))
     #expect(try gad.state.decide(.endQuestionnaire(reason: reason, t: 210), rules: gad.rules).get() == [ended])
+}
+
+@Test(arguments: [Int?.some(2), nil])
+func aRecoveryFlagsAnEndorsedOrSkippedSafetyItemWhoseFlagNeverReachedStorage(value: Int?) throws {
+    // Detects a failed write that keeps the `response` line of PHQ-9 item 9 and loses its `safetyFlagged` line, so
+    // the relaunch finds an answer of 1 or more, or a skip, with no flag and no one follows it up.
+    for administration in [Administration.supervised, .selfAdministered] {
+        var d = try driver(administration: administration, configuration: try Contract.remoteReviewConfiguration())
+        try d.run(.startQuestionnaire("phq9", t: 200))
+        let block = BlockIndex(count: 0)
+        let decided = try d.state.decide(.respond(item: "phq9-9", value: value, t: 209), rules: d.rules).get()
+        try d.write([decided[0]])
+        #expect(d.state.session.safety.flags == 0)
+        let events = d.state.recovery(t: 5, at: Fixed.launch.at, boot: Fixed.laterBoot, truncatedBytes: 40,
+                                      instruments: d.rules.instruments)
+        #expect(events == [
+            .safetyFlagged(SafetyFlagged(t: 209, block: block, item: "phq9-9", value: value)),
+            .recovered(Recovered(t: 5, at: Fixed.launch.at, boot: Fixed.laterBoot, truncatedBytes: 40, interrupted: nil,
+                                 interruptedBlock: block)),
+        ], "\(administration)")
+        try d.write(events)
+        #expect(d.state.session.safety.unactionedFlags == 1)
+        #expect(d.state.session.safety.flaggedSinceCrisisList)
+    }
+    // An answer of 0 needs no flag.
+    var calm = try driver()
+    try calm.run(.startQuestionnaire("phq9", t: 200))
+    try calm.run(.respond(item: "phq9-9", value: 0, t: 209))
+    let events = calm.state.recovery(t: 5, at: Fixed.launch.at, boot: Fixed.laterBoot, truncatedBytes: 0,
+                                     instruments: calm.rules.instruments)
+    #expect(events.count == 1)
 }
 
 @Test func aRecoveryInsideABlockFlagsItsUnreachedSafetyItemInTheBoundsOfTheBlock() throws {

@@ -1,5 +1,6 @@
 import ScriptCore
 import SwiftUI
+import UIKit
 
 @main
 struct ScriptApp: App {
@@ -11,7 +12,9 @@ struct ScriptApp: App {
         WindowGroup {
             Group {
                 if let store {
-                    RootView(store: store)
+                    // The system keeps a picture of the app for the app switcher. The cover keeps a participant
+                    // code, an answer, or a safety alert out of that picture.
+                    RootView(store: store).overlay { if scenePhase != .active { PrivacyCover() } }
                 } else if let failure {
                     ContentUnavailableView("SCRIPT Capture cannot start", systemImage: "exclamationmark.triangle",
                                            description: Text(failure))
@@ -23,6 +26,7 @@ struct ScriptApp: App {
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background { store?.enterBackground() }
+            if phase == .active { store?.becomeActive() }
         }
     }
 
@@ -45,6 +49,17 @@ struct ScriptApp: App {
             self.store = store
         } catch {
             failure = String(describing: error)
+        }
+    }
+
+    /// What the app shows while it is not the active app: its name and nothing else.
+    private struct PrivacyCover: View {
+        var body: some View {
+            ZStack {
+                Color(UIColor.systemBackground).ignoresSafeArea()
+                Text("SCRIPT Capture").font(.title.weight(.semibold)).foregroundStyle(.secondary)
+            }
+            .accessibilityIdentifier("privacyCover")
         }
     }
 
