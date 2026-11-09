@@ -1,0 +1,61 @@
+\section{Measurement problem and design}
+\label{sec:design}
+
+\subsection{The measurement chain}
+A drawing feature is the last step of a chain.
+The chain has a stylus, a digitiser, an operating system, a capture application, and the analysis software.
+We call it the \emph{measurement chain}.
+Two chains can report different feature values for the same movement.
+The cause can be the sampling rate, the timestamps, the position scale, the filtering, or the noise.
+
+We compare two chains.
+Chain P is an iPad Pro with an Apple Pencil Pro.
+Chain W is a Wacom Intuos Pro tablet with its pen, connected to a computer.
+The same analysis software computes the features on both chains.
+For brevity, we call the two chains device P and device W.
+
+The question has one form for each feature.
+Do device P and device W give equivalent values for the same movement, within a limit fixed in advance?
+\emph{Equivalent} means that the difference between the devices lies inside the limit, with stated confidence, on every tested movement.
+A test that finds no difference does not show equivalence.
+We therefore use an equivalence test (Section~\ref{sec:stats}).
+
+\subsection{Why a motion system and a camera}
+A person cannot repeat a movement exactly.
+A person also writes differently on glass than on a textured tablet surface~\cite{Gerth2016b,Alamargot2015}.
+A comparison with people therefore mixes two effects: the difference between the chains and the change in the movement.
+A motion system removes the second effect in part.
+It executes the same \emph{program}, a prespecified list of timed moves, on both devices.
+
+The \emph{commanded movement} is the movement that the program specifies.
+The \emph{executed movement} is the movement that the stylus tip makes.
+The two can differ, because the stylus holder bends under friction, and friction differs between the two surfaces.
+A camera therefore records every run.
+It measures the executed movement on both devices with one instrument, one length standard, and one clock.
+For each run, we subtract the camera value of a feature from the device value.
+This \emph{camera-referenced difference} removes the executed movement from the comparison.
+What remains is the error of the chain.
+
+\subsection{Design overview}
+Fig.~\ref{fig:bench} shows the bench and the movement programs.
+The motion system holds the stylus at a fixed angle and under a fixed load.
+It executes 12 main programs: loops and spirals at two sizes and two speeds, one fast loops program, and three lines with a designed speed oscillation.
+Three fault programs test the quality checks of the analysis software.
+
+A \emph{run} is one execution of one program on one device.
+A \emph{mounting} is one placement of a device in the fixture.
+A \emph{block} is the set of all runs of one mounting.
+Each device has six mountings, and each mounting has five runs of each main program.
+The design therefore has 720 main runs and 108 fault runs.
+The mounting is the unit of replication, because a new placement changes the alignment, the position on the active area, and the calibration.
+
+Six features carry the equivalence decisions: motion duration, path length, mean speed, loop height, speed variability, and tremor-band power.
+The camera provides a reference for the first four.
+Each feature has an equivalence limit that follows from a stated consequence for a screening model (Section~\ref{sec:limits}).
+
+All procedures, programs, limits, and analysis code are frozen before the main runs.
+We call this step the \emph{lock}.
+Nobody compares feature values between the devices until the last block is complete.
+A cross-device correction and a simulation of the consequence for screening models complete the design.
+The simulation uses generated cohorts only.
+The study has no participants and uses no data from people.

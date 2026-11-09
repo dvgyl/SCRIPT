@@ -1,26 +1,39 @@
-\documentclass[journal]{IEEEtran}
+\documentclass[11pt,a4paper]{article}
 \usepackage[T1]{fontenc}
+\usepackage[margin=2.5cm]{geometry}
 \usepackage{xcolor}
-\usepackage{url}
-\usepackage{cite}
 \usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{graphicx}
+\usepackage{eso-pic}
+\usepackage{pgfplots}
+\usepgfplotslibrary{groupplots}
+\pgfplotsset{compat=1.17}
+\usetikzlibrary{arrows.meta,positioning,calc}
+\usepackage[numbers,sort&compress]{natbib}
+\usepackage{lineno}
+\usepackage[hidelinks]{hyperref}
+\hypersetup{pdfauthor={}, pdftitle={Do Apple Pencil and Wacom measure the same drawing movement?}}
 \input{macros}
-% Target: IEEE JBHI regular paper. Follow the plan's eight-page budget.
-% Official author page check on 7 November 2026 was blocked by robots.txt.
-% Recheck the current submission rules before submission.
-% Title, abstract, and introduction share 1.0 page. References use 0.8 page.
-\title{Do Apple Pencil and Wacom Measure the Same Drawing Movement?\\
-A Robotic Bench Study, a Cross-Device Correction, and the Consequence for Screening Models}
-\author{\pending{The owner must supply authors, affiliations, and author order.}}
+\loadresultnumbers
+\dryrunwatermark
+\title{Do Apple Pencil and Wacom measure the same drawing movement?\\
+\large A camera-referenced robotic bench study, a cross-device correction,\\ and the consequence for screening models}
+\author{Anonymous authors}
+\date{}
 \begin{document}
 \maketitle
+\linenumbers
 \input{sections/abstract}
 \input{sections/introduction}
 \input{sections/related_work}
+\input{sections/design}
+\input{sections/figure_bench}
 \input{sections/methods}
 \input{sections/results}
 \input{sections/discussion}
 \input{sections/statements}
-\bibliographystyle{IEEEtran}
+\bibliographystyle{unsrtnat}
 \bibliography{references}
 \end{document}

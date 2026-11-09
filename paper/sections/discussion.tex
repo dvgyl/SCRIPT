@@ -1,23 +1,75 @@
 \section{Discussion}
-% Budget: discussion, limitations, and statements share 0.9 page.
-% Order: answer each measurement question from supported results; explain correction
-% failure or success; explain chain-only synthetic consequences; state limitations;
-% close with the evidence needed before any use with people.
-% Define lack of fit and conditional simulation uncertainty in reader-facing terms.
-% Leave out project history, health associations, deployment advice, and human claims.
-\pending{Interpret each feature decision and correction result within the tested range. Explain synthetic consequences under their stated assumptions.}
+\label{sec:discussion}
+\pending{Answer the four questions of the introduction from the results. For each feature, state the decision and its tested range. Explain a failed or passed correction check. Explain the consequence results under their assumptions. Compare with the earlier comparison in people~\cite{Sisti2017}.}
 
-\subsection{Limitations}
-% Write one limitations paragraph. Cover one tested unit of each device; software,
-% surfaces, mountings, angle, azimuth, load, active region, sizes, and speeds.
-% Explain that a robot cannot measure changes in human movement caused by surfaces.
-% Cite R6 for the surface effect. The correction addresses only measurement-chain error.
-% Band power concerns designed line oscillations only. Jerk, pressure, tilt, and hover
-% are descriptive. The camera is not a band-power or instantaneous-timing reference.
-% Explain conservative feature decisions and limited power without treating failure
-% as proof of a difference. Explain that omitted-mounting checks assess lack of fit.
-% Synthetic Gaussian feature assumptions, local-shift transfer, population scaling,
-% independent joint features, and fixed bench estimates constrain interpretation.
-% Simulation intervals exclude bench-estimation uncertainty. Behavioral and chain
-% effects can oppose each other. Do not state a numerical lower bound for people.
-\pending{Write the limitations paragraph. Explain the surface effect \cite{R6} and each bound on inference.}
+\subsection{What the bench can and cannot show}
+The bench isolates the measurement chain.
+This is its strength and its limit.
+A person who changes from a Wacom tablet to an iPad changes two things: the chain and the surface under the pen.
+The surface changes the movement itself~\cite{Alamargot2015,Gerth2016b}.
+In one study, the change in writing speed between paper and a pen display was about four times our equivalence limit for mean speed~\cite{Gerth2016b}.
+The bench cannot measure this behavioural effect, and the correction cannot remove it.
+A feature that is equivalent on the bench can therefore still differ between devices in people.
+The reverse also holds: a feature that fails on the bench will differ in people unless a behavioural effect cancels the chain effect by chance.
+The bench result is thus a necessary condition for the transfer of a feature between devices, not a sufficient one.
+
+In the terms of the V3 framework, this study is a verification~\cite{Goldsack2020}.
+It does not replace the analytical validation of a feature in people or the clinical validation of a screening model.
+
+\subsection{Threats to validity}
+\emph{Units.}
+The study tests one iPad with one Pencil and one tablet with one pen.
+It cannot separate a difference between the two products from a difference between the two units.
+Replication over mountings covers placement, alignment, and calibration. It does not cover variation between units or between software versions.
+
+\emph{Tested range.}
+The results hold for a stylus altitude of $60^\circ$, one azimuth, a load of 100~g, the central region of each active area, two sizes, and mean speeds of 20 to 80~mm/s.
+Fast handwriting is outside this range.
+The band-power result holds only for the designed oscillations of 5 to 11~Hz on a straight line at 20~mm/s.
+It is not a result for human tremor in general.
+
+\emph{Motion system.}
+The motion system is not a hand.
+It holds the stylus rigidly at a constant angle and load, and it has no physiological tremor.
+The programs are smooth curves with known speed profiles.
+A device behaviour that appears only with a varying tilt or a varying force is not tested.
+
+\emph{Reference.}
+The camera is a reference for four features only.
+Its frame rate and pixel scale do not resolve the instantaneous speed well enough for the speed CV and the band power.
+For these two features, a difference in the executed movement between the two surfaces is not removed.
+The executed-movement check bounds this difference: a run counts only when the camera track lies within 0.2~mm of the commanded path and within 1\,\% of the commanded duration.
+
+\emph{Limits.}
+The equivalence limits depend on the AUC threshold of 0.55, which is a judgement, and on published standard deviations from small samples of healthy young adults.
+Three limits have no source and are judgements.
+We report every bias with its interval, so a reader can apply another limit.
+
+\emph{Decision rule.}
+The feature decision requires equivalence on every program of a set.
+It is conservative, and its power is limited for a feature with a real but small bias (Section~\ref{sec:precision}).
+``Not shown equivalent'' is therefore not evidence of a difference.
+The per-program intervals show which case holds.
+
+\emph{Correction.}
+The lack-of-fit check uses left-out mountings of the same units, programs, and bench.
+It can detect a device difference that the model cannot represent.
+It does not show that the correction transfers to other units, other movements, or human recordings.
+On the loops programs, the slope of the correction can absorb a dependence on speed.
+It is not a constant of the devices.
+
+\emph{Consequence experiment.}
+The cohorts are generated from normal distributions with assumed variances and effects.
+The spread between people comes from the same published values as the limits; for three features it has no independent source.
+The device difference enters as a shift with added noise on the feature scale.
+A real chain can distort a signal in ways that this model does not represent.
+The intervals describe variation between generated cohorts and do not include the uncertainty of the bench estimates.
+The experiment therefore shows the size of the chain effect under stated assumptions.
+It does not give a bound for studies with people, because behavioural and chain effects can add or cancel.
+
+\subsection{Use of the method}
+The method is not specific to the two devices.
+A third device needs only a mounting, a marker, and the same programs.
+A laboratory that changes its device during a study can run the programs on the old and the new device and test the features that the study uses.
+A dataset publisher can run them once and publish the result with the data.
+\pending{State what a user of each device should do, in light of the results: which features transfer, which need the correction, and which should not be mixed across the two devices.}

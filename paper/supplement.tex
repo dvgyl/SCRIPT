@@ -1,0 +1,253 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[T1]{fontenc}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{xcolor}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{eso-pic}
+\usepackage{pgfplots}
+\usepgfplotslibrary{groupplots}
+\pgfplotsset{compat=1.17}
+\usepackage[numbers,sort&compress]{natbib}
+\usepackage[hidelinks]{hyperref}
+\hypersetup{pdfauthor={}, pdftitle={Supplementary material}}
+\input{macros}
+\loadresultnumbers
+\dryrunwatermark
+\renewcommand{\thesection}{S\arabic{section}}
+\renewcommand{\thetable}{S\arabic{table}}
+\renewcommand{\thefigure}{S\arabic{figure}}
+\renewcommand{\theequation}{S\arabic{equation}}
+\title{Supplementary material\\
+\large Do Apple Pencil and Wacom measure the same drawing movement?}
+\author{Anonymous authors}
+\date{}
+\begin{document}
+\maketitle
+
+\section{Movement programs and fault programs}
+\label{sec:s-programs}
+Coordinates are in millimetres. The origin is at the top left, $x$ goes to the right, and $y$ goes down.
+The loops curve has the parameter $t$ from 0 to $16\pi$:
+\begin{equation}
+x(t)=8+\frac{12\,t}{2\pi}+4\sin t,\qquad y(t)=24-10\,(1-\cos t).
+\end{equation}
+The spiral curve has the angle $\theta$ from 0 to $4\pi$ and the radius $r(\theta)=8+21\,\theta/(2\pi)$:
+\begin{equation}
+x(\theta)=52+r\cos\theta,\qquad y(\theta)=52-r\sin\theta.
+\end{equation}
+A program at scale $a$ multiplies both coordinates by $a$.
+The line runs from $(4,8)$ to $(128,8)$.
+Its cruise covers 120~mm in 6~s.
+The position along the line carries the added term $A\,(1-\cos 2\pi f t)$, so the speed is $20+2\pi f A\sin 2\pi f t$ in mm/s.
+The cruise holds a whole number of cycles.
+
+On the loops, the speed is proportional to the cube root of the radius of curvature, with the radius limited to 40~mm.
+The constant of proportionality makes the mean speed outside the ramps equal to the program speed.
+The commanded speed of the loops programs ranges from 6.8 to 26.9~mm/s at 20~mm/s, and up to 107.7~mm/s at 80~mm/s.
+
+A program is sampled every 10~ms into timed moves.
+The moves follow the oscillation of a line program with straight segments.
+The band power of the three line programs on the move list is therefore 1.2, 3.1, and 5.8\,\% below the analytic value of the 5, 8, and 11~Hz programs.
+The pilot rule of the main text uses the move-list values as the command.
+The features resample every record to a 200~Hz grid by linear interpolation.
+For a noise-free record at 240 samples per second, this lowers the band power by a further 0.7 to 3.1\,\%.
+This effect is part of the measurement chain under test.
+
+\paragraph{Fault programs.}
+The clean median of a block is the median over its valid runs of the loops program at scale 1.0 and 20~mm/s.
+A fault run counts as detected when every criterion for its device holds.
+\begin{itemize}
+\item Dwell fault. The motion duration is within 2\,\% of the clean median plus 0.5~s. On device W, the recording has no gap in the contact samples, because the tablet reports a still pen. On device P, the expected result (a gap with two contact segments, or no gap) is written from the pilot before the lock.
+\item Lift fault. The recording has two contact strokes.
+\item Truncation fault. The path length and the motion duration are at most 0.6 times their clean medians.
+\end{itemize}
+
+\paragraph{Quality checks of a recording.}
+A contact stroke is split at a gap above 0.05~s.
+A segment shorter than 0.1~s is dropped.
+A recording with a contact sampling rate below 40~Hz is rejected.
+
+\section{Camera procedures}
+\label{sec:s-camera}
+\paragraph{Requirements.}
+The camera captures 240 frames per second without interpolated frames.
+The field of view covers $152\times124$~mm in the marker plane.
+The optical axis is normal to the device surface within $2^\circ$.
+The lighting has no flicker.
+Focus, exposure, and white balance are locked or held constant by the procedure.
+
+\paragraph{Frame clock.}
+The LED is recorded for 60~s once before the lock.
+The frame count per LED second gives the frame rate.
+In every clip, each LED period inside the motion interval must hold the frames of the measured rate within one frame plus 0.1\,\%, and all periods together must hold their total within the same tolerance.
+A frame that is identical to the previous frame is a duplicate.
+A clip with a duplicated or missing frame inside the motion interval is not a valid camera record.
+Where the file holds capture timestamps, every frame interval inside the motion interval must be within 1\,\% of the median interval.
+
+\paragraph{Rolling shutter.}
+A rolling shutter reads the image rows one after another.
+A 1~kHz LED then appears as bands, and the band pitch in rows gives the row readout time.
+The movement of the bands between frames gives the readout direction.
+The time of each marker position is its frame time plus its row index times the row readout time, counted in the readout direction.
+In a test with rendered frames of the fast loops program, the RMS error of the track was 0.004~mm with the correction, 0.013~mm without it, and 0.026~mm with the wrong direction.
+
+\paragraph{Tracking.}
+Until the tracker first finds the marker, it searches a square of 24~mm around the commanded start point.
+After that, each frame searches a square of 10~mm around the last position.
+The marker is the largest bright region that lies completely inside the square, has 0.5 to 2 times the area of the marker dot, and is surrounded by the dark field.
+The centroid is corrected for lens distortion, mapped to the marker plane, and shifted by the marker offset.
+
+\paragraph{Alignment of the camera track.}
+A coarse alignment slides the commanded speed profile over the clip and takes the lag with the largest correlation.
+Both profiles are smoothed with a moving average of 0.2~s for this step only.
+The motion interval of the camera track is then searched inside the commanded motion interval at this lag, widened by 0.2~s before and 0.15~s after.
+The camera reference therefore never depends on the device under test.
+A camera motion interval that touches an edge of this window is a motion failure.
+A coarse correlation below 0.5 is a motion failure when the clip passes every camera check.
+
+For the spatial comparison, the camera track is aligned to the device record at the lag, up to 0.5~s, that maximises the correlation of the two speed profiles, refined below one frame by a parabolic fit.
+
+\paragraph{Fit to the commanded path.}
+Each sample is first paired with the commanded position at its commanded time, which gives a first rigid fit.
+An iterative closest-point fit to the commanded path then repeats the rigid fit with nearest points~\cite{Besl1992}.
+
+\section{Precision of the design}
+\label{sec:s-precision}
+Tables~\ref{tab:s-program} to \ref{tab:s-correction} give the simulation results that the main text summarises.
+A run value is a device mean plus a mounting effect plus run noise.
+$\sigma_\mathrm{mount}$ and $\sigma_\mathrm{run}$ are the standard deviations of the two terms.
+All values are in units of the limit $L$.
+The mounting effect is either shared by all programs of a mounting or drawn for each program.
+
+\begin{table}[ht]
+\centering
+\caption{Per-program decision with six mountings and five runs: share of 20\,000 simulated studies in which the program is declared equivalent at a level of 0.05, for a true bias of 0, $0.5L$, and $L$.}
+\label{tab:s-program}
+\begin{tabular}{@{}rrrrrr@{}}
+\toprule
+$\sigma_\mathrm{run}$ & $\sigma_\mathrm{mount}$ & Median half-width & Bias 0 & Bias $0.5L$ & Bias $L$ \\
+\midrule
+0.25 & 0.10 & 0.155 & 1.000 & 1.000 & 0.048 \\
+0.25 & 0.25 & 0.282 & 1.000 & 0.896 & 0.049 \\
+0.25 & 0.50 & 0.527 & 0.855 & 0.456 & 0.046 \\
+0.50 & 0.25 & 0.346 & 0.998 & 0.763 & 0.045 \\
+0.50 & 0.50 & 0.564 & 0.797 & 0.421 & 0.049 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[ht]
+\centering
+\caption{Feature decision: share of simulated studies in which every program of the set is declared equivalent. Each entry gives the share at a level of 0.05 and at 0.05/6, the strictest Holm level. The bias applies to every program.}
+\label{tab:s-feature}
+\begin{tabular}{@{}rrrllll@{}}
+\toprule
+$\sigma_\mathrm{run}$ & $\sigma_\mathrm{mount}$ & Bias & Mounting effect & 12 programs & 5 loops programs & 3 line programs \\
+\midrule
+\multicolumn{7}{@{}l}{Six mountings, five runs} \\
+0.25 & 0.25 & 0 & shared & 1.000 / 0.973 & 1.000 / 0.982 & 1.000 / 0.988 \\
+0.25 & 0.25 & 0 & per program & 0.999 / 0.940 & 1.000 / 0.975 & 1.000 / 0.986 \\
+0.25 & 0.25 & $0.5L$ & shared & 0.727 / 0.287 & 0.790 / 0.371 & 0.828 / 0.436 \\
+0.25 & 0.25 & $0.5L$ & per program & 0.271 / 0.002 & 0.578 / 0.075 & 0.719 / 0.205 \\
+0.25 & 0.50 & 0 & shared & 0.727 / 0.183 & 0.769 / 0.237 & 0.791 / 0.272 \\
+0.25 & 0.50 & 0 & per program & 0.158 / 0.000 & 0.459 / 0.008 & 0.632 / 0.058 \\
+0.50 & 0.25 & 0 & shared & 0.981 / 0.625 & 0.992 / 0.780 & 0.995 / 0.848 \\
+0.50 & 0.25 & 0 & per program & 0.978 / 0.472 & 0.991 / 0.735 & 0.994 / 0.826 \\
+0.50 & 0.25 & $0.5L$ & shared & 0.317 / 0.035 & 0.466 / 0.094 & 0.562 / 0.158 \\
+0.50 & 0.25 & $0.5L$ & per program & 0.041 / 0.000 & 0.266 / 0.011 & 0.450 / 0.065 \\
+\addlinespace
+\multicolumn{7}{@{}l}{Eight mountings, five runs} \\
+0.25 & 0.25 & $0.5L$ & shared & 0.883 / 0.545 & 0.917 / 0.635 & 0.934 / 0.683 \\
+0.25 & 0.25 & $0.5L$ & per program & 0.650 / 0.063 & 0.834 / 0.321 & 0.899 / 0.504 \\
+0.25 & 0.50 & 0 & shared & 0.908 / 0.516 & 0.927 / 0.577 & 0.937 / 0.618 \\
+0.25 & 0.50 & 0 & per program & 0.609 / 0.018 & 0.813 / 0.184 & 0.880 / 0.360 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[ht]
+\centering
+\caption{Correction with covariates on the 12 programs, with a true intercept of $0.5L$, a true slope of 1.05, six mountings, five runs, and $\sigma_\mathrm{run}=0.25L$. The \emph{linear} truth has no program effect. The \emph{speed} truth adds $0.5L$ for each doubling of the speed, which the model can represent. The \emph{program} truth adds offsets of $\pm0.5L$ that alternate between programs, which the model cannot represent.}
+\label{tab:s-correction}
+\begin{tabular}{@{}rlrrrr@{}}
+\toprule
+$\sigma_\mathrm{mount}$ & Truth & Largest & Check passes & Largest true residual & Jackknife SE \\
+ & & uncorrected bias & on all programs & bias of the fit (median) & of $\beta$ (median) \\
+\midrule
+0.10 & linear & 1.05 & 1.000 & 0.093 & 0.0265 \\
+0.10 & speed & 2.05 & 1.000 & 0.093 & 0.0267 \\
+0.10 & program & 1.55 & 0.263 & 0.849 & 0.0553 \\
+0.25 & linear & 1.05 & 0.999 & 0.154 & 0.0326 \\
+0.25 & speed & 2.05 & 0.999 & 0.156 & 0.0331 \\
+0.25 & program & 1.55 & 0.033 & 0.895 & 0.0823 \\
+0.50 & linear & 1.05 & 0.726 & 0.279 & 0.0795 \\
+0.50 & speed & 2.05 & 0.721 & 0.276 & 0.0799 \\
+0.50 & program & 1.55 & 0.003 & 1.016 & 0.1344 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+With a device difference that the model can represent, the lack-of-fit check passes on every program in 99.9\,\% of studies for $\sigma_\mathrm{mount}$ up to $0.25L$.
+With program offsets that the model cannot represent, it passes in 26\,\% of studies or fewer.
+The check therefore detects a misfit of this size.
+It does not estimate the bias of the correction on new data.
+The limit of $0.25L$ for $\sigma_\mathrm{mount}$ is 0.9 to 1.2\,\% for the four camera-referenced features, 0.0075 for the speed CV, and 6.7\,\% for the band power.
+
+\section{Consequence experiment: further settings}
+\label{sec:s-consequence}
+\paragraph{Generator.}
+For participant $i$, session $j$, and a feature with limit $L$, let $s=L/(\sqrt{2}\,\Phi^{-1}(0.55))$. Then
+\begin{equation}
+Y_i\sim\mathrm{Bernoulli}(0.30),\qquad
+X_{ij}=\mu+s\left(\delta\,(Y_i-0.30)+\sqrt{0.80}\,U_i+\sqrt{0.20}\,V_{ij}\right),
+\end{equation}
+where $U_i$ and $V_{ij}$ are independent standard normal variables, $\delta\in\{0,0.8\}$ is the effect, and $\mu$ is the noise-free feature value of the selected bench program.
+One random draw of the session error is shared by the two devices and scaled by the run standard deviation of each device.
+The mounting effects are drawn independently for the two devices.
+
+\paragraph{Assumed grid.}
+The noise settings give the standard deviations between runs and between mountings in units of $L$.
+\emph{Zero}: both devices $(0,0)$.
+\emph{Nominal}: P $(0.25,0.10)$ and W $(0.25,0.25)$.
+\emph{Stress}: P $(0.25,0.25)$ and W $(0.50,0.50)$.
+In the grid, the correction is the known shift $b$.
+It removes the bias and leaves the noise.
+A control with a wrong correction (an error of $0.5L$ at the centre, with a slope of 1.05 where the model has a slope) runs at $k\in\{-1,0,1\}$ with nominal noise.
+
+\paragraph{Program selection.}
+For each feature, the bench program is chosen before any label or model result is read.
+The geometry must match the target.
+Among the matching programs, the choice minimises $|\ln(a^*/a)|+|\ln(q^*/q)|$ for the target scale $a^*$ and speed $q^*$.
+For the line programs, the choice first minimises the difference of the oscillation frequency.
+
+\paragraph{Validation and metrics.}
+The AUC compares only cases and controls of one test fold, and the fold values are averaged with weights by pair count.
+In record-wise validation, each participant has a total weight of one.
+The calibration intercept is the intercept of a logistic regression of the label with the log-odds of the prediction as an offset.
+The calibration slope comes from a regression with a free intercept.
+The net benefit at a threshold $t$ is the share of true positives minus the share of false positives times $t/(1-t)$.
+A material change is an absolute difference from the reference of at least 0.05 for the AUC, 0.20 for the calibration intercept or slope, and 0.01 for the mean net benefit.
+These thresholds are descriptive judgements.
+A setting with fewer than 95\,\% usable cohort pairs is marked incomplete.
+
+\paragraph{Sensitivity analyses.}
+One setting changes at a time: a cohort size of 200 or 1200, a case share of 0.08, an effect of 0.4, a between-person variance share of 0.95, a nearest-neighbour model, a model with all six features, and device assignment that is independent of or identical to case status.
+With identical assignment, device-held-out validation has only one class in each test set, and its metrics are reported as unavailable.
+For the speed CV, generated values below zero are kept, and their share is reported; one analysis sets them to zero.
+With the measured bench inputs, two analyses use the lower and the upper bound of each bias.
+
+\section{Additional results}
+\label{sec:s-results}
+\optionalresultfile{tab_bland_altman}
+\optionalresultfile{fig_bland_altman}
+\optionalresultfile{tab_selection}
+\optionalresultfile{tab_consequence_grid}
+\ifresultsloaded\else
+\pending{The additional result tables and figures are not available. The results script writes them from the bench analysis and the consequence experiment.}
+\fi
+
+\bibliographystyle{unsrtnat}
+\bibliography{references}
+\end{document}

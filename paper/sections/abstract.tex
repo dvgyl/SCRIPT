@@ -1,10 +1,13 @@
-% Budget: title, abstract, and introduction share 1.0 page. Do not invent a split.
-% Order: measurement question; robotic design; camera reference; feature decisions;
-% correction check; synthetic consequences; tested range and inference limits.
-% Define equivalence as agreement within a prespecified feature limit on every program.
-% Distinguish executed movement from commanded movement.
-% State results only after analysis. Include failures and uncertainty.
-% Leave out platform history, clinical accuracy, human reliability, and health claims.
+% Five parts: the question; what was known; what we did; why the reader should care; why it matters.
 \begin{abstract}
-\pending{Write the abstract after the bench and synthetic analyses. State the tested range and the limits of each conclusion.}
+Do an Apple Pencil on an iPad and a pen on a Wacom tablet measure the same drawing movement?
+Drawing and handwriting features are studied as health measurements, and models and reference values from one device are often applied to recordings from the other.
+Earlier comparisons used people, who move differently on each surface, so the difference between the measurement chains was not known.
+We built a bench in which a motion system draws the same programmed loops, spirals, and oscillating lines on both devices, while a camera at 240 frames per second measures the movement that the stylus makes.
+For six features, we tested equivalence against limits that were fixed before the main runs.
+Where published data allowed it, the limit is the device bias that alone gives a screening model an area under the curve of 0.55 when cases and controls use different devices.
+The design has six mountings per device and 720 main runs. A cross-device correction and a simulation with generated cohorts complete the study.
+\pending{State the results: which features are equivalent, the largest bias with its interval, the correction check, and the primary consequence summaries. State the tested range.}
+A user of drawing features can read from these results which features transfer between the two devices, which need a correction, and how large the error of a screening model can be when devices are mixed.
+The method applies to any pair of pen digitisers and gives device comparisons a mechanical reference that studies with people cannot provide.
 \end{abstract}
