@@ -2,17 +2,22 @@
 \begin{abstract}
 Do two pen digitisers report the same values for the same drawing movement?
 The question matters for drawing and handwriting features that are studied as health measurements.
-Models and reference values from recordings on Wacom tablets are now applied to recordings with an Apple Pencil on an iPad.
+Models and reference values from recordings on Wacom tablets may be applied to recordings with an Apple Pencil on an iPad.
 Earlier comparisons used people.
-People move differently on each surface, so those comparisons could not isolate the difference between the measurement chains: the stylus, the digitiser, and the software.
-We describe a bench method that isolates it.
+People move differently on each surface, so those comparisons could not isolate the difference between the measurement chains.
+Each measurement chain includes the stylus, digitiser, operating system, capture application, and analysis software.
+We describe a bench method that isolates the measurement chain difference.
 A motion system draws the same programmed loops, spirals, and oscillating lines on both devices.
 A camera at 240 frames per second, with its own length standard and clock, measures the movement that the stylus makes.
-Six features are tested for equivalence against limits that are fixed before the main runs.
-Where published data allow it, the limit is the device bias that alone gives a single-feature screening model an area under the curve of 0.55 when cases and controls use different devices.
-We apply the method to one iPad Pro with an Apple Pencil Pro and one Wacom Intuos Pro, with six mountings per device and 720 main runs.
-A correction between the devices and a simulation with generated cohorts show what the measured difference means for a screening model.
-\pending{State the results: which features are equivalent, the largest bias with its interval, the uncertainty of the camera reference, the correction check, and the primary consequence summaries. State the tested range: one unit of each device, one stylus angle and load, and our capture software.}
+Six features are tested for equivalence against equivalence limits that are fixed before the main runs.
+Where published data allow, the equivalence limit follows from a screening model with one feature, in which cases and controls use different devices.
+The equivalence limit is the device bias that alone gives this model an area under the receiver operating characteristic curve (AUC) of 0.55.
+We apply the method to one iPad Pro with an Apple Pencil Pro and one Wacom Intuos Pro.
+The design has six mountings per device and 720 main runs.
+A correction between the devices and a consequence experiment with generated cohorts show what the measured difference means for a screening model.
+\pending{State which features are equivalent and give the largest bias with its interval.
+Give the camera reference uncertainty, correction check, and primary consequence summaries.
+State the tested range: one unit of each device, one stylus angle and load, and our capture application.}
 The results tell a user of drawing features which features transfer between the two tested devices and which do not.
 The method gives comparisons of pen digitisers a mechanical reference, which studies with people cannot provide.
 \end{abstract}

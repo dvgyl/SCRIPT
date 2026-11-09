@@ -83,11 +83,21 @@ def main() -> int:
         target = results / "consequence"
         subprocess.run(
             [
-                sys.executable, "-I", str(script), "--mode", "measured", "--smoke",
-                "--deliverables", str(results / "deliverables.json"),
-                "--registry", str(study / "bench" / "registry.json"),
-                "--expect-plan-sha256", digest, "--out", str(target),
-            ],  # fmt: skip
+                sys.executable,
+                "-I",
+                str(script),
+                "--mode",
+                "measured",
+                "--smoke",
+                "--deliverables",
+                str(results / "deliverables.json"),
+                "--registry",
+                str(study / "bench" / "registry.json"),
+                "--expect-plan-sha256",
+                digest,
+                "--out",
+                str(target),
+            ],
             check=True,
         )
         (target / MARKER).write_text(MARKER_TEXT, encoding="utf-8")
@@ -104,7 +114,12 @@ def main() -> int:
         spec.loader.exec_module(study_script)
         cells = tuple(
             CellSpec((FEATURES[0],), scenario, effect, k, "nominal")
-            for scenario, effect in (("all_w", 0.8), ("transfer", 0.8), ("confounded", 0.0), ("confounded", 0.8))
+            for scenario, effect in (
+                ("all_w", 0.8),
+                ("transfer", 0.8),
+                ("confounded", 0.0),
+                ("confounded", 0.8),
+            )
             for k in (-1.0, 0.0, 1.0)
         )
         plan = ConsequencePlan(source="grid", replicates=4, sensitivity_replicates=4, cell_specs=cells)

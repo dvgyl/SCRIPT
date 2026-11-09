@@ -231,7 +231,11 @@ def completeness(results: Path, out: Output, numbers: dict[str, str]) -> None:
         lines.append(f"{label} & {counts['P']} & {counts['W']} \\\\")
     lines += [r"\bottomrule", r"\end{tabular}\end{adjustbox}"]
     not_estimable = sorted(
-        {(r["feature"], r["program"]) for r in agreement if r["level"] == "program" and r["estimable"] == "false"}
+        {
+            (r["feature"], r["program"])
+            for r in agreement
+            if r["level"] == "program" and r["estimable"] == "false"
+        }
     )
     note = (
         "Every program is estimable for every feature."
@@ -272,7 +276,11 @@ def _range(values: Sequence[float | None]) -> tuple[float | None, float | None, 
     found = sorted(v for v in values if v is not None)
     if not found:
         return None, None, None
-    middle = found[len(found) // 2] if len(found) % 2 else 0.5 * (found[len(found) // 2 - 1] + found[len(found) // 2])
+    middle = (
+        found[len(found) // 2]
+        if len(found) % 2
+        else 0.5 * (found[len(found) // 2 - 1] + found[len(found) // 2])
+    )
     return middle, found[0], found[-1]
 
 
@@ -389,7 +397,8 @@ def agreement(results: Path, out: Output, numbers: dict[str, str]) -> None:
     lines = [
         r"\begin{adjustbox}{max width=\linewidth}\begin{tabular}{@{}llrrllrll@{}}",
         r"\toprule",
-        r"Feature & Scale & $L$ & Programs & Deciding & Bias in units of $L$ & Bias, & Feature & Equivalent \\",
+        r"Feature & Scale & $L$ & Programs & Deciding & Bias in units of $L$ & Bias, & Feature "
+        r"& Equivalent \\",
         r" & & & & program & (90\,\% CI) & natural & $p$ & (Holm) \\",
         r"\midrule",
     ]
@@ -410,7 +419,9 @@ def agreement(results: Path, out: Output, numbers: dict[str, str]) -> None:
         )
         if missing:
             # A program that is not estimable has an equivalence p-value of 1 and decides the feature.
-            names = ", ".join(code(r["program"]) for r in sorted(missing, key=lambda r: program_key(r["program"])))
+            names = ", ".join(
+                code(r["program"]) for r in sorted(missing, key=lambda r: program_key(r["program"]))
+            )
             middle = [names + " (not estimable)", NA, NA]
         elif deciding is None or not limit:
             middle = [NA, NA, NA]
@@ -423,7 +434,10 @@ def agreement(results: Path, out: Output, numbers: dict[str, str]) -> None:
                     if bias is None
                     else f"{fixed(bias / limit, 2, sign=True)} "
                     + interval(
-                        None if low is None else low / limit, None if high is None else high / limit, 2, sign=True
+                        None if low is None else low / limit,
+                        None if high is None else high / limit,
+                        2,
+                        sign=True,
                     )
                 ),
                 _natural(decision["scale"], bias),
@@ -511,7 +525,9 @@ def agreement(results: Path, out: Output, numbers: dict[str, str]) -> None:
                     rf"\nextgroupplot[title={{{FEATURE_LABEL[feature]}}}, xtick={{{ticks}}}, "
                     rf"xticklabels={{{labels}}}, xmin=0.4, xmax={len(programs) + 0.6}]",
                     r"\draw[densely dashed] (axis cs:0.4,1) -- (axis cs:" + f"{len(programs) + 0.6}" + ",1);",
-                    r"\draw[densely dashed] (axis cs:0.4,-1) -- (axis cs:" + f"{len(programs) + 0.6}" + ",-1);",
+                    r"\draw[densely dashed] (axis cs:0.4,-1) -- (axis cs:"
+                    + f"{len(programs) + 0.6}"
+                    + ",-1);",
                     r"\draw[gray] (axis cs:0.4,0) -- (axis cs:" + f"{len(programs) + 0.6}" + ",0);",
                     r"\addplot+[only marks, mark=*, mark size=1.2pt, black, "
                     r"error bars/.cd, y dir=both, y explicit] coordinates {",
@@ -528,7 +544,8 @@ def agreement(results: Path, out: Output, numbers: dict[str, str]) -> None:
             r"\begin{groupplot}[group style={group size=3 by 2, horizontal sep=1.3cm, vertical sep=1.6cm},",
             r"  width=0.36\textwidth, height=4.2cm, ylabel={Bias / $L$},",
             r"  x tick label style={rotate=60, anchor=east, font=\scriptsize}, title style={font=\small},",
-            rf"  ymin={-extent:.2f}, ymax={extent:.2f}, y tick label style={{font=\scriptsize}}, ylabel style={{font=\small}}]",
+            rf"  ymin={-extent:.2f}, ymax={extent:.2f}, y tick label style={{font=\scriptsize}}, "
+            r"ylabel style={font=\small}]",
             *panels,
             r"\end{groupplot}",
             r"\end{tikzpicture}",
@@ -551,7 +568,8 @@ def bland_altman(results: Path, out: Output) -> None:
     table = [
         r"\begin{adjustbox}{max width=\linewidth}\begin{tabular}{@{}lrrrrr@{}}",
         r"\toprule",
-        r"Feature & Mean difference & \multicolumn{2}{c}{Mounting means} & \multicolumn{2}{c}{Single runs} \\",
+        r"Feature & Mean difference & \multicolumn{2}{c}{Mounting means} "
+        r"& \multicolumn{2}{c}{Single runs} \\",
         r" & & Lower & Upper & Lower & Upper \\",
         r"\midrule",
     ]
@@ -663,7 +681,11 @@ def camera_control(results: Path, out: Output) -> None:
     }
     sets = {
         f: sorted(
-            {r["program"] for r in main_rows(read_csv(results / "agreement.csv")) if r["feature"] == f and r["program"]},
+            {
+                r["program"]
+                for r in main_rows(read_csv(results / "agreement.csv"))
+                if r["feature"] == f and r["program"]
+            },
             key=program_key,
         )
         for f in ("bench.speed_cv", "bench.band_power_mm2_s2")
@@ -704,7 +726,9 @@ def camera_control(results: Path, out: Output) -> None:
 
             both = means["P"] and means["W"] and limit
             difference = (
-                (sum(means["P"]) / len(means["P"]) - sum(means["W"]) / len(means["W"])) / limit if both else None
+                (sum(means["P"]) / len(means["P"]) - sum(means["W"]) / len(means["W"])) / limit
+                if both
+                else None
             )
             sd_p, sd_w = spread(means["P"]), spread(means["W"])
             lines.append(
@@ -812,7 +836,8 @@ def correction(results: Path, out: Output, numbers: dict[str, str]) -> None:
                 "Cross-device correction from device W to device P on the comparison scale, with "
                 "jackknife standard errors in parentheses. A fixed term is not fitted in its model. "
                 "The residual is the mean bias that remains on held-out mountings, with its 90\\,\\% "
-                "interval, for the program whose interval reaches farthest from zero. The check passes when the "
+                "interval, for the program whose interval reaches farthest from zero. The check passes "
+                "when the "
                 "interval of every program lies inside $\\pm L$. It is a lack-of-fit check, not an "
                 "independent validation."
             ),
@@ -834,10 +859,7 @@ def gate(results: Path, out: Output) -> None:
         )
         if r is None or not r["total"] or int(r["total"]) == 0:
             return NA
-        return (
-            f"{r['successes']}/{r['total']} "
-            f"[{fixed(value(r['lower']), 2)}, {fixed(value(r['upper']), 2)}]"
-        )
+        return f"{r['successes']}/{r['total']} [{fixed(value(r['lower']), 2)}, {fixed(value(r['upper']), 2)}]"
 
     lines = [
         r"\begin{adjustbox}{max width=\linewidth}\begin{tabular}{@{}lll@{}}",
@@ -847,7 +869,9 @@ def gate(results: Path, out: Output) -> None:
         f"Main runs accepted & {cell('P', '', 'accepted')} & {cell('W', '', 'accepted')} \\\\",
     ]
     for fault, label in FAULT_LABEL.items():
-        lines.append(f"{label} detected & {cell('P', fault, 'detected')} & {cell('W', fault, 'detected')} \\\\")
+        lines.append(
+            f"{label} detected & {cell('P', fault, 'detected')} & {cell('W', fault, 'detected')} \\\\"
+        )
     lines += [r"\bottomrule", r"\end{tabular}\end{adjustbox}"]
     body = "\n".join(
         [
@@ -894,7 +918,11 @@ GRID_NOISE = "nominal"
 
 def consequence_table(folder: Path, out: Output, name: str, label: str, numbers: dict[str, str]) -> None:
     primary_path = folder / "table_primary.csv"
-    rows = read_csv(primary_path) if primary_path.is_file() else [r for r in _summary_rows(folder) if _is_primary(r)]
+    rows = (
+        read_csv(primary_path)
+        if primary_path.is_file()
+        else [r for r in _summary_rows(folder) if _is_primary(r)]
+    )
     rows = [r for r in rows if r.get("sensitivity", "primary") == "primary"]
     if label == "grid":
         # The grid holds one cell for each bias and noise setting. The table shows one labelled setting.
@@ -918,7 +946,9 @@ def consequence_table(folder: Path, out: Output, name: str, label: str, numbers:
         metric = "calibration intercept" if scenario == "transfer" else "AUC"
         first = True
         for feature in FEATURES:
-            effects = sorted({float(r["effect"]) for r in rows if r["scenario"] == scenario and r["feature"] == feature})
+            effects = sorted(
+                {float(r["effect"]) for r in rows if r["scenario"] == scenario and r["feature"] == feature}
+            )
             for effect in effects:
                 cell = {
                     r["contrast"]: r
@@ -999,7 +1029,9 @@ def _mean_series(rows: Rows, key: str) -> list[tuple[float, float, float, float]
 
 
 def _plot(series: list[tuple[float, float, float, float]], style: str) -> str:
-    coordinates = " ".join(f"({x:.5g},{y:.5g}) += (0,{hi - y:.5g}) -= (0,{y - lo:.5g})" for x, y, lo, hi in series)
+    coordinates = " ".join(
+        f"({x:.5g},{y:.5g}) += (0,{hi - y:.5g}) -= (0,{y - lo:.5g})" for x, y, lo, hi in series
+    )
     return rf"\addplot+[{style}, error bars/.cd, y dir=both, y explicit] coordinates {{{coordinates}}};"
 
 
@@ -1017,7 +1049,9 @@ def consequence_figure(grid: Path, measured: Path | None, out: Output) -> None:
         "stress": "black, mark=square*, mark size=1.2pt",
     }
 
-    def panel(scenario: str, metric: str, validation: str, direction: str, effect: float, title: str, ylabel: str) -> str:
+    def panel(
+        scenario: str, metric: str, validation: str, direction: str, effect: float, title: str, ylabel: str
+    ) -> str:
         lines = [rf"\nextgroupplot[title={{{title}}}, xlabel={{Bias / $L$}}, ylabel={{{ylabel}}}]"]
         for noise, style in styles.items():
             for contrast, dash in (("D_raw", "solid"), ("D_corrected", "densely dashed")):
@@ -1085,7 +1119,9 @@ def consequence_figure(grid: Path, measured: Path | None, out: Output) -> None:
         curves = [
             r
             for r in read_csv(curves_path)
-            if r["cell_id"] == target and r["validation"] == "participant" and r["metric"] in ("model_nb", "all_nb")
+            if r["cell_id"] == target
+            and r["validation"] == "participant"
+            and r["metric"] in ("model_nb", "all_nb")
         ]
         for version, metric, style in (
             ("reference", "model_nb", "black, solid, no marks"),
@@ -1093,7 +1129,9 @@ def consequence_figure(grid: Path, measured: Path | None, out: Output) -> None:
             ("corrected", "model_nb", "black, dotted, thick, no marks"),
             ("reference", "all_nb", "gray, solid, no marks"),
         ):
-            series = _mean_series([r for r in curves if r["version"] == version and r["metric"] == metric], "threshold")
+            series = _mean_series(
+                [r for r in curves if r["version"] == version and r["metric"] == metric], "threshold"
+            )
             if series:
                 coordinates = " ".join(f"({x:.4g},{y:.5g})" for x, y, _, _ in series)
                 curve_lines.append(rf"\addplot+[{style}] coordinates {{{coordinates}}};")
@@ -1106,8 +1144,24 @@ def consequence_figure(grid: Path, measured: Path | None, out: Output) -> None:
             r"width=0.34\textwidth, height=5cm, tick label style={font=\scriptsize}, "
             r"label style={font=\small}, title style={font=\small}, "
             r"y tick label style={/pgf/number format/fixed, /pgf/number format/precision=3}]",
-            panel("confounded", "auc", "participant", "internal", 0.0, "(a) Confounding, no true effect", "Change in AUC"),
-            panel("transfer", "intercept", "device", "W-to-P", 0.8, "(b) Transfer from W to P", "Change in intercept"),
+            panel(
+                "confounded",
+                "auc",
+                "participant",
+                "internal",
+                0.0,
+                "(a) Confounding, no true effect",
+                "Change in AUC",
+            ),
+            panel(
+                "transfer",
+                "intercept",
+                "device",
+                "W-to-P",
+                0.8,
+                "(b) Transfer from W to P",
+                "Change in intercept",
+            ),
             *curve_lines,
             r"\end{groupplot}",
             r"\end{tikzpicture}",
