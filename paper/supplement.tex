@@ -22,7 +22,7 @@
 \renewcommand{\thefigure}{S\arabic{figure}}
 \renewcommand{\theequation}{S\arabic{equation}}
 \title{Supplementary material\\
-\large Do Apple Pencil and Wacom measure the same drawing movement?}
+\large A camera-referenced robotic bench method for comparing pen digitisers,\\ applied to an Apple Pencil and a Wacom tablet}
 \author{Anonymous authors}
 \date{}
 \begin{document}
@@ -86,7 +86,7 @@ The frame count per LED second gives the frame rate.
 In every clip, each LED period inside the motion interval must hold the frames of the measured rate within one frame plus 0.1\,\%, and all periods together must hold their total within the same tolerance.
 A frame that is identical to the previous frame is a duplicate.
 A clip with a duplicated or missing frame inside the motion interval is not a valid camera record.
-Where the file holds capture timestamps, every frame interval inside the motion interval must be within 1\,\% of the median interval.
+Where the file holds capture timestamps, every frame interval inside the motion interval must be within 1\,\% of the median interval plus 1~\textmu s.
 
 \paragraph{Rolling shutter.}
 A rolling shutter reads the image rows one after another.
@@ -117,7 +117,7 @@ An iterative closest-point fit to the commanded path then repeats the rigid fit 
 
 \section{Precision of the design}
 \label{sec:s-precision}
-Tables~\ref{tab:s-program} to \ref{tab:s-correction} give the simulation results that the main text summarises.
+Tables~\ref{tab:s-program} to \ref{tab:s-small} give the simulation results that the main text summarises.
 A run value is a device mean plus a mounting effect plus run noise.
 $\sigma_\mathrm{mount}$ and $\sigma_\mathrm{run}$ are the standard deviations of the two terms.
 All values are in units of the limit $L$.
@@ -191,10 +191,49 @@ $\sigma_\mathrm{mount}$ & Truth & Largest & Check passes & Largest true residual
 \end{tabular}
 \end{table}
 
-With a device difference that the model can represent, the lack-of-fit check passes on every program in 99.9\,\% of studies for $\sigma_\mathrm{mount}$ up to $0.25L$.
+On the 12 programs, with a device difference that the model can represent, the lack-of-fit check passes on every program in 99.9\,\% of studies for $\sigma_\mathrm{mount}$ up to $0.25L$.
 With program offsets that the model cannot represent, it passes in 26\,\% of studies or fewer.
-The check therefore detects a misfit of this size.
+On the 12 programs, the check therefore detects a misfit of this size.
 It does not estimate the bias of the correction on new data.
+
+Table~\ref{tab:s-small} gives the same simulation for the two smaller program sets, with 5000 simulated studies per row.
+On these sets, the check passes program offsets of $\pm0.5L$ in about 96\,\% of studies at $\sigma_\mathrm{mount}=0.1L$.
+These passes are correct, because the true residual bias of about $0.67L$ lies inside the limit.
+The check detects such offsets only at $\sigma_\mathrm{mount}$ of $0.25L$ or more.
+On the loops programs, the slope takes up a dependence on speed: with the speed truth, the fitted slope is 1.142 against a true slope of 1.05.
+
+\begin{table}[ht]
+\centering
+\caption{Correction on the two smaller program sets: the slope model on the five loops programs and the shift model on the three line programs. The truths are those of Table~\ref{tab:s-correction}. The line programs have one speed, so their speed truth equals the linear truth.}
+\label{tab:s-small}
+\begin{tabular}{@{}lrlrrrl@{}}
+\toprule
+Set and model & $\sigma_\mathrm{mount}$ & Truth & Largest & Check passes & Largest true & Median $\beta$ \\
+ & & & uncorrected bias & on all programs & residual bias (median) & \\
+\midrule
+Loops, slope & 0.10 & linear & 1.05 & 1.000 & 0.079 & 1.050 \\
+Loops, slope & 0.10 & speed & 2.05 & 1.000 & 0.172 & 1.142 \\
+Loops, slope & 0.10 & program & 1.55 & 0.960 & 0.673 & 1.095 \\
+Loops, slope & 0.25 & linear & 1.05 & 1.000 & 0.135 & 1.050 \\
+Loops, slope & 0.25 & speed & 2.05 & 0.999 & 0.230 & 1.142 \\
+Loops, slope & 0.25 & program & 1.55 & 0.384 & 0.730 & 1.095 \\
+Loops, slope & 0.50 & linear & 1.05 & 0.806 & 0.239 & 1.050 \\
+Loops, slope & 0.50 & speed & 2.05 & 0.662 & 0.340 & 1.142 \\
+Loops, slope & 0.50 & program & 1.55 & 0.041 & 0.829 & 1.094 \\
+Line, shift & 0.10 & linear & 0.45 & 1.000 & 0.046 & fixed \\
+Line, shift & 0.10 & program & 0.95 & 0.958 & 0.668 & fixed \\
+Line, shift & 0.25 & linear & 0.45 & 1.000 & 0.101 & fixed \\
+Line, shift & 0.25 & program & 0.95 & 0.439 & 0.670 & fixed \\
+Line, shift & 0.50 & linear & 0.45 & 0.850 & 0.199 & fixed \\
+Line, shift & 0.50 & program & 0.95 & 0.051 & 0.732 & fixed \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+These simulations use an assumed spread of the device W values between programs, about $13L$ on the loops programs.
+The designed spread is smaller for the speed CV.
+At the designed spread of the speed CV, the median jackknife standard error of $\beta$ is 0.054 at $\sigma_\mathrm{mount}=0.1L$ and 0.064 at $0.25L$.
+At the designed spread of the loop height, it is 0.0075.
 The limit of $0.25L$ for $\sigma_\mathrm{mount}$ is 0.9 to 1.2\,\% for the four camera-referenced features, 0.0075 for the speed CV, and 6.7\,\% for the band power.
 
 \section{Consequence experiment: further settings}

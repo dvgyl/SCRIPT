@@ -8,7 +8,12 @@
 Device P is an iPad Pro with an Apple Pencil Pro.
 \pending{Give the iPad model identifier, the iPadOS version, and the Pencil model from the study records.}
 A capture application on the iPad records every pen sample that the operating system delivers, with its timestamp, position, force, and tilt.
-The position scale comes from the display specification of the iPad model.
+The operating system groups several pen samples in one screen update; the application records each of them.
+It does not record the positions that the operating system predicts for drawing.
+The operating system first estimates some sample values and corrects them later.
+The application records each correction, and the analysis applies it.
+A recording with a value that stays uncorrected is rejected.
+The position scale is a constant of the software: it comes from the nominal display specification of the iPad model.
 The screen has no protector.
 
 Device W is a Wacom Intuos Pro Medium (2025), model PTK670, with the Wacom Pro Pen 3.
@@ -25,10 +30,10 @@ One analysis library reads both recordings and computes every feature.
 A difference between the devices therefore cannot come from different feature code.
 
 A software test checks the capture code before the lock.
-The test gives both applications the same generated pen events.
+The test gives both applications the same generated values in the form in which the capture code reads them from a system pen event.
 The feature values of the two exported recordings must equal those of the generated movement within $10^{-9}$.
-The test covers the path from the pen event to the exported file.
-It does not cover the hardware or the operating system, which the bench measures.
+The test covers the path from these values to the exported file.
+It does not cover the hardware, the operating system, or the reading of a system pen event, which the bench measures.
 
 Both devices have bare surfaces and new standard nibs.
 Each device gets a new nib at its first mounting and at its fourth mounting.
@@ -42,6 +47,7 @@ The device surface is level within $0.5^\circ$.
 The device axes are parallel to the motion axes within $1^\circ$.
 
 The holder keeps the stylus at an altitude of $60^\circ$ above the surface.
+The operator measures the altitude at the start of each block, and it must be within $1^\circ$ of this value.
 The barrel points in the negative $x$ direction of the device.
 A free vertical slide carries the stylus.
 Only the weight of the stylus, the slide, and an added mass presses the nib on the surface.
@@ -65,8 +71,11 @@ The motion system is a pen plotter with two stepper motors and a servo lift (Ban
 The device stays still under the moving arm.
 The controller accepts timed moves: a step count for each motor and a duration in whole milliseconds~\cite{EBB}.
 At 80 steps per millimetre, an end point is at most 0.00625~mm from its target.
-A script translates each program into controller commands.
-The rounding errors of position and time do not accumulate along a program.
+Each program is translated into controller commands by software.
+The rounding errors of position and time in the commands do not accumulate along a program.
+The controller firmware extends each move by one timer tick of 40~\textmu s.
+A program of 10~ms moves therefore runs about 0.4\,\% longer than its command, on both devices alike.
+The camera measures the real duration of every run.
 \pending{Confirm the motion system and its settings after the qualification test. State the outcome of each qualification step.}
 
 The motion system must pass a qualification test before the pilot.
@@ -169,15 +178,16 @@ Third, on each device, the band power of every line program must lie between 0.5
 Otherwise the motion system does not execute the oscillation, and the line programs leave the study.
 
 The lock follows the pilot.
-It freezes the protocol, the programs, the run orders, the equivalence limits, the analysis code, and the builds of both capture applications.
-A lock file records the cryptographic digest of each item.
-The analysis refuses a recording from another build and refuses to run when a locked file has changed.
+It freezes the protocol, the programs, the run orders, the equivalence limits, the analysis software, and the versions of both capture applications.
+A lock record holds a cryptographic digest of each item.
+The analysis software checks these digests.
+It does not accept a recording from another application version, and it does not run when a frozen item has changed.
 After the lock, every departure from the protocol is a deviation, and every deviation is reported.
 \pending{Cite the lock record and its dated external registration. State every deviation.}
 
 The two-mounting pilot cannot estimate the variation between mountings.
-After the sixth block, a locked script therefore prints the variance components of each feature and device.
-It prints no device mean and no device difference.
+After the sixth block, a prespecified interim analysis therefore reports the variance components of each feature and device.
+It reports no device mean and no device difference.
 If the standard deviation between mountings exceeds one quarter of the equivalence limit for any feature, each device gets two more mountings.
 This rule is part of the lock.
 
@@ -207,14 +217,38 @@ In each frame, the tracker separates the marker from its black field with Otsu's
 A clip with the marker missing in more than 2\,\% of its frames is not a valid camera record.
 
 \emph{Validation.}
-Before the lock, the camera must pass four tests.
+Before the lock, the camera must pass five tests.
 The frame clock test is described above.
 In a static test, the motion system places the marker at 25 grid positions, and the RMS error is 0.05~mm or less.
 In a speed test, a 100~mm line at 20 and at 40~mm/s has the commanded speed within 1\,\% and the certified length within 0.5~mm.
+In a background test, the tracker finds the marker in every frame of a pilot run on each device, against the lit screen and against the tablet surface.
 In a synthetic test, the tracker reproduces known motion from rendered frames.
 The static and speed tests use the motion system, and the motion qualification uses the camera.
 The certified length standard and the crystal clock break this circle.
 Supplementary Section~S2 gives the details of the camera procedures.
+
+\subsection{Uncertainty of the camera reference}
+\label{sec:budget}
+The camera-referenced difference cancels an error of the camera only when the error is the same on both devices.
+The two devices never share a mounting, and each mounting has its own plane calibration.
+We therefore separate two kinds of camera error.
+
+An error that changes at random from mounting to mounting adds to the variation between mounting means.
+The confidence interval of the bias includes this variation.
+The residual of the plane calibration and the marker offset measurement are of this kind.
+
+An error that differs systematically between the two devices adds to the bias itself.
+The main source is the height of the marker plane.
+The camera sees a marker that is higher than the calibrated plane at a larger scale.
+A height error $\delta z$ at a camera distance $D$ changes every length by the fraction $\delta z/D$.
+The two devices differ in thickness and in surface, so $\delta z$ can differ between them.
+A second source is the contrast of the marker against the lit screen and against the tablet surface.
+
+We report an uncertainty budget for each camera-referenced feature~\cite{GUM2008}.
+Its entries are the length standard and the measured pitch of the calibration board, the residual of the plane calibration, the marker height, the marker offset, the frame rate, the row readout correction, the noise of the marker centroid, and the 200~Hz grid of the motion interval.
+The budget states the combined standard uncertainty of a device difference in units of the equivalence limit $L$.
+By design, the frame rate is known within 0.1\,\%, which is 0.03$L$ for the motion duration.
+\pending{Give the uncertainty budget from the calibration records: each entry, the combined standard uncertainty per camera-referenced feature, and the camera distance $D$.}
 
 \subsection{Motion interval, alignment, and the executed-movement check}
 \label{sec:interval}
@@ -234,7 +268,7 @@ We repeat the main analysis without these exclusions as a sensitivity analysis.
 
 \subsection{Sampling, noise floor, and spatial accuracy}
 \label{sec:sampling}
-These measures describe each device. They have no acceptance limit.
+These measures describe each device. They have no acceptance criterion.
 
 \emph{Sampling.}
 For every run, we compute the median, the 5th percentile, and the 95th percentile of the intervals between contact samples.
@@ -249,7 +283,8 @@ The camera track is aligned to the device record in time by the lag that maximis
 The device positions are then fitted to the camera track by a translation and a rotation.
 We report the RMS and the 95th percentile of the distance between the two.
 A scale error of the device is not a rigid transformation, so it appears as a distance.
-We also report the RMS distance of the device samples from the commanded path.
+A fitted rotation above $1^\circ$ is recorded as a deviation.
+We also report the lag of each run and the RMS distance of the device samples from the commanded path.
 
 \subsection{Features and comparison scales}
 \label{sec:features}
@@ -259,7 +294,7 @@ Each feature is tested on a prespecified \emph{program set}.
 Duration, path length, and mean speed use all 12 main programs.
 Loop height and speed coefficient of variation (CV) use the five loops programs.
 Band power uses the line programs that pass the pilot rule of Section~\ref{sec:lock}.
-On the other programs, the band power holds only the noise floor of a device.
+Only the line programs hold a designed oscillation in this band.
 
 Five features are compared on the natural-logarithm scale, on which a difference is a ratio.
 A bias of 0.044 on this scale is a ratio of 1.045.
@@ -271,7 +306,10 @@ For these features, the value of a run is the camera-referenced difference: the 
 The comparison then holds for the executed movement.
 The camera cannot resolve the instantaneous speed well enough for the speed CV and the band power.
 For these two features, the value of a run is the device value.
-The comparison then holds for the commanded movement, executed within the limits of Section~\ref{sec:interval}.
+The comparison then holds for the commanded movement, executed within the tolerances of Section~\ref{sec:interval}.
+These tolerances do not exclude a different size of the oscillation on the two surfaces.
+As a control, we therefore also compute the speed CV and the band power from the camera track of each run and compare them between the runs on the two devices.
+This control is descriptive.
 
 \begin{table}[t]
 \centering
@@ -286,7 +324,7 @@ Path length & Integral of the speed over the motion interval & ln & yes & $\pm0.
 Mean speed & Mean of the speed over the motion interval & ln & yes & $\pm0.044$ & Source~\cite{Gerth2016b} \\
 Loop height & Median height of the interior loops & ln & yes & $\pm0.047$ & Source~\cite{Bisio2016}, proxy \\
 Speed CV & Standard deviation of the speed divided by its mean & abs. & no & $\pm0.030$ & Judgement \\
-Band power & Power of the speed between 4 and 12~Hz, Welch's method~\cite{Welch1967} with 2~s windows and half overlap & ln & no & $\pm0.26$ & Judgement~\cite{Elble2017} \\
+Band power & Power of the speed between 4 and 12~Hz, Welch's method~\cite{Welch1967} with 2~s windows, half overlap, and at least three windows & ln & no & $\pm0.26$ & Judgement~\cite{Elble2017} \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -299,7 +337,7 @@ An equivalence result for a jerk measure would therefore compare noise floors.
 \subsection{Equivalence limits}
 \label{sec:limits}
 An equivalence limit states how large a difference between the devices may be before it matters.
-We tie the limit to a consequence for a screening model.
+Where a source allows it, we tie the limit to a consequence for a screening model.
 
 Suppose that a study records every case on one device and every control on the other.
 Suppose also that the feature has no true relation to case status.
@@ -318,20 +356,31 @@ L=\sqrt{2}\,\Phi^{-1}(0.55)\,\sigma=0.178\,\sigma .
 \end{equation}
 The threshold of 0.55 is a judgement.
 A reader who prefers another threshold can rescale every result, because we report each bias with its interval.
+The rule holds for one feature, one session, and no measurement noise.
+It does not bound a model with several features.
+Six independent features, each with a bias of $L$, give an AUC of 0.62 in the same worst case.
 
 The value of $\sigma$ comes from published measurements of healthy adults on a digitiser.
 Where a source gives a mean $\mu$ and a standard deviation $s$, the standard deviation of the logarithm is $\sqrt{\ln(1+s^2/\mu^2)}$.
 Where a source gives several values, we take the smallest, which gives the strictest limit.
 For duration and mean speed, the source is a study of 25 adults who wrote loops and a sentence on a pen display~\cite{Gerth2016b}.
 For loop height, the source is the vertical size of a written sentence in 22 adults~\cite{Bisio2016}, which is a proxy.
+Neither source states that its standard deviation is the standard deviation between people; we read it so.
 These people are not participants of our study. We use only their published summary values.
 
 Three limits are judgements, because we found no suitable source.
-The path length equals the mean speed times the duration on the motion interval, so it takes the limit of the mean speed.
+On the motion interval, the path length is the mean speed times the duration, and the motion system sets the duration.
+The path length therefore takes the limit of the mean speed.
 The speed CV takes one tenth of the smallest designed speed CV of the loops programs.
 For band power, we found no healthy source.
 We take half of the standard error of measurement of the tremor amplitude in tablet spirals of 18 people with essential tremor~\cite{Elble2017}, expressed for power.
+The standard error of measurement is the variation of repeated measurements of one person.
+This limit therefore rests on repeatability in patients, not on the AUC rule.
 Table~\ref{tab:features} marks each basis.
+
+The limits concern the mean difference between the devices.
+They do not concern the noise of a device.
+We report the run-to-run variation of each device and the limits of agreement for a single run, without a criterion.
 All limits are inclusive and are part of the lock.
 
 \subsection{Statistical analysis}
@@ -340,7 +389,9 @@ All limits are inclusive and are part of the lock.
 For each feature and program, the \emph{mounting mean} is the mean of the valid runs of one mounting on the comparison scale.
 The \emph{bias} is the mean of the device P mounting means minus the mean of the device W mounting means.
 Its 90\,\% confidence interval is the Welch interval on the two sets of mounting means~\cite{Welch1947}.
-The interval therefore includes the variation between mountings.
+The Welch interval does not assume equal variances on the two devices.
+The interval includes the variation between mountings.
+The analysis treats the mountings of one device as exchangeable, although the nib changes after the third mounting.
 No variance is pooled across programs.
 
 \emph{Equivalence.}
@@ -351,15 +402,18 @@ At a level of 0.05, the program is equivalent when the 90\,\% interval lies insi
 The claim is at the level of the feature.
 A feature is \emph{bench-equivalent} when every program of its set is estimable and equivalent.
 The $p$-value of a feature is the largest $p$-value of its programs.
-This is an intersection-union test and needs no adjustment across programs~\cite{Berger1996}.
-The Holm procedure adjusts across the six features at a level of 0.05~\cite{Holm1979}.
+This is an intersection-union test: a claim that needs every part to pass is tested by its weakest part and needs no adjustment across the parts~\cite{Berger1996}.
+Six features give six chances of a false claim.
+The Holm procedure adjusts for this at a level of 0.05~\cite{Holm1979}.
 We report the adjusted and the unadjusted decision for every feature.
 Results for single programs are descriptive.
 A feature that fails the test is ``not shown equivalent''.
 This outcome is not evidence of a difference.
 
 \emph{Limits of agreement.}
-We pair mounting $i$ of the two devices and report Bland--Altman limits of agreement with repeated measures~\cite{Bland1999}.
+The limits of agreement give the range in which most differences between the two devices lie~\cite{Bland1986}.
+We pair mounting $i$ of the two devices, which are adjacent blocks and share their position in time and their nib wear.
+We report limits of agreement with repeated measures~\cite{Bland1999}.
 We report limits for a mounting mean and for a single run.
 
 \emph{Quality checks.}
@@ -377,7 +431,7 @@ The correction uses the device values, not the camera-referenced differences, be
 The data points are the mounting means of the two devices, paired by mounting index.
 
 Both devices measure with error, so ordinary regression would bias the slope.
-We therefore use Deming regression~\cite{Linnet1993}.
+We therefore use Deming regression, which fits a line when both variables have error~\cite{Linnet1993}.
 The ratio of the two error variances comes from the variance components between mountings and between runs.
 The model depends on the program set, because the data must identify each term:
 \begin{equation}
@@ -388,13 +442,24 @@ where $q$ is the program speed in mm/s and $a$ is the scale.
 Duration, path length, and mean speed use the full model on the 12 programs.
 Loop height and speed CV use $\gamma_u=\gamma_v=0$ on the loops programs.
 Band power uses a shift only ($\beta=1$, $\gamma_u=\gamma_v=0$), because the line programs have nearly equal values.
-Standard errors come from a jackknife over the mountings~\cite{Efron1981}.
+The fit has two steps.
+First, the mounting means of each device are regressed on $(1,u,v)$ by least squares.
+Second, the Deming slope $\beta$ is fitted on the residuals of the two regressions.
+Standard errors come from a jackknife: the fit is repeated with each mounting left out, and the spread of the results gives the error~\cite{Efron1981}.
+A term that the data cannot identify shows a large standard error, which we report.
+
+The correction has a limit of use.
+The terms $u$ and $v$ need the speed and the scale of a program.
+A recording of a person has no program.
+Outside the bench, the correction can therefore only be applied at the $u$ and $v$ of the bench program that is nearest to the task.
+The consequence experiment does this.
 
 A \emph{lack-of-fit check} tests each correction.
 Each mounting pair is left out in turn, the model is fitted on the other pairs, and it is applied to the pair that was left out.
 For each program, the residual bias is the mean of the left-out residuals, with a 90\,\% $t$ interval over the mountings.
 The correction passes when this interval lies inside $[-L,L]$ for every program.
-The check detects a device difference that the model cannot represent.
+The check can detect a device difference that the model cannot represent.
+On the two smaller program sets, it detects such a difference only when the variation between mountings is large enough (Supplementary Section~S3).
 It is not an independent validation: the left-out mountings come from the same units, the same programs, and the same bench.
 
 \subsection{Precision of the design}
@@ -405,14 +470,17 @@ The analysis is the analysis of Section~\ref{sec:stats}.
 All values are in units of $L$.
 Each cell has 20\,000 simulated studies.
 
-With six mountings and five runs, the per-program test keeps its error rate: a program with a true bias of exactly $L$ is declared equivalent in 4.5 to 5.1\,\% of studies.
+With six mountings and five runs, the per-program test keeps its error rate.
+A program with a true bias of exactly $L$ is declared equivalent in 4.5 to 5.1\,\% of studies, over all simulated settings.
 Suppose that the standard deviations between mountings and between runs are both $0.25L$.
 An unbiased feature is then declared equivalent on its whole program set in at least 94\,\% of studies, at the strictest Holm level and for all three program sets.
+With a standard deviation between runs of $0.5L$, this share can fall to 47\,\% for the 12-program set.
 A feature with a true bias of $0.5L$ on every program of the 12-program set is declared equivalent in 27 to 73\,\% of studies at the unadjusted level.
 The feature decision is therefore conservative: one program outside the limit is sufficient for ``not shown equivalent''.
 If the standard deviation between mountings is $0.5L$, the share for an unbiased feature on the 12-program set can fall to 16\,\%.
 Eight mountings raise it to 61\,\%.
 This is the reason for the interim check of Section~\ref{sec:lock}.
+The simulation does not include the interim rule itself, so the error rate of the design with this rule is not simulated.
 Supplementary Section~S3 gives the simulation tables, including those of the correction.
 
 \subsection{Consequence experiment}
@@ -422,6 +490,14 @@ How much does a device difference of the measured size change the apparent perfo
 How much of that change does the correction remove?
 The experiment uses generated cohorts only.
 It represents the measurement chain. It does not represent how a person reacts to a different surface.
+
+Some outcomes follow from the construction, and we state them in advance.
+A constant shift of every record cannot change the AUC of a model that is fitted to the shifted data.
+In the one-device scenario, only the added noise can change it.
+In the confounding scenario without a true effect, equation~(\ref{eq:auc}) gives the expected AUC for one session without noise.
+If a case uses device W with probability $\pi_1$ and a control with probability $\pi_0$, the expected AUC is $0.5+(\pi_1-\pi_0)\,(\Phi(|b|/(\sqrt{2}\sigma))-0.5)$.
+The experiment adds what these expressions do not give: the effect of noise and of repeated sessions, the calibration and the net benefit of the model, the interaction with the validation scheme, and the effect of the correction.
+All inputs scale with $L$, so the outcomes depend on the bias through the ratio $b/L$ only.
 
 \emph{Cohorts.}
 A cohort has 600 generated participants at three sites, with two sessions each.
@@ -442,6 +518,10 @@ where $b$ is the bias of the bench (P minus W).
 $M$ and $E$ are normal errors with the mounting variance and the run variance of the bench.
 Each participant belongs to one of six mounting groups $h(i)$ per device.
 The bias and the variances are those of the bench program that is nearest to a fixed target in geometry, scale, and speed.
+For the four camera-referenced features, the bias is the camera-referenced bias.
+Its use here assumes that the camera reference has removed every difference in the executed movement.
+The correction, in contrast, is fitted to the device values.
+The corrected version therefore tests the correction against a device difference that was estimated in another way.
 The targets are loops at scale 1.0 and 20~mm/s, and the line with the 8~Hz oscillation for band power.
 The choice is made before any model result is seen.
 
@@ -462,14 +542,21 @@ The model is a logistic regression with an L2 penalty and a fixed penalty streng
 Five outer folds give the test predictions, and three inner folds calibrate the predicted probabilities.
 All preprocessing is fitted on training data only.
 No device, site, or participant identifier is a predictor.
+Two baseline models, one with the device alone and one with the site alone, show how much these assignments predict by themselves.
+A permutation of the labels checks that the procedure gives chance performance when no relation exists.
 Three validation schemes are compared.
 \emph{Record-wise} validation splits sessions, so one person can be in the training set and in the test set.
 \emph{Participant-wise} validation keeps each person in one fold.
-\emph{Device-held-out} validation also keeps each device in one fold.
+\emph{Device-held-out} validation also keeps each device in one fold, and we report both directions.
 Record-wise validation is known to inflate performance~\cite{Saeb2017}; we include it to measure how it interacts with a device difference.
 
 \emph{Metrics.}
 We report the AUC, the calibration intercept and slope~\cite{VanCalster2019}, the Brier score, and the net benefit from decision curves at thresholds from 0.05 to 0.30~\cite{Vickers2006}.
+The calibration intercept shows whether the predicted risks are too high or too low on average.
+The calibration slope shows whether they are too extreme.
+The Brier score is the mean squared error of the predicted risks.
+The net benefit weighs true positive against false positive decisions at a chosen risk threshold.
+For the net benefit, each predicted risk is moved from the case share of its training data to a fixed target case share of 0.30.
 For each metric, the raw change is the uncorrected value minus the reference value of the same cohort.
 The corrected change is the corrected value minus the reference value.
 The \emph{absolute reduction} is the absolute raw change minus the absolute corrected change.
@@ -483,7 +570,9 @@ The grid shows the response of each metric to a bias of known size.
 It is reported separately from the results with the measured bench values.
 Supplementary Section~S4 gives the remaining settings, the sensitivity analyses, and the failure rules.
 
-The simulation conditions on the point estimates of the bench.
-Its intervals describe the variation between generated cohorts.
-They do not include the uncertainty of the bench estimates.
+The experiment conditions on the point estimates of the bench.
+We report two intervals.
+The interval of a mean shows the simulation error of that mean.
+The range between the 2.5th and the 97.5th percentile shows the variation between generated cohorts.
+Neither includes the uncertainty of the bench estimates.
 A separate sensitivity analysis uses the lower and the upper bound of each bias.

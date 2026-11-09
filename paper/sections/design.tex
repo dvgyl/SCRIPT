@@ -34,7 +34,8 @@ A camera therefore records every run.
 It measures the executed movement on both devices with one instrument, one length standard, and one clock.
 For each run, we subtract the camera value of a feature from the device value.
 This \emph{camera-referenced difference} removes the executed movement from the comparison.
-What remains is the error of the chain.
+What remains is the error of the chain, plus any error of the camera that differs between the two devices.
+Section~\ref{sec:budget} treats this camera error.
 
 \subsection{Design overview}
 Fig.~\ref{fig:bench} shows the bench and the movement programs.
@@ -49,13 +50,17 @@ Each device has six mountings, and each mounting has five runs of each main prog
 The design therefore has 720 main runs and 108 fault runs.
 The mounting is the unit of replication, because a new placement changes the alignment, the position on the active area, and the calibration.
 
-Six features carry the equivalence decisions: motion duration, path length, mean speed, loop height, speed variability, and tremor-band power.
-The camera provides a reference for the first four.
-Each feature has an equivalence limit that follows from a stated consequence for a screening model (Section~\ref{sec:limits}).
+Six features carry the equivalence decisions: motion duration, path length, mean speed, loop height, speed coefficient of variation (speed CV), and band power.
+The band power is the power of the speed signal between 4 and 12~Hz, the band of most tremors.
+The camera provides a reference for the first four features.
+Each feature has an equivalence limit.
+Three limits follow from a stated consequence for a screening model, and three are stated judgements (Section~\ref{sec:limits}).
 
 All procedures, programs, limits, and analysis code are frozen before the main runs.
 We call this step the \emph{lock}.
 Nobody compares feature values between the devices until the last block is complete.
-A cross-device correction and a simulation of the consequence for screening models complete the design.
-The simulation uses generated cohorts only.
+Two further steps use the bench results.
+A correction maps the values of device W to the values of device P.
+A consequence experiment shows what the measured difference does to a screening model.
+It uses generated cohorts only.
 The study has no participants and uses no data from people.

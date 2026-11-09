@@ -11,7 +11,7 @@ Each feature depends on the device that records the movement.
 For two decades, the usual device was a graphics tablet with an electromagnetic pen.
 A review of public handwriting datasets for neurodegenerative disease lists three datasets recorded with Wacom tablets and one recorded with a sensor pen~\cite{Vessio2019}.
 In a review of 120 studies of the digitised spiral test, 41 studies used a Wacom tablet and six used an iPad~\cite{Wang2025}.
-New studies increasingly use consumer tablets, because they are cheap and common.
+Newer studies also use consumer tablets.
 One study recorded 448 children with an Apple Pencil on an iPad~\cite{Asselborn2020}.
 Norms, thresholds, and models from one device are then applied to data from another device.
 
@@ -35,9 +35,9 @@ We found no published study that drives an Apple Pencil and a Wacom pen with the
 For other sensors, a mechanical reference is established practice.
 Accelerometers of consumer watches and research devices have been compared on shaker tables~\cite{White2024,Lamunion2025}.
 The verification, analytical validation, and clinical validation (V3) framework for digital health technologies calls this step \emph{verification}: a bench evaluation of the sensor output against a reference, before any test in people~\cite{Goldsack2020}.
-Drawing features lack this step for the two devices that matter most today.
+For drawing features, we found no such step for a graphics tablet and a consumer tablet with an active pen.
 
-This paper provides it.
+This paper describes a bench method for this step and applies it.
 A motion system draws the same programmed movements with an Apple Pencil Pro on an iPad Pro and with a Wacom Pro Pen 3 on a Wacom Intuos Pro tablet.
 A camera at 240 frames per second records the movement that the stylus really makes in every run.
 We ask four questions.
@@ -49,13 +49,19 @@ We ask four questions.
 \end{enumerate}
 
 The paper makes four contributions.
-First, it gives a bench method for comparing pen digitisers: programmed movements, an independent camera reference with its own length standard and clock, replication over mountings, and equivalence tests against limits that were fixed before the main runs.
-Second, it ties each equivalence limit to a consequence that a user of the features can judge: the largest AUC that the device difference alone can produce in a screening model.
+First, it gives a bench method for comparing pen digitisers.
+The method has programmed movements, a camera reference with its own length standard and clock, and replication over mountings.
+It tests equivalence against limits that are fixed before the main runs.
+Second, it ties an equivalence limit to a consequence that a user of the features can judge.
+The consequence is the largest area under the receiver operating characteristic curve (AUC) that the device difference alone can produce in a screening model.
+Three of the six limits follow this rule, and three are stated judgements.
 Third, it gives a cross-device correction with a lack-of-fit check.
 Fourth, it measures the consequence of the device difference in generated cohorts under three study designs, with and without the correction.
 \pending{State the release of the bench data, the programs, and the code here when the release exists.}
 
 The scope is narrow by design.
 The study tests one unit of each device, at one stylus angle and load, at slow to moderate speeds.
-It measures the measurement chain only.
+The results therefore describe these two units with our capture software, not the two product lines.
+The study measures the measurement chain only.
+It does not test the pressure, the tilt, or the latency of the devices.
 It has no participants, and it makes no claim about people, about health, or about the accuracy of any screening model.
