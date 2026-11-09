@@ -1113,7 +1113,7 @@ def consequence_figure(grid: Path, measured: Path | None, out: Output) -> None:
             r"\end{tikzpicture}",
             out.caption(
                 "Consequence of a device bias for a screening model in generated cohorts. (a) Change "
-                "in participant-wise AUC from the reference when the device is associated with case "
+                "in person-wise AUC from the reference when the device is associated with case "
                 "status and the feature has no true effect. (b) Change in the calibration intercept "
                 "when a model trained on device W is tested on device P. The horizontal axis is the "
                 "assumed bias in units of the equivalence limit $L$. Circles, dots, and squares are "
