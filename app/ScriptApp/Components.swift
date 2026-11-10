@@ -114,14 +114,18 @@ struct OperatorControl: View {
     }
 }
 
-/// The operator PIN. The check is PBKDF2 with at least 600,000 iterations, so it runs off the main thread.
+/// The operator PIN. The check is PBKDF2 with at least 600,000 iterations, so it runs off the main thread. After 5
+/// wrong PINs, the store gives a delay before the next try, and the sheet takes no PIN until the delay has passed.
 struct PINSheet: View {
     let pin: OperatorPin
     let onUnlock: () -> Void
+    @Environment(SessionStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var entry = ""
     @State private var checking = false
     @State private var wrong = false
+    /// The seconds until the next try.
+    @State private var wait: TimeInterval = 0
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -133,9 +137,14 @@ struct PINSheet: View {
                         .textContentType(.oneTimeCode)
                         .focused($focused)
                         .onSubmit(check)
+                        .disabled(wait > 0)
                         .accessibilityIdentifier("pinField")
                 } footer: {
-                    if wrong { Text("The PIN is not correct.").foregroundStyle(.red) }
+                    if wait > 0 {
+                        Text(SessionStore.pinWaitMessage(wait)).foregroundStyle(.red).accessibilityIdentifier("pinWait")
+                    } else if wrong {
+                        Text("The PIN is not correct.").foregroundStyle(.red)
+                    }
                 }
             }
             .navigationTitle("Operator PIN")
@@ -143,28 +152,45 @@ struct PINSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    if checking { ProgressView() } else { Button("Unlock", action: check).disabled(entry.isEmpty) }
+                    if checking {
+                        ProgressView()
+                    } else {
+                        Button("Unlock", action: check).disabled(entry.isEmpty || wait > 0)
+                    }
                 }
             }
-            .onAppear { focused = true }
+            .onAppear {
+                focused = true
+                wait = store.pinWait()
+            }
+            .task(id: wait > 0) {
+                while wait > 0, !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(1))
+                    wait = store.pinWait()
+                }
+            }
         }
         .presentationDetents([.medium])
     }
 
     private func check() {
-        guard !entry.isEmpty, !checking else { return }
+        guard !entry.isEmpty, !checking, wait == 0 else { return }
         checking = true
         let candidate = entry
-        let pin = pin
         Task {
-            let matches = await Task.detached { pin.matches(candidate) }.value
+            let result = await store.checkPIN(pin, candidate)
             checking = false
-            if matches {
+            switch result {
+            case .correct:
                 dismiss()
                 onUnlock()
-            } else {
+            case .wrong(let delay):
                 wrong = true
                 entry = ""
+                wait = delay
+            case .locked(let delay):
+                entry = ""
+                wait = delay
             }
         }
     }

@@ -192,6 +192,32 @@ final class SessionFlowTests: XCTestCase {
 
     // MARK: Steps
 
+    @MainActor func testHomeOpensOnlyWithTheOperatorPIN() {
+        // Detects a Home that offers a new session or a withdrawal before the operator PIN, when the configuration
+        // has a PIN, or a PIN sheet that does not open Home.
+        launch(["-ScriptUITestPIN", "4821"])
+        XCTAssertTrue(app.buttons["unlockHome"].waitForExistence(timeout: 30))
+        XCTAssertFalse(app.descendants(matching: .any)["newSession"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["withdraw"].exists)
+        app.buttons["unlockHome"].tap()
+        let field = app.secureTextFields["pinField"]
+        XCTAssertTrue(field.waitForExistence(timeout: 20))
+        field.tap()
+        field.typeText("0000")
+        app.buttons["Unlock"].tap()
+        XCTAssertTrue(app.staticTexts["The PIN is not correct."].waitForExistence(timeout: 30))
+        let home = app.descendants(matching: .any)["newSession"]
+        // The simulator can drop a key under load. A PIN with a lost digit is a wrong PIN, so the test types again.
+        for _ in 0..<3 where !home.exists {
+            field.tap()
+            field.typeText("4821")
+            app.buttons["Unlock"].tap()
+            _ = home.waitForExistence(timeout: 30)
+        }
+        XCTAssertTrue(home.exists)
+        XCTAssertTrue(app.descendants(matching: .any)["withdraw"].exists)
+    }
+
     @MainActor private func setUpSession(code: String, selfAdministered: Bool) {
         tap("newSession")
         let participant = app.textFields["participantCode"]

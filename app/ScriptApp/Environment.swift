@@ -156,6 +156,17 @@ enum LaunchMode {
     /// A UI test run writes the Swift fold summary beside each export, so `./check` can compare it with the Python fold.
     static var writesFoldSummaries: Bool { debugArgument("-ScriptUITest") }
 
+    /// The operator PIN that a UI test gives the active configuration, after the argument `-ScriptUITestPIN`.
+    static var testPIN: String? {
+        #if DEBUG
+        let arguments = ProcessInfo.processInfo.arguments
+        guard let index = arguments.firstIndex(of: "-ScriptUITestPIN"), index + 1 < arguments.count else { return nil }
+        return arguments[index + 1]
+        #else
+        nil
+        #endif
+    }
+
     private static func debugArgument(_ name: String) -> Bool {
         #if DEBUG
         ProcessInfo.processInfo.arguments.contains(name)

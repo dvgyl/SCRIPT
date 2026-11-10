@@ -452,6 +452,8 @@ extension Manifest.Facts {
 ///     <applicationSupport>/Deletions.jsonl         one line for each withdrawal
 ///     <applicationSupport>/ExportIndex.jsonl       the keyed hash of the participant code of each export name,
 ///                                                  without the bench exports, which name no person
+///     <applicationSupport>/PinAttempts.jsonl       one line for each operator PIN that a person typed: the time
+///                                                  and whether the PIN was wrong, never the PIN
 ///     <applicationSupport>/ResumeAttempts.jsonl    one line for each wrong code on the resume screen of a
 ///                                                  self-administered session, and for each correct one
 ///     <documents>/Exports/<name>/                  verified exports, visible in Files
@@ -468,6 +470,10 @@ public struct Storage: Sendable {
     /// whether the code was wrong. It never holds a code. The count of wrong codes must outlive the app process,
     /// or a relaunch would give new attempts.
     public let resumeLog: URL
+    /// One line for each operator PIN that a person typed: the wall time and whether the PIN was wrong. It never
+    /// holds a PIN. The count of wrong PINs and the time of the last one must outlive the app process, or a
+    /// relaunch would give new tries.
+    public let pinLog: URL
     /// The key of `participantHMAC` in the deletion log.
     public let deviceSecret: any DeviceSecret
 
@@ -525,6 +531,7 @@ public struct Storage: Sendable {
         deletionLog = applicationSupport.appendingPathComponent("Deletions.jsonl")
         exportIndex = applicationSupport.appendingPathComponent("ExportIndex.jsonl")
         resumeLog = applicationSupport.appendingPathComponent("ResumeAttempts.jsonl")
+        pinLog = applicationSupport.appendingPathComponent("PinAttempts.jsonl")
         exports = documents.appendingPathComponent("Exports", isDirectory: true)
         damaged = applicationSupport.appendingPathComponent("Damaged", isDirectory: true)
         self.deviceSecret = deviceSecret
@@ -1170,6 +1177,78 @@ public struct Storage: Sendable {
         return opened
     }
 
+    // MARK: PIN attempts
+
+    /// The wrong operator PINs since the last correct PIN, and when the next try is allowed.
+    public struct PinAttempts: Hashable, Sendable {
+        /// The wrong PINs since the last correct PIN.
+        public let failures: Int
+        /// The wall time of the latest wrong PIN, or nil when there is none since the last correct PIN.
+        public let lastWrong: Date?
+
+        public init(failures: Int, lastWrong: Date?) {
+            self.failures = failures
+            self.lastWrong = lastWrong
+        }
+
+        /// The free tries. From the wrong PIN of this number, a delay follows each wrong PIN.
+        public static let freeFailures = 5
+        /// The delay after the wrong PIN number `freeFailures`.
+        public static let firstDelay: TimeInterval = 30
+        /// The longest delay.
+        public static let longestDelay: TimeInterval = 900
+
+        /// The delay after `failures` wrong PINs: none below 5, then 30 s, and two times the delay before for
+        /// each further wrong PIN, up to 15 minutes.
+        public static func delay(afterFailures failures: Int) -> TimeInterval {
+            guard failures >= freeFailures else { return 0 }
+            let doublings = min(failures - freeFailures, 10)
+            return min(firstDelay * Double(1 << doublings), longestDelay)
+        }
+
+        /// The seconds from `now` until the next try, or 0 when a try is allowed. The delay counts from the last
+        /// wrong PIN. When the clock was set back to a time before the last wrong PIN, the caller gives the first
+        /// time at which it saw that clock as `start`, and the delay counts from there. So a clock change cannot
+        /// make the wait longer than the delay of the rule.
+        public func wait(at now: Date, clockSetBackSeenAt start: Date? = nil) -> TimeInterval {
+            guard let lastWrong else { return 0 }
+            let delay = Self.delay(afterFailures: failures)
+            let from = now < lastWrong ? min(start ?? now, now) : lastWrong
+            return max(0, delay - now.timeIntervalSince(from))
+        }
+    }
+
+    /// Reads the PIN log.
+    public func pinAttempts() throws -> PinAttempts {
+        try guarded {
+            guard exists(pinLog) else { return PinAttempts(failures: 0, lastWrong: nil) }
+            var failures = 0
+            var lastWrong: Date?
+            for line in try Data(contentsOf: pinLog).split(separator: 0x0A) {
+                guard let entry = try? Fields(JSON.decodeDocument(Data(line)), path: ""),
+                      let wrong = try? entry.bool("wrong"), let at = try? entry.string("at"),
+                      let date = WallTime(text: at).date else { continue }
+                failures = wrong ? failures + 1 : 0
+                lastWrong = wrong ? date : nil
+            }
+            return PinAttempts(failures: failures, lastWrong: lastWrong)
+        }
+    }
+
+    /// Records one operator PIN that a person typed, and syncs the line before it returns, so a relaunch cannot
+    /// give back a try.
+    @discardableResult
+    public func recordPin(wrong: Bool, at: WallTime) throws -> PinAttempts {
+        try guarded {
+            try makeDirectories()
+            var bytes: [UInt8] = []
+            JSON.object([("at", .string(at.text)), ("wrong", .bool(wrong))]).write(into: &bytes)
+            bytes.append(0x0A)
+            try appendLine(Data(bytes), to: pinLog)
+        }
+        return try pinAttempts()
+    }
+
     // MARK: Diagnostics
 
     /// What the file system reports for one research folder or log of the device.
@@ -1187,7 +1266,7 @@ public struct Storage: Sendable {
     /// The protection class and the backup exclusion that the file system reports for each research folder and log.
     /// The device diagnostics show them, because only a real device has file protection. It reads no content.
     public func itemFacts() -> [ItemFacts] {
-        [sessions, staging, exports, damaged, deletionLog, exportIndex, resumeLog].map { url in
+        [sessions, staging, exports, damaged, deletionLog, exportIndex, resumeLog, pinLog].map { url in
             guard exists(url) else {
                 return ItemFacts(name: url.lastPathComponent, exists: false, protection: nil, excludedFromBackup: nil)
             }

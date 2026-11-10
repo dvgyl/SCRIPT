@@ -169,6 +169,14 @@ final class SessionStore {
     @ObservationIgnored private(set) var rebuild: Task<Void, Never>?
     /// True after the operator unlocked with the PIN in this launch. Home then shows participant codes in full.
     private(set) var codesUnlocked = false
+    /// True from an operator PIN until the next session end or launch. Home is open only then, when the active
+    /// configuration has a PIN.
+    private(set) var homeUnlocked = false
+    /// The wall clock of the PIN delay. Uptime does not outlive a restart, so the delay uses the wall time.
+    @ObservationIgnored var wallClock: @MainActor () -> Date = { Date() }
+    /// The first wall time at which this launch saw a clock before the last wrong PIN. The PIN delay then counts
+    /// from this time, so a clock that was set back gives one delay and not a wait as long as the clock change.
+    @ObservationIgnored private var pinClockSetBackSeenAt: Date?
     /// The item whose answer is on its way to storage. Its screen stays until the answer is on storage, so no screen
     /// that follows a flag shows before the flag is durable, and a second tap answers nothing.
     private(set) var settling: ItemModel?
@@ -311,10 +319,90 @@ final class SessionStore {
         return "•••" + code.rawValue.suffix(max(0, min(4, code.rawValue.count - 4)))
     }
 
-    /// The operator entered the PIN of the configuration.
+    /// The operator entered the PIN of the configuration. Home opens, and it shows participant codes in full.
     func unlockCodes() {
         codesUnlocked = true
+        homeUnlocked = true
     }
+
+    /// True when Home needs the operator PIN: the active configuration has a PIN, and no operator entered a PIN
+    /// since the launch or the last session end. A configuration without a PIN never locks Home.
+    var homeLocked: Bool { activeConfiguration.operatorPin != nil && !homeUnlocked }
+
+    /// Locks Home again. A participant can hold the iPad from here on: at the thank-you screen, and at the screen of
+    /// a stopped session. The end of a qualification session, of a bench session, and a close from Review do not
+    /// lock Home, because the operator holds the iPad there and already gave the PIN.
+    private func lockHome() {
+        homeUnlocked = false
+        codesUnlocked = false
+    }
+
+    // MARK: Operator PIN
+
+    enum PinCheck: Hashable {
+        case correct
+        /// The PIN is wrong. `wait` is the delay in seconds before the next try, or 0.
+        case wrong(wait: TimeInterval)
+        /// No PIN was checked, because the delay after wrong PINs has not passed.
+        case locked(wait: TimeInterval)
+    }
+
+    /// The seconds until the next PIN try, or 0 when a try is allowed. Throws when the PIN log cannot be read.
+    private func pinWait(_ attempts: Storage.PinAttempts) -> TimeInterval {
+        let now = wallClock()
+        if let last = attempts.lastWrong, now < last {
+            // The clock was set back. The delay counts from the first time that this launch saw the clock so.
+            if pinClockSetBackSeenAt.map({ $0 > now }) ?? true { pinClockSetBackSeenAt = now }
+        } else {
+            pinClockSetBackSeenAt = nil
+        }
+        return attempts.wait(at: now, clockSetBackSeenAt: pinClockSetBackSeenAt)
+    }
+
+    /// The seconds until the next PIN try, or 0 when a try is allowed. A PIN log that cannot be read gives the
+    /// longest delay, because a count that cannot be read gives no try.
+    func pinWait() -> TimeInterval {
+        guard let attempts = try? storage.pinAttempts() else { return Storage.PinAttempts.longestDelay }
+        return pinWait(attempts)
+    }
+
+    /// Checks an operator PIN for every PIN sheet. During the delay after wrong PINs it checks nothing. The try is
+    /// counted on storage as a wrong PIN before the check, and a correct PIN then resets the count. So a relaunch,
+    /// a second check at the same time, or a storage failure gives no try that is not counted.
+    func checkPIN(_ pin: OperatorPin, _ candidate: String) async -> PinCheck {
+        do {
+            let wait = pinWait(try storage.pinAttempts())
+            guard wait == 0 else { return .locked(wait: wait) }
+            try storage.recordPin(wrong: true, at: WallTime(wallClock()))
+        } catch {
+            log.error("PIN count failed: \(String(describing: error), privacy: .public)")
+            notice = .failed(String(localized: "The PIN could not be checked."))
+            return .locked(wait: 0)
+        }
+        guard await Task.detached(operation: { pin.matches(candidate) }).value else { return .wrong(wait: pinWait()) }
+        do {
+            try storage.recordPin(wrong: false, at: WallTime(wallClock()))
+        } catch {
+            // The PIN is correct, so the operator goes on. The count stays, and the next wrong PIN adds to it.
+            log.error("PIN reset failed: \(String(describing: error), privacy: .public)")
+        }
+        return .correct
+    }
+
+    /// The text of a PIN sheet during the delay, with the wait in whole minutes, rounded up.
+    static func pinWaitMessage(_ wait: TimeInterval) -> AttributedString {
+        let minutes = max(1, Int((wait / 60).rounded(.up)))
+        return AttributedString(localized: "Too many wrong PINs. Try again in ^[\(minutes) minute](inflect: true).")
+    }
+
+    #if DEBUG
+    /// Gives the active configuration an operator PIN, so a test reaches the PIN screens without a configuration file.
+    func setTestPIN(_ pin: String) {
+        activeConfiguration.operatorPin = OperatorPin(pin: pin, salt: Data(0..<16))
+        // A test run that stopped after a wrong PIN must not give the next run a delay.
+        try? FileManager.default.removeItem(at: storage.pinLog)
+    }
+    #endif
 
     private func entries(in url: URL) -> [URL] {
         ((try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)) ?? [])
@@ -343,6 +431,8 @@ final class SessionStore {
     func importConfiguration(_ data: Data) -> Result<StudyConfiguration, ConfigurationLibrary.Refusal> {
         let result = configurations.importConfiguration(data, battery: contract.battery, instruments: contract.instruments)
         activeConfiguration = configurations.active
+        // The person who imports a configuration is the operator, so its PIN does not lock Home at once.
+        if case .success = result { homeUnlocked = true }
         return result
     }
 
@@ -536,6 +626,7 @@ final class SessionStore {
         log.error("journal write failed: \(String(describing: error), privacy: .public)")
         self.live?.supportListOnStop = live.opened.person?.administration == .selfAdministered
             && core?.state.session.blocks.isEmpty == false
+        lockHome()
         self.live?.stage = .stopped
         self.live?.away = false
         notice = .storageFailure
@@ -761,6 +852,8 @@ final class SessionStore {
     private func close() {
         guard perform(.close(t: uptime())) else { return }
         live?.stage = .finished
+        // The participant holds the iPad at the thank-you screen, so Home needs the PIN again.
+        lockHome()
         closeSink()
     }
 
@@ -862,7 +955,11 @@ final class SessionStore {
     /// The operator passed the operator control, with the PIN when the configuration has one. The participant stage
     /// is kept for the return.
     func operatorTookOver(withPIN: Bool = false) {
-        if withPIN { codesUnlocked = true }
+        if withPIN {
+            codesUnlocked = true
+            // The PIN of the session opens Home only when it is the PIN of the active configuration.
+            if live?.participant?.configuration.operatorPin == activeConfiguration.operatorPin { homeUnlocked = true }
+        }
         guard let live else { return }
         switch live.stage {
         case .finished, .sampleTiming, .stopped:
