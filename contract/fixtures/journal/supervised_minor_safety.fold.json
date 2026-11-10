@@ -16,7 +16,7 @@
   "finger": 0,
   "trialEnded": 1,
   "questionnaireStarted": 2,
-  "response": 18,
+  "response": 17,
   "questionnaireEnded": 2,
   "safetyFlagged": 1,
   "safetyShown": 2,
@@ -50,7 +50,7 @@
   {
    "block": 1,
    "instrument": "gad7",
-   "answered": 7,
+   "answered": 6,
    "skipped": 1,
    "outcome": "completed"
   }

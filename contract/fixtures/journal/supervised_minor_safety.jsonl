@@ -32,10 +32,9 @@
 {"seq":31,"kind":"response","t":1045.0,"block":1,"item":"gad7-5","value":0,"skipped":false}
 {"seq":32,"kind":"response","t":1046.0,"block":1,"item":"gad7-6","value":0,"skipped":false}
 {"seq":33,"kind":"response","t":1047.0,"block":1,"item":"gad7-7","value":0,"skipped":false}
-{"seq":34,"kind":"response","t":1048.0,"block":1,"item":"difficulty","value":0,"skipped":false}
-{"seq":35,"kind":"questionnaireEnded","t":1049.0,"block":1,"reason":"completed"}
-{"seq":36,"kind":"handoff","t":1060.0,"to":"operator"}
-{"seq":37,"kind":"safetyShown","t":1061.0,"what":"operatorAlert"}
-{"seq":38,"kind":"safetyAction","t":1090.0,"code":"clinicianAssessment","role":"operator"}
-{"seq":39,"kind":"safetyShown","t":1091.0,"what":"crisisList","listVersion":"GB-2026-11-03"}
-{"seq":40,"kind":"sessionClosed","t":1095.0,"counts":{"sessionOpened":1,"handoff":2,"trialStarted":1,"trialBegan":1,"contactBegan":1,"sample":6,"correction":0,"contactEnded":1,"hover":0,"finger":0,"trialEnded":1,"questionnaireStarted":2,"response":18,"questionnaireEnded":2,"safetyFlagged":1,"safetyShown":2,"safetyAction":1,"mark":0,"recovered":0}}
+{"seq":34,"kind":"questionnaireEnded","t":1048.0,"block":1,"reason":"completed"}
+{"seq":35,"kind":"handoff","t":1060.0,"to":"operator"}
+{"seq":36,"kind":"safetyShown","t":1061.0,"what":"operatorAlert"}
+{"seq":37,"kind":"safetyAction","t":1090.0,"code":"clinicianAssessment","role":"operator"}
+{"seq":38,"kind":"safetyShown","t":1091.0,"what":"crisisList","listVersion":"GB-2026-11-03"}
+{"seq":39,"kind":"sessionClosed","t":1095.0,"counts":{"sessionOpened":1,"handoff":2,"trialStarted":1,"trialBegan":1,"contactBegan":1,"sample":6,"correction":0,"contactEnded":1,"hover":0,"finger":0,"trialEnded":1,"questionnaireStarted":2,"response":17,"questionnaireEnded":2,"safetyFlagged":1,"safetyShown":2,"safetyAction":1,"mark":0,"recovered":0}}

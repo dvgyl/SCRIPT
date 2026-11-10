@@ -20,7 +20,6 @@
 {"seq":19,"kind":"response","t":13.0,"block":1,"item":"gad7-5","value":0,"skipped":false}
 {"seq":20,"kind":"response","t":14.0,"block":1,"item":"gad7-6","value":0,"skipped":false}
 {"seq":21,"kind":"response","t":15.0,"block":1,"item":"gad7-7","value":0,"skipped":false}
-{"seq":22,"kind":"response","t":16.0,"block":1,"item":"difficulty","value":0,"skipped":false}
-{"seq":23,"kind":"questionnaireEnded","t":17.0,"block":1,"reason":"completed"}
-{"seq":24,"kind":"safetyShown","t":30.0,"what":"crisisList","listVersion":"US-2026-11-03"}
-{"seq":25,"kind":"sessionClosed","t":31.0,"counts":{"sessionOpened":1,"handoff":0,"trialStarted":1,"trialBegan":1,"contactBegan":1,"sample":5,"correction":0,"contactEnded":1,"hover":0,"finger":0,"trialEnded":1,"questionnaireStarted":2,"response":9,"questionnaireEnded":1,"safetyFlagged":0,"safetyShown":1,"safetyAction":0,"mark":0,"recovered":1}}
+{"seq":22,"kind":"questionnaireEnded","t":16.0,"block":1,"reason":"completed"}
+{"seq":23,"kind":"safetyShown","t":30.0,"what":"crisisList","listVersion":"US-2026-11-03"}
+{"seq":24,"kind":"sessionClosed","t":31.0,"counts":{"sessionOpened":1,"handoff":0,"trialStarted":1,"trialBegan":1,"contactBegan":1,"sample":5,"correction":0,"contactEnded":1,"hover":0,"finger":0,"trialEnded":1,"questionnaireStarted":2,"response":8,"questionnaireEnded":1,"safetyFlagged":0,"safetyShown":1,"safetyAction":0,"mark":0,"recovered":1}}

@@ -550,7 +550,7 @@
    "items": [
     {
      "id": "gad7-1",
-     "text": "Feeling nervous, anxious, or on edge",
+     "text": "Feeling nervous, anxious or on edge",
      "options": [
       {
        "value": 0,
@@ -694,7 +694,7 @@
     },
     {
      "id": "gad7-7",
-     "text": "Feeling afraid, as if something awful might happen",
+     "text": "Feeling afraid as if something awful might happen",
      "options": [
       {
        "value": 0,
@@ -714,30 +714,6 @@
       }
      ],
      "scored": true,
-     "safety": false
-    },
-    {
-     "id": "difficulty",
-     "text": "If you checked off any problems, how difficult have these problems made it for you to do your work, take care of things at home, or get along with other people?",
-     "options": [
-      {
-       "value": 0,
-       "label": "Not difficult at all"
-      },
-      {
-       "value": 1,
-       "label": "Somewhat difficult"
-      },
-      {
-       "value": 2,
-       "label": "Very difficult"
-      },
-      {
-       "value": 3,
-       "label": "Extremely difficult"
-      }
-     ],
-     "scored": false,
      "safety": false
     }
    ],

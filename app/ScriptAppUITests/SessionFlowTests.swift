@@ -23,7 +23,7 @@ final class SessionFlowTests: XCTestCase {
         setUpSession(code: "UIT-SUP-01", selfAdministered: false)
         tap("start", snapAs: "03-handoff")
         runTasks(drawn: 3)
-        answer(flagging: "Question 9 of 10")
+        answer(flagging: "Question 9 of 10", items: 17)
         XCTAssertTrue(app.staticTexts["message"].waitForExistence(timeout: 10))
         snap("10-hand-back")
 
@@ -60,7 +60,7 @@ final class SessionFlowTests: XCTestCase {
         setUpSession(code: "UIT-SELF-01", selfAdministered: true)
         tap("start", snapAs: "20-self-start")
         runTasks(drawn: 1)
-        answer(flagging: nil)
+        answer(flagging: nil, items: 16)
         XCTAssertTrue(app.staticTexts["crisisList"].waitForExistence(timeout: 10))
         snap("21-self-crisis-list")
         tap("continue")
@@ -242,8 +242,10 @@ final class SessionFlowTests: XCTestCase {
         }
     }
 
-    /// Answers every item "Not at all", and "Several days" for the item whose step text is `flagging`.
-    @MainActor private func answer(flagging: String?) {
+    /// Answers every item "Not at all", and "Several days" for the item whose step text is `flagging`. `items` is
+    /// the number of items of the blocks: PHQ-9 with its difficulty question and GAD-7 give 17, and PHQ-8 with its
+    /// difficulty question and GAD-7 give 16.
+    @MainActor private func answer(flagging: String?, items: Int) {
         var answered = 0
         while app.buttons["next"].waitForExistence(timeout: 5) {
             let step = app.staticTexts["stepIndicator"].label
@@ -256,8 +258,13 @@ final class SessionFlowTests: XCTestCase {
             app.buttons[step == flagging ? "option-1" : "option-0"].tap()
             app.buttons["next"].tap()
             answered += 1
+            // The item screen stays until the answer is on storage. The next item has another step text.
+            let deadline = Date().addingTimeInterval(30)
+            while Date() < deadline, app.buttons["next"].exists, app.staticTexts["stepIndicator"].label == step {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+            }
         }
-        XCTAssertGreaterThanOrEqual(answered, 17)
+        XCTAssertEqual(answered, items)
     }
 
     /// A button. A list creates its rows only near the screen, so at large text sizes the test scrolls to find it:

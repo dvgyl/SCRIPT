@@ -38,7 +38,6 @@
 {"seq":37,"kind":"response","t":1045.0,"block":1,"item":"gad7-5","value":0,"skipped":false}
 {"seq":38,"kind":"response","t":1046.0,"block":1,"item":"gad7-6","value":0,"skipped":false}
 {"seq":39,"kind":"response","t":1047.0,"block":1,"item":"gad7-7","value":0,"skipped":false}
-{"seq":40,"kind":"response","t":1048.0,"block":1,"item":"difficulty","value":0,"skipped":false}
-{"seq":41,"kind":"questionnaireEnded","t":1049.0,"block":1,"reason":"completed"}
-{"seq":42,"kind":"safetyShown","t":1060.0,"what":"crisisList","listVersion":"AU-2026-11-03"}
-{"seq":43,"kind":"sessionClosed","t":1061.0,"counts":{"sessionOpened":1,"handoff":0,"trialStarted":2,"trialBegan":2,"contactBegan":2,"sample":10,"correction":0,"contactEnded":2,"hover":0,"finger":0,"trialEnded":2,"questionnaireStarted":2,"response":17,"questionnaireEnded":2,"safetyFlagged":0,"safetyShown":1,"safetyAction":0,"mark":0,"recovered":0}}
+{"seq":40,"kind":"questionnaireEnded","t":1048.0,"block":1,"reason":"completed"}
+{"seq":41,"kind":"safetyShown","t":1060.0,"what":"crisisList","listVersion":"AU-2026-11-03"}
+{"seq":42,"kind":"sessionClosed","t":1061.0,"counts":{"sessionOpened":1,"handoff":0,"trialStarted":2,"trialBegan":2,"contactBegan":2,"sample":10,"correction":0,"contactEnded":2,"hover":0,"finger":0,"trialEnded":2,"questionnaireStarted":2,"response":16,"questionnaireEnded":2,"safetyFlagged":0,"safetyShown":1,"safetyAction":0,"mark":0,"recovered":0}}

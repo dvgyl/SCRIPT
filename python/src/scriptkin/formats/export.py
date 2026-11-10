@@ -18,7 +18,7 @@ from cryptography.exceptions import InvalidTag
 
 from scriptkin import __version__, hpke
 from scriptkin.contract import KINDS, READABLE_MAJORS, encode_line, manifest_bytes
-from scriptkin.formats.checks import any_of, integer, one_of, record, text
+from scriptkin.formats.checks import boolean, integer, one_of, record, text
 from scriptkin.formats.journal import QUESTIONNAIRE_KINDS, FoldState, JournalError, Line, recording, replay
 from scriptkin.recording import Recording
 
@@ -67,23 +67,21 @@ def _decrypt(folder: Path, manifest: dict[str, Any], private_key: bytes | None) 
 
 _FACTS = record({"bytes": integer(0), "lines": integer(0), "sha256": text})
 _HEAD = {"format": one_of("script.journal"), "version": text, "sessionID": text}
-_MANIFEST = any_of(
-    record({**_HEAD, "journal": _FACTS}),
-    record(
-        {
-            **_HEAD,
-            "encryption": record(
-                {
-                    "scheme": text,
-                    "suite": text,
-                    "keyID": text,
-                    "encapsulatedKey": text,
-                    "plaintext": _FACTS,
-                    "ciphertext": record({"bytes": integer(0), "sha256": text}),
-                }
-            ),
-        }
-    ),
+_PLAIN_MANIFEST = record({**_HEAD, "journal": _FACTS, "demo": lambda v: boolean(v) and v})
+_ENCRYPTED_MANIFEST = record(
+    {
+        **_HEAD,
+        "encryption": record(
+            {
+                "scheme": text,
+                "suite": text,
+                "keyID": text,
+                "encapsulatedKey": text,
+                "plaintext": _FACTS,
+                "ciphertext": record({"bytes": integer(0), "sha256": text}),
+            }
+        ),
+    }
 )
 
 
@@ -93,7 +91,14 @@ def load_export(folder: Path, private_key: bytes | None = None) -> tuple[dict[st
         manifest: Any = json.loads((folder / "manifest.json").read_bytes())
     except (OSError, ValueError) as e:
         raise JournalError("I5", 0, "Invalid or absent manifest.") from e
-    if not _MANIFEST(manifest) or str(manifest["version"]).split(".")[0] not in READABLE_MAJORS:
+    if not isinstance(manifest, dict):
+        raise JournalError("I5", 0, "Invalid manifest.")
+    check = _ENCRYPTED_MANIFEST if "encryption" in manifest else _PLAIN_MANIFEST
+    if (
+        ("journal" in manifest and "encryption" in manifest)
+        or not check(manifest)
+        or str(manifest["version"]).split(".")[0] not in READABLE_MAJORS
+    ):
         raise JournalError("I5", 0, "Invalid manifest or unknown major version.")
     manifest = cast(dict[str, Any], manifest)
     if "encryption" in manifest:

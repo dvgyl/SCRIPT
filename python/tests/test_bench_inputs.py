@@ -133,12 +133,37 @@ def lock_root(root: Path, extra: tuple[str, ...] = ()) -> Path:
     translated = read_move_list(programs / "loops-s-v40.json")
     write_translation(programs, translated, translate(translated), NEXTDRAW_8511)
     digest = hashlib.sha256((programs / "loops-s-v40.ebb").read_bytes()).hexdigest()
-    programs = {"programs": [{"id": "loops-s-v40", "trajectorySHA256": digest}]}
-    (root / "contract/bench_programs.json").write_text(json.dumps(programs), encoding="utf-8")
+    (root / "contract/bench_programs.json").write_text(
+        json.dumps(programs_file(root, [{"id": "loops-s-v40", "trajectorySHA256": digest}])), encoding="utf-8"
+    )
     code = root / LOCK_CODE
     code.parent.mkdir(parents=True, exist_ok=True)
     code.symlink_to(Path(scriptkin.__file__).resolve().parent, target_is_directory=True)
     return root
+
+
+def programs_file(root: Path, programs: list[dict[str, str]]) -> dict[str, object]:
+    """A programs file of the root with the digest of its protocol text, as step 4 of the lock writes it."""
+    digest = hashlib.sha256((root / "docs/BENCH_PROTOCOL.md").read_bytes()).hexdigest()
+    return {"protocol": {"version": bench.PROTOCOL_VERSION, "sha256": digest}, "programs": programs}
+
+
+def test_the_lock_refuses_a_placeholder_or_stale_protocol_digest(tmp_path: Path) -> None:
+    # Detects a lock that registers capture tools whose journals name 64 zeros, or the digest of an earlier
+    # protocol text, as the bench protocol.
+    root = lock_root(tmp_path)
+    programs = root / "contract" / "bench_programs.json"
+    good = json.loads(programs.read_text(encoding="utf-8"))
+    for stale in (bench.PLACEHOLDER_SHA256, hashlib.sha256(b"an earlier protocol text").hexdigest()):
+        document = {**good, "protocol": {**good["protocol"], "sha256": stale}}
+        programs.write_text(json.dumps(document), encoding="utf-8")
+        with pytest.raises(InputError, match=r"does not record the SHA-256 of docs/BENCH_PROTOCOL\.md"):
+            write_lock(root, BUILDS, COMMIT)
+    programs.write_text(json.dumps(good), encoding="utf-8")
+    assert write_lock(root, BUILDS, COMMIT).files["contract/bench_programs.json"]
+    (root / "docs/BENCH_PROTOCOL.md").write_text("the protocol text after an edit\n", encoding="utf-8")
+    with pytest.raises(InputError, match=r"does not record the SHA-256 of docs/BENCH_PROTOCOL\.md"):
+        write_lock(root, BUILDS, COMMIT)
 
 
 def test_the_lock_refuses_a_programs_file_without_the_controller_file_digests(tmp_path: Path) -> None:
@@ -149,7 +174,7 @@ def test_the_lock_refuses_a_programs_file_without_the_controller_file_digests(tm
     programs = root / "contract" / "bench_programs.json"
     good = programs.read_text(encoding="utf-8")
     placeholder = [{"id": "loops-s-v40", "trajectorySHA256": bench.trajectory_sha256("loops-s-v40")}]
-    programs.write_text(json.dumps({"programs": placeholder}), encoding="utf-8")
+    programs.write_text(json.dumps(programs_file(root, placeholder)), encoding="utf-8")
     with pytest.raises(InputError, match="does not record the controller file digest of loops-s-v40"):
         write_lock(root, BUILDS, COMMIT)
     programs.write_text(good, encoding="utf-8")

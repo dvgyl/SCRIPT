@@ -127,6 +127,21 @@ def _key(path: Path | None) -> bytes | None:
     return None if path is None else path.read_bytes()
 
 
+def _store_copies(args: argparse.Namespace) -> int:
+    from scriptkin.intake import store_copies
+
+    try:
+        copies = store_copies(args.store, args.session_ids)
+    except ValueError as e:
+        print(f"store-copies: {e}", file=sys.stderr)
+        return 1
+    for session, folders in copies.items():
+        print(f"{session}:")
+        for folder in folders:
+            print(folder)
+    return 0
+
+
 def _intake(args: argparse.Namespace) -> int:
     from scriptkin.intake import intake
 
@@ -154,6 +169,23 @@ def _qc_report(args: argparse.Namespace) -> int:
     if args.markdown is not None:
         args.markdown.write_text(qc_markdown(report), encoding="utf-8")
     return 0
+
+
+def _device_report(args: argparse.Namespace) -> int:
+    from scriptkin.devicereport import device_report, json_form, markdown
+
+    try:
+        report = device_report(args.sources, args.diagnostics)
+        if args.out is not None:
+            _write(json_form(report), args.out)
+        if args.markdown is not None:
+            args.markdown.write_text(markdown(report), encoding="utf-8")
+        if args.out is None and args.markdown is None:
+            print(markdown(report), end="")
+    except (OSError, ValueError) as error:
+        print(f"device-report: {error}", file=sys.stderr)
+        return 2
+    return 1 if any(c.result == "FAIL" for c in report.checks) else 0
 
 
 def _config_new(args: argparse.Namespace) -> int:
@@ -635,12 +667,24 @@ def main(argv: list[str] | None = None) -> int:
     i.add_argument("--out", type=Path, help="the intake report (default: standard output)")
     i.set_defaults(run=_intake)
 
+    copies = sub.add_parser("store-copies", help="list stored copies by session identifier")
+    copies.add_argument("store", type=Path)
+    copies.add_argument("session_ids", nargs="+")
+    copies.set_defaults(run=_store_copies)
+
     q = sub.add_parser("qc-report", help="count sessions, trials, rates, and channels of a study store")
     q.add_argument("store", type=Path)
     q.add_argument("--key", type=Path, help="the study private key file, for encrypted sessions")
     q.add_argument("--out", type=Path, help="the JSON report (default: standard output)")
     q.add_argument("--markdown", type=Path, help="also write the short Markdown table here")
     q.set_defaults(run=_qc_report)
+
+    d = sub.add_parser("device-report", help="check device-test exports")
+    d.add_argument("sources", nargs="+", type=Path)
+    d.add_argument("--diagnostics", nargs="+", action="extend", type=Path, default=[])
+    d.add_argument("--out", type=Path)
+    d.add_argument("--markdown", type=Path)
+    d.set_defaults(run=_device_report)
 
     g = sub.add_parser("config", help="make and check a study configuration")
     actions = g.add_subparsers(dest="action", required=True)

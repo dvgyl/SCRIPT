@@ -80,6 +80,7 @@ def score(scale: Scale, answers: dict[str, int | None], options: dict[str, set[i
 
 
 def _block_labels(recording: Recording, block: QuestionnaireBlock, administration: str) -> list[Label]:
+    """A block with all scored items answered can give a score for any outcome."""
     ref = block.instrument
 
     def label(scale: str, value: float | Refusal) -> Label:
@@ -180,12 +181,16 @@ def read_labels_csv(path: str | Path) -> tuple[Label, ...]:
         if tuple(reader.fieldnames or ()) != _CSV_COLUMNS:
             raise ValueError(f"{source.name} does not have the label columns.")
         for line, row in enumerate(reader, start=2):
+            column = "refusal" if row["refusal"] else "score"
             try:
                 score: float | Refusal = (
                     Refusal(RefusalCode(row["refusal"]), row["detail"])
                     if row["refusal"]
                     else float(row["score"])
                 )
+                parsed: dict[str, Any] = {}
+                for column, convert in (("block", int), ("block_time", float), ("outcome", BlockOutcome)):
+                    parsed[column] = convert(row[column])
                 result.append(
                     Label(
                         row["participant"],
@@ -194,14 +199,14 @@ def read_labels_csv(path: str | Path) -> tuple[Label, ...]:
                         row["version"],
                         row["locale"],
                         row["administration"],
-                        int(row["block"]),
-                        float(row["block_time"]),
+                        parsed["block"],
+                        parsed["block_time"],
                         row["boot"],
-                        BlockOutcome(row["outcome"]),
+                        parsed["outcome"],
                         row["scale"],
                         score,
                     )
                 )
-            except ValueError as e:
-                raise ValueError(f"{source.name}, line {line}: {e}") from e
+            except ValueError:
+                raise ValueError(f"Line {line}: invalid {column}.") from None
     return tuple(result)

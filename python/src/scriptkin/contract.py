@@ -909,7 +909,7 @@ def _bench_header(role: str, mounting: str) -> dict[str, Any]:
         "role": role,
         "mounting": mounting,
         "motion": dict(BENCH_MOTION),
-        "protocol": {"version": bench.PROTOCOL_VERSION, "sha256": bench.PROTOCOL_SHA256},
+        "protocol": {"version": bench.PROTOCOL_VERSION, "sha256": bench.protocol_sha256()},
     }
 
 

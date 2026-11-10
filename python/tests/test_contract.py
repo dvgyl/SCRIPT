@@ -103,6 +103,7 @@ def test_every_stimulus_fits_the_smallest_supported_ipad() -> None:
 
 
 def test_task_ids_are_unique() -> None:
+    # Detects duplicate task identifiers in the battery.
     ids = [task["id"] for task in battery.battery()["tasks"]]
     assert len(ids) == len(set(ids))
 
@@ -233,7 +234,7 @@ def test_bench_programs_match_the_generator_and_the_battery() -> None:
     # geometry or the line of the protocol.
     programs = json.loads((CONTRACT / "bench_programs.json").read_text())
     assert programs == json.loads(bench.programs_json())
-    assert programs["protocol"] == {"version": "1.2", "sha256": bench.PROTOCOL_SHA256}
+    assert programs["protocol"] == {"version": "1.2", "sha256": bench.protocol_sha256()}
     table = {p["id"]: p for p in programs["programs"]}
     assert list(table) == [
         "loops-l-v20", "loops-l-v40", "loops-l-v80", "loops-s-v20", "loops-s-v40",
@@ -289,6 +290,43 @@ def test_phq9_item_9_is_the_only_safety_item_in_the_default_instruments() -> Non
     # Detects a lost or misplaced safety flag on an instrument item.
     flagged = {item["id"] for spec in instruments.instruments() for item in spec["items"] if item["safety"]}
     assert flagged == {"phq9-9"}
+
+
+# The SHA-256 of the text that each instrument shows, as a person checked it against the published form. The
+# project records hold the checks: the DASS-21 on 2026-11-03, and the PHQ-9, PHQ-8, and GAD-7 on 2026-11-09.
+VERIFIED_TEXT_SHA256 = {
+    "phq9": "e887399b3c6ec3970995038e5a0fa2d4311069844f515a930821a451b50ed843",
+    "phq8": "15fc098003a2d9da0c00a6f1969648568f28ea29283ae56d9670678a5d0b9e20",
+    "gad7": "c3ee8b4826d6feda3a94d006c30588db1c38dbe552211dc74d883298e212a9aa",
+    "dass21": "9b1fb4e2912bfa692852e9ff4af186b0d662b77e13e189b118d3af58d279a6a5",
+}
+
+
+def test_a_verified_instrument_shows_the_text_that_was_checked_against_its_published_form() -> None:
+    # Detects an instrument text that changed after its check against the published form while its status
+    # stays `verified`, so the app shows wording that nobody compared with the form.
+    for spec in instruments.instruments():
+        shown = {
+            "stem": spec["stem"],
+            "items": [
+                [item["id"], item["text"], [[o["value"], o["label"]] for o in item["options"]]]
+                for item in spec["items"]
+            ],
+        }
+        text = json.dumps(shown, ensure_ascii=False, separators=(",", ":"))
+        digest = hashlib.sha256(text.encode()).hexdigest()
+        assert spec["textStatus"] == "verified", spec["id"]
+        assert digest == VERIFIED_TEXT_SHA256[spec["id"]], spec["id"]
+
+
+def test_the_gad7_has_the_seven_items_of_its_published_form_and_no_other_item() -> None:
+    # Detects a GAD-7 block that shows an item that the published form does not have, such as the difficulty
+    # question of the PHQ-9, or that scores another set than its seven items.
+    spec = instruments.instrument("gad7")
+    ids = [item["id"] for item in spec["items"]]
+    assert ids == [f"gad7-{n}" for n in range(1, 8)]
+    assert spec["scoring"]["items"] == ids and spec["scoring"]["range"] == [0, 21]
+    assert all(item["scored"] and not item["safety"] for item in spec["items"])
 
 
 def test_a_skipped_or_endorsed_safety_item_is_flagged_in_the_fixtures() -> None:
@@ -384,3 +422,16 @@ def test_one_correction_resolves_every_sample_that_shares_its_key() -> None:
     assert fold["trials"][0]["unresolved"] == 0
     cross = json.loads((CONTRACT / "fixtures" / "journal" / "cross_contact_update.fold.json").read_text())
     assert cross["unmatchedCorrections"] == 1 and cross["trials"][0]["unresolved"] == 1
+
+
+@pytest.mark.parametrize("change", [{"salt": "A" * 22}, {"iterations": 2**32}, {"salt": "YQ=="}])
+def test_pin_record_matches_swift(change: dict[str, Any]) -> None:
+    # Detects a PIN salt or iteration count that the app refuses.
+    config = studyconfig.demo_config()
+    config["operatorPin"] = {
+        "salt": "AAAAAAAAAAAAAAAAAAAAAA==",
+        "iterations": 600000,
+        "pbkdf2Sha256": "0" * 64,
+        **change,
+    }
+    assert any("operatorPin" in problem for problem in studyconfig.validate(config))

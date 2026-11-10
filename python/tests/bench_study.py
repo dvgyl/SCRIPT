@@ -20,6 +20,7 @@ camera, which section 8.2 reports as a deviation.
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import shutil
 import zlib
@@ -70,7 +71,7 @@ BUILD = Build("1", "fixture")
 COMMIT = "fedcba9876543210fedcba9876543210fedcba98"
 # The digest that the test tracks name as their calibration (`camera_track`).
 CALIBRATION_SHA256 = "c" * 64
-QUALIFICATION_SESSION = "3F2A9C1E-0000-4000-8000-0000000000Q1"
+QUALIFICATION_SESSION = "3F2A9C1E-0000-4000-8000-0000000000C1"
 Defect = Literal["disturbance", "deviceProblem", "backgrounded", "bump", "invalid_camera", "rotated"]
 DEFECTS: dict[str, Defect] = {
     "P-M1-loops-l-v40-r2": "disturbance",
@@ -114,7 +115,8 @@ class Truth:
 
 
 def session_id(device: BenchRole, mounting: str) -> str:
-    return f"3F2A9C1E-0000-4000-8000-0000000000{device}{mounting[1]}"
+    """A session identifier that names the device and the mounting in its last two hex digits."""
+    return f"3F2A9C1E-0000-4000-8000-0000000000{'A' if device == 'P' else 'B'}{mounting[1]}"
 
 
 def block_number(device: BenchRole, mounting: str) -> int:
@@ -192,7 +194,7 @@ def _builder(device: BenchRole, mounting: str) -> JournalBuilder:
         "role": device,
         "mounting": mounting,
         "motion": {"id": "nextdraw-8511", "version": "test"},
-        "protocol": {"version": bench.PROTOCOL_VERSION, "sha256": bench.PROTOCOL_SHA256},
+        "protocol": {"version": bench.PROTOCOL_VERSION, "sha256": bench.protocol_sha256()},
     }
     if device == "P":
         return JournalBuilder(
@@ -365,6 +367,9 @@ def write_controllers(root: Path, move_lists: dict[str, MoveList]) -> dict[str, 
     programs = bench.programs()
     for p in programs["programs"]:
         p["trajectorySHA256"] = digests[p["id"]]
+    protocol = root / "docs" / "BENCH_PROTOCOL.md"
+    if protocol.is_file():
+        programs["protocol"]["sha256"] = hashlib.sha256(protocol.read_bytes()).hexdigest()
     (root / "contract" / "bench_programs.json").write_text(json.dumps(programs, indent=1), encoding="utf-8")
     return digests
 

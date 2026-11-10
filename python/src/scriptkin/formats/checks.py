@@ -11,7 +11,10 @@ Check = Callable[[Any], bool]
 
 
 def number(v: Any) -> bool:
-    return type(v) in (int, float) and math.isfinite(v)
+    try:
+        return type(v) in (int, float) and math.isfinite(v)
+    except OverflowError:
+        return False
 
 
 def between(low: float, high: float) -> Check:
@@ -50,7 +53,9 @@ def matches(pattern: str) -> Check:
 
 
 def integer(low: int | None = None, high: int | None = None) -> Check:
-    return lambda v: type(v) is int and (low is None or v >= low) and (high is None or v <= high)
+    return lambda v: (
+        type(v) is int and -(2**63) <= v < 2**63 and (low is None or v >= low) and (high is None or v <= high)
+    )
 
 
 def one_of(*values: str) -> Check:

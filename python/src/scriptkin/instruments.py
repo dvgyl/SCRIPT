@@ -3,6 +3,10 @@
 The app shows the exact text here and records item identifiers and response values. It never
 computes or shows a score. Scoring rules are for the library, which turns responses into labels.
 Licence sources are in docs/DESIGN.md section 15.1.
+
+The PHQ-9 and GAD-7 texts follow the English forms of the PHQ Screeners site word for word. The GAD-7
+form has seven items and no difficulty question. The PHQ-8 is items 1 to 8 of the PHQ-9 with its
+difficulty question, as the instruction manual defines it.
 """
 
 from __future__ import annotations
@@ -48,13 +52,13 @@ PHQ_ITEMS = [
     "Thoughts that you would be better off dead or of hurting yourself in some way",
 ]
 GAD_ITEMS = [
-    "Feeling nervous, anxious, or on edge",
+    "Feeling nervous, anxious or on edge",
     "Not being able to stop or control worrying",
     "Worrying too much about different things",
     "Trouble relaxing",
     "Being so restless that it is hard to sit still",
     "Becoming easily annoyed or irritable",
-    "Feeling afraid, as if something awful might happen",
+    "Feeling afraid as if something awful might happen",
 ]
 DASS_ITEMS = [
     ("s", "I found it hard to wind down"),
@@ -165,7 +169,7 @@ def instruments() -> list[dict[str, Any]]:
             "ages": {"min": 12, "max": None, "note": "Adults; ages 12-17 exploratory; ages 15-24 community."},
             "locale": "en",
             "stem": GAD_STEM,
-            "items": [*gad_items, DIFFICULTY],
+            "items": gad_items,
             "scoring": {
                 "kind": "sum",
                 "items": [item["id"] for item in gad_items],

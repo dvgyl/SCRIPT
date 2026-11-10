@@ -9,7 +9,7 @@ from conftest import fixture_lines, write_encrypted_export, write_export
 
 from scriptkin import hpke
 from scriptkin.contract import KINDS
-from scriptkin.formats.export import pen_only, read_journal
+from scriptkin.formats.export import pen_only, read_journal, verify_export
 from scriptkin.formats.journal import QUESTIONNAIRE_KINDS, JournalError, summarize
 
 # RFC 9180 Appendix A.2.1: DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, ChaCha20Poly1305, base mode.
@@ -203,3 +203,15 @@ def test_pen_only_refuses_a_questionnaire_block_before_the_tasks(tmp_path: Path)
     with pytest.raises(ValueError, match=r"after the last trialEnded\. Line 1 \(questionnaireStarted\)"):
         pen_only(tmp_path / "source", tmp_path / "copy")
     assert not (tmp_path / "copy").exists()
+
+
+def test_plaintext_manifest_requires_demo(tmp_path: Path) -> None:
+    # Detects a plaintext export without the demo mark required by the Swift reader.
+    write_export(tmp_path, fixture_lines())
+    path = tmp_path / "manifest.json"
+    manifest = json.loads(path.read_bytes())
+    del manifest["demo"]
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(JournalError) as error:
+        verify_export(tmp_path)
+    assert error.value.rule == "I5"
