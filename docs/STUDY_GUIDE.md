@@ -124,6 +124,10 @@ The configuration stores the operator PIN (personal identification number) only 
 
 A short PIN is easy to find by trial, even with a slow derivation. Use the longest PIN that operators can enter without errors.
 
+With a PIN in the configuration, Home is locked after each launch and after each session that ends at the thank-you screen. Tap **Enter the operator PIN**, and enter the PIN one time. The PIN at the **Operator** control of the thank-you screen also opens Home.
+
+After 5 wrong PINs, the app waits before the next try. The wait is 30 seconds, then 1, 2, 4, and 8 minutes, and then 15 minutes for each further wrong PIN. A relaunch does not end the wait. A correct PIN sets the count back to zero.
+
 ### Write the study configuration
 
 The configuration controls the study without a code change. `contract/config.schema.json` defines its shape. [The design](DESIGN.md#14-study-configuration) gives its rules.
@@ -342,7 +346,7 @@ The count includes endorsed, skipped, and unreached safety items. When the count
 7. [Take the export into the study store](#take-exports-into-the-study-store).
 8. After the result `accepted`, `duplicate`, or `damaged`, delete the export from the iPad and the transfer location.
 
-Home masks each participant code. It shows at most the last 4 characters and hides at least 4. To see the full codes, tap **Show participant codes** and enter the PIN. A self-administered participant exports with **Save to Files** on the thank-you screen. Record that export in the register in the same way.
+Home masks each participant code. It shows at most the last 4 characters and hides at least 4. The PIN that opens Home also shows the full codes. A self-administered participant exports with **Save to Files** on the thank-you screen. Record that export in the register in the same way.
 
 ## Take exports into the study store
 

@@ -12,6 +12,7 @@ Do the steps in order. Each step that has a check names its check, for example *
 - Use the test codes of this checklist. Use the demo configuration that the app ships. Every operator screen then shows "Demo, not for research".
 - A tap on a questionnaire option in this test is test input. It is not your answer, and nobody scores it.
 - The report holds counts, rates, and ranges only. It holds no pen sample, no response, and no participant code.
+- The demo configuration has no operator PIN, so Home is not locked in this test. The Home lock and the delay after wrong PINs have automated tests only. Test them on the iPad with the study configuration before a study.
 - Do not put a journal of this test into the repository. Delete the test folder and the exports on the devices after the maintainers confirm that they have the report ([last step](#after-the-test)).
 
 ## What you need
