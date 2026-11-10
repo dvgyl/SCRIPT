@@ -1,0 +1,69 @@
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[font=\footnotesize, >=Stealth]
+% (a) The bench, side view.
+\begin{scope}
+  \node[anchor=west] at (-0.2,4.25) {(a)};
+  \fill[gray!35] (0,0) rectangle (6.2,0.25);
+  \node[anchor=west] at (6.25,0.12) {Base plate};
+  \fill[gray!70] (1.2,0.25) rectangle (4.8,0.5);
+  \node[anchor=west] at (6.25,0.45) {Device (P or W)};
+  \draw[gray] (4.8,0.4) -- (6.2,0.45);
+  % Stylus at 60 degrees, nib at (3,0.5).
+  \draw[line width=2.2pt] (3,0.5) -- ++(60:1.9);
+  \fill[white, draw=black] ($(3,0.5)+(60:0.45)$) circle (0.07);
+  \draw[gray] ($(3,0.5)+(60:0.45)+(0.07,0)$) -- (4.35,0.95) node[anchor=west, black] {Marker};
+  \draw (3.6,0.5) arc (0:60:0.6);
+  \node at (3.82,0.72) {$60^\circ$};
+  % Holder on a vertical slide.
+  \draw[fill=white] ($(3,0.5)+(60:1.35)+(-0.28,-0.2)$) rectangle ++(0.56,0.42);
+  \draw[fill=gray!20] (3.55,1.2) rectangle (3.75,2.6);
+  \draw[<->] (3.95,1.5) -- (3.95,2.3);
+  \node[anchor=west] at (3.95,1.9) {Free slide, 100 g};
+  % Plotter arm.
+  \draw[fill=gray!20] (0.1,2.6) rectangle (3.9,2.85);
+  \node[anchor=east] at (2.6,3.05) {Arm of the motion system};
+  \draw[<->] (0.3,2.3) -- (1.5,2.3);
+  \node at (0.9,2.1) {$x$, $y$};
+  % Camera.
+  \draw[fill=gray!20] (2.55,3.75) rectangle (3.45,4.2);
+  \node[anchor=west] at (3.5,3.98) {Camera, 240 frames/s};
+  \draw[densely dashed] (3,3.75) -- (1.35,0.5);
+  \draw[densely dashed] (3,3.75) -- (4.65,0.5);
+  % LED.
+  \fill (1.5,0.56) circle (0.05);
+  \draw[gray] (1.5,0.6) -- (0.75,1.15) node[anchor=south, black] {Clock LED};
+\end{scope}
+\end{tikzpicture}
+
+\medskip
+\begin{tikzpicture}
+\begin{groupplot}[group style={group size=3 by 1, horizontal sep=1.25cm},
+  height=4.3cm, tick label style={font=\scriptsize}, label style={font=\footnotesize},
+  title style={font=\footnotesize}]
+\nextgroupplot[width=6.2cm, title={(b) Loops, scale 1.0}, xlabel={$x$ (mm)}, ylabel={$y$ (mm)}, y dir=reverse,
+  axis equal image, xmin=0, xmax=112, ymin=0, ymax=28]
+\addplot[black, thin] table[x=x, y=y] {figures/path_loops.dat};
+\nextgroupplot[width=4.3cm, title={(c) Spiral, scale 1.0}, xlabel={$x$ (mm)}, y dir=reverse,
+  axis equal image, xmin=0, xmax=104, ymin=0, ymax=104]
+\addplot[black, thin] table[x=x, y=y] {figures/path_spiral.dat};
+\nextgroupplot[width=6.2cm, title={(d) Commanded speed}, xlabel={Time (s)}, ylabel={Speed (mm/s)},
+  xmin=0, xmax=3, ymin=0, ymax=42, legend style={font=\tiny, at={(0.5,0.97)}, anchor=north, draw=none, fill=none},
+  legend columns=3]
+\addplot[gray, thin] table[x=t, y=v] {figures/speed_line.dat};
+\addplot[black, very thick] table[x=t, y=v] {figures/speed_loops.dat};
+\addplot[black, densely dashed, thick] table[x=t, y=v] {figures/speed_spiral.dat};
+\legend{Line 8~Hz, Loops, Spiral}
+\end{groupplot}
+\end{tikzpicture}
+\caption{The bench and the movement programs.
+(a) Side view of the bench.
+The motion system moves the stylus over the device, which stays still.
+A free vertical slide sets the load, and the holder sets the angle.
+The camera above the device tracks a marker near the nib.
+A light-emitting diode (LED) in the field of view gives the frame times.
+(b), (c) Commanded paths of the loops and the spiral at scale 1.0.
+(d) Commanded speed during the first three seconds for loops and spiral at 20~mm/s, and the line with the 8~Hz oscillation.
+The figure shows the design, not a measurement.}
+\label{fig:bench}
+\end{figure}

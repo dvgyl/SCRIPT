@@ -1,10 +1,50 @@
-\section{Related Work}
-% Budget: 0.5 page.
-% Order: earlier tablet spiral comparison (R5); writing surface effects (R6);
-% sources for limits (R2, R4, R6); descriptive smoothness terminology (R3).
-% Define correlation versus agreement, test-retest variation, and measurement error.
-% R5 used no Apple Pencil. Correlation does not establish equivalence.
-% Distinguish a source population from the bench study, which has no participants.
-% Leave out unsupported absence claims and unverified references.
-\pending{Compare the prior spiral study \cite{R5} with this measurement design. Explain surface effects \cite{R6}.}
-\pending{Explain the roles and limits of the source measurements \cite{R2,R4,R6} and smoothness terminology \cite{R3}.}
+\section{Related work}
+\label{sec:related}
+
+\subsection{Device comparisons with people}
+Sisti \emph{et al.} adapted a Wacom tablet spiral analysis to an iPad and compared the devices in 15 healthy people and 16 patients~\cite{Sisti2017}.
+The iPad recorded a finger or a capacitive stylus at 60~Hz or less.
+The nine spiral indices correlated between the devices, with $R^2$ from 0.52 to 0.90.
+The study had no mechanical reference and no equivalence test.
+In signature verification, a database of 65 people on five commercial devices was built to test verification between devices~\cite{Tolosana2017}.
+These studies show that devices differ.
+They cannot show how much of the difference is the measurement chain, because the person changes the movement too.
+
+\subsection{Effects of the writing surface}
+The surface changes how people write.
+Children and adults wrote with different speed and different pauses on a tablet screen than on paper~\cite{Alamargot2015,Gerth2016a,Gerth2016b}.
+For a comparison between an iPad and a Wacom tablet, this effect has two consequences.
+A study with people measures the sum of the measurement chain difference and the behaviour difference.
+A bench study measures the measurement chain difference only.
+Both are needed, and neither replaces the other.
+
+\subsection{Mechanical references for digitisers and other sensors}
+Early work described the digital recording and processing of handwriting movements with a digitiser~\cite{Teulings1984}.
+The pen industry tests jitter, linearity, and position accuracy with a motion system that moves the pen~\cite{Haran2014}.
+Those tests check one product against its specification.
+They do not compare the features that health research uses between products.
+In the dysgraphia case of Section~\ref{sec:introduction}, the pressure signals of two tablets were compared with weights on a vertical pen~\cite{Asselborn2019}.
+That test covered pressure at rest, not movement.
+In human-computer interaction, dedicated apparatus measures the latency of touch and pen input~\cite{Ng2012,Casiez2017}.
+Latency is a different quantity from the features that we test.
+
+For wearable accelerometers, bench comparisons are common.
+White \emph{et al.} moved 40 devices of four brands on a shaker table and tested their equivalence~\cite{White2024}.
+Lamunion \emph{et al.} compared five generations of one research accelerometer on an orbital shaker against a calibrated reference~\cite{Lamunion2025}.
+Our study applies the same idea to pen digitisers.
+The camera takes the role of the calibrated reference, and the programmed drawing movements take the role of the shaker.
+
+\subsection{Device as a confounder of screening models}
+A model can learn the recording device in place of the disease.
+In chest radiographs from three hospital systems, the hospital alone predicted pneumonia with an AUC of 0.86, because the disease rate differed between hospitals~\cite{Zech2018}.
+In hip radiographs, the scanner model was predictable from the image, and the fracture model fell to chance when such variables were balanced~\cite{Badgeley2019}.
+In smartphone studies, features of data quality alone told the operating system apart with an accuracy of 0.91~\cite{Halabi2024}.
+Such shortcuts are a general property of trained models~\cite{Geirhos2020}.
+
+A second error is leakage between the training set and the test set~\cite{Kapoor2023}.
+When records of one person enter both sets, a model can recognise the person and give apparent performance that is too high~\cite{Saeb2017,ChaibubNeto2019}.
+
+A third line of work treats a device change as measurement error in a predictor.
+Simulations showed that a model loses discrimination and calibration when the predictors are measured less precisely at validation than at development~\cite{Luijken2019}.
+Our consequence experiment follows this line.
+Its inputs are not assumed: they are the bias and the noise that the bench measures.

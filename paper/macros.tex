@@ -1,3 +1,49 @@
-% Keep every unfinished passage visible in the compiled manuscript.
-\newcommand{\pending}[1]{\par\smallskip\noindent
-  {\color{red}\fbox{\parbox{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}{\textbf{PENDING:} #1}}}\par\smallskip}
+% Build switches. The build script sets them in the file buildconfig.tex.
+\newif\ifsubmission \submissionfalse
+\newif\ifresultsloaded \resultsloadedfalse
+\newif\ifdryrun \dryrunfalse
+\newif\ifposthoc \posthocfalse
+\providecommand{\resultsdir}{results}
+\InputIfFileExists{buildconfig}{}{}
+
+% An unfinished passage. The draft shows it in a red box. The submission build stops at it.
+\newcounter{pendingcount}
+\newcommand{\pending}[1]{%
+  \ifsubmission
+    \GenericError{}{Submission build: an unfinished passage remains}{Remove every unfinished passage.}{#1}%
+  \else
+    \stepcounter{pendingcount}%
+    \par\smallskip\noindent
+    {\color{red}\fbox{\parbox{\dimexpr\linewidth-2\fboxsep-2\fboxrule\relax}{\small\textbf{PENDING:} #1}}}\par\smallskip
+  \fi}
+
+% The mark of a table or figure that comes from synthetic test input.
+\newcommand{\dryrunmark}{\textcolor{red}{\textbf{DRY RUN. SYNTHETIC TEST INPUT. NOT A RESULT.}}}
+
+% A generated result file. A missing file gives a visible note in the draft and stops the submission build.
+\newcommand{\resultfile}[1]{%
+  \InputIfFileExists{\resultsdir/#1}{}{%
+    \ifsubmission
+      \GenericError{}{Submission build: the result file #1 is missing}{Run the results script.}{}%
+    \else
+      \pending{The generated result \texttt{\detokenize{#1}} is not available. The results script writes it from the bench analysis.}%
+    \fi}}
+% The same for a result that is optional in the draft.
+\newcommand{\optionalresultfile}[1]{\InputIfFileExists{\resultsdir/#1}{}{}}
+
+\newcommand{\loadresultnumbers}{%
+  \InputIfFileExists{\resultsdir/numbers}{}{}%
+  \ifsubmission
+    \ifresultsloaded\else
+      \GenericError{}{Submission build: no results are loaded}{Run the results script.}{}%
+    \fi
+    \ifdryrun
+      \GenericError{}{Submission build: the results are a dry run}{Use the measured results.}{}%
+    \fi
+  \fi}
+
+% A page mark for every draft page that holds dry-run content.
+\newcommand{\dryrunwatermark}{%
+  \ifdryrun
+    \AddToShipoutPictureFG{\AtPageUpperLeft{\raisebox{-1.2cm}{\hspace{1.5cm}\dryrunmark}}}%
+  \fi}

@@ -1,10 +1,23 @@
-% Budget: title, abstract, and introduction share 1.0 page. Do not invent a split.
-% Order: measurement question; robotic design; camera reference; feature decisions;
-% correction check; synthetic consequences; tested range and inference limits.
-% Define equivalence as agreement within a prespecified feature limit on every program.
-% Distinguish executed movement from commanded movement.
-% State results only after analysis. Include failures and uncertainty.
-% Leave out platform history, clinical accuracy, human reliability, and health claims.
+% Five parts: the question; what was known; what we did; why the reader should care; why it matters.
 \begin{abstract}
-\pending{Write the abstract after the bench and synthetic analyses. State the tested range and the limits of each conclusion.}
+Do two pen digitisers report the same values for the same drawing movement?
+The question matters for drawing and handwriting features that are studied as health measurements.
+Models and reference values from recordings on Wacom tablets may be applied to recordings with an Apple Pencil on an iPad.
+Earlier comparisons used people.
+People move differently on each surface, so those comparisons could not isolate the difference between the measurement chains.
+Each measurement chain includes the stylus, digitiser, operating system, capture application, and analysis software.
+We describe a bench method that isolates the measurement chain difference.
+A motion system draws the same programmed loops, spirals, and oscillating lines on both devices.
+A camera at 240 frames per second, with its own length standard and clock, measures the movement that the stylus makes.
+Six features are tested for equivalence against equivalence limits that are fixed before the main runs.
+Where published data allow, the equivalence limit follows from a screening model with one feature, in which cases and controls use different devices.
+The equivalence limit is the device bias that alone gives this model an area under the receiver operating characteristic curve (AUC) of 0.55.
+We apply the method to one iPad Pro with an Apple Pencil Pro and one Wacom Intuos Pro.
+The design has six mountings per device and 720 main runs.
+A correction between the devices and a consequence experiment with generated cohorts show what the measured difference means for a screening model.
+\pending{State which features are equivalent and give the largest bias with its interval.
+Give the camera reference uncertainty, correction check, and primary consequence summaries.
+State the tested range: one unit of each device, one stylus angle and load, and our capture application.}
+The results tell a user of drawing features which features transfer between the two tested devices and which do not.
+The method gives comparisons of pen digitisers a mechanical reference, which studies with people cannot provide.
 \end{abstract}

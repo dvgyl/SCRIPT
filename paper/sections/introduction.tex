@@ -1,12 +1,73 @@
 \section{Introduction}
-% Budget: title, abstract, and introduction share 1.0 page.
-% Order: why device measurement agreement matters; the measurement question;
-% independent motion reference; correction question; synthetic consequence question;
-% four planned contributions; scope of the claim.
-% Define measurement chain, feature, equivalence, and synthetic cohort.
-% Contributions: bench agreement, cross-device correction, synthetic consequences,
-% and release of data, capture and analysis code, programs, and fixture files.
-% A release is planned. Do not assert availability before the owner sets its licence.
-% Leave out claims of novelty without a checked literature search, project history,
-% platform architecture, clinical utility, and conclusions about people.
-\pending{Write the measurement problem, questions, contributions, and scope.}
+\label{sec:introduction}
+The way a person draws or writes carries information about motor and cognitive function.
+A digitising tablet records the pen position many times per second.
+Software then computes features such as the duration of a movement, its speed, and the strength of a tremor.
+Researchers use these features to study Parkinson's disease, essential tremor, cognitive impairment, developmental disorders, and emotional states~\cite{Impedovo2019,Thomas2017,Elble2017,Toffoli2025,Asselborn2018,LikformanSulem2017}.
+Many studies train a model that separates cases from controls.
+We call such a model a \emph{screening model}.
+
+Each feature depends on the device that records the movement.
+For two decades, the usual device was a graphics tablet with an electromagnetic pen.
+A review of public handwriting datasets for neurodegenerative disease lists three datasets recorded with Wacom tablets and one recorded with a sensor pen~\cite{Vessio2019}.
+In a review of 120 studies of the digitised spiral test, 41 studies used a Wacom tablet and six used an iPad~\cite{Wang2025}.
+Newer studies also use consumer tablets.
+One study recorded 448 children with an Apple Pencil on an iPad~\cite{Asselborn2020}.
+A norm, a threshold, or a model from one device may then be applied to data from another device.
+
+This practice assumes that the two devices measure the same movement in the same way.
+The assumption is rarely tested, and a failure can go unnoticed.
+One case shows the risk.
+A study recorded children with dysgraphia on one tablet model and other children on a newer model of the same brand~\cite{Asselborn2018}.
+A published comment questioned whether the result was independent of the tablet model~\cite{Deschamps2019}.
+The authors replied with a mechanical calibration of the pressure signal of the two tablets~\cite{Asselborn2019}.
+The question could not be settled from the recordings of the children alone, because device and diagnosis were tied together.
+
+Comparisons with people cannot separate two effects.
+The first effect comes from the measurement chain: the stylus, digitiser, operating system, capture application, and analysis software.
+Measurement chains can report different values for one movement.
+The second effect is behaviour: a person moves differently on smooth glass than on a textured tablet or on paper.
+Adults wrote loops about 20\,\% faster on a pen display than on paper~\cite{Gerth2016b}.
+One earlier study compared an iPad with a Wacom tablet for spiral drawing in 31 people~\cite{Sisti2017}.
+It used a finger or a capacitive stylus, not an active pen, and it reported correlations between the devices.
+A correlation does not show agreement: two devices can correlate strongly and still differ by a constant factor.
+We found no published study that drives an Apple Pencil and a Wacom pen with the same mechanical movement.
+
+For other sensors, a mechanical reference is established practice.
+Accelerometers of consumer watches and research devices have been compared on shaker tables~\cite{White2024,Lamunion2025}.
+The verification, analytical validation, and clinical validation (V3) framework for digital health technologies calls this step \emph{verification}~\cite{Goldsack2020}.
+Verification compares the sensor output against a bench reference before any test in people.
+For drawing features, we found no such step for a graphics tablet and a consumer tablet with an active pen.
+
+This paper describes a bench method for this step and applies it.
+A motion system draws the same programmed movements on an iPad Pro and a Wacom Intuos Pro tablet.
+The respective pens are an Apple Pencil Pro and a Wacom Pro Pen 3.
+A camera at 240 frames per second records the movement that the stylus really makes in every run.
+We ask four questions.
+\begin{enumerate}
+\item \emph{Agreement.} Do the two devices give equivalent values for the same movement for each of six drawing features?
+The equivalence limit is fixed in advance.
+\item \emph{Correction.} Where they do not, does a simple correction learned on the bench remove the difference on mountings that the fit did not use?
+\item \emph{Description.} What are the sample interval, the noise floor, and the spatial accuracy of each device during these movements?
+\item \emph{Consequence.} How much does a device difference of the measured size change the apparent performance of a screening model?
+How much of that change does the correction remove?
+\end{enumerate}
+
+The paper makes four contributions.
+First, it gives a bench method for comparing pen digitisers.
+The method has programmed movements, a camera reference with its own length standard and clock, and replication over mountings.
+It tests equivalence against equivalence limits that are fixed before the main runs.
+Second, it ties an equivalence limit to a consequence that a user of the features can judge.
+The consequence is the largest area under the receiver operating characteristic curve (AUC) that the device difference alone can produce.
+The AUC measures how well a screening model separates cases from controls.
+Three of the six equivalence limits follow this rule, and three are stated judgements.
+Third, it gives a cross-device correction with a lack-of-fit check.
+Fourth, it measures the consequence of the device difference in generated cohorts under three study designs, with and without the correction.
+\pending{State the release of the bench data, the programs, and the code here when the release exists.}
+
+The scope is narrow by design.
+The study tests one unit of each device, at one stylus angle and load, at slow to moderate speeds.
+The results therefore describe these two units with our capture application, not the two product lines.
+The study measures only the measurement chain.
+It does not test the pressure, the tilt, or the latency of the devices.
+It has no participants, and it makes no claim about people, about health, or about the accuracy of any screening model.
