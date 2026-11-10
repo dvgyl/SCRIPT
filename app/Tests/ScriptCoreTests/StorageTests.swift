@@ -694,8 +694,8 @@ func aDamagedJournalLeavesTheDeviceAsFoundUnderTheExportPolicy(kind: ExportKind)
     try s.createDirectories()
     _ = try s.withdraw(participant: "WD-INDIA", at: Fixed.at)
     let facts = Dictionary(uniqueKeysWithValues: s.itemFacts().map { ($0.name, $0) })
-    #expect(facts.keys.sorted() == ["Damaged", "Deletions.jsonl", "ExportIndex.jsonl", "Exports", "ResumeAttempts.jsonl",
-                                    "Sessions", "Staging"])
+    #expect(facts.keys.sorted() == ["Damaged", "Deletions.jsonl", "ExportIndex.jsonl", "Exports", "PinAttempts.jsonl",
+                                    "ResumeAttempts.jsonl", "Sessions", "Staging"])
     for name in ["Sessions", "Staging", "Exports", "Damaged", "Deletions.jsonl"] {
         #expect(facts[name]?.exists == true && facts[name]?.excludedFromBackup == true, "\(name)")
     }
@@ -705,4 +705,43 @@ func aDamagedJournalLeavesTheDeviceAsFoundUnderTheExportPolicy(kind: ExportKind)
     var sessions = s.sessions
     try sessions.setResourceValues(values)
     #expect(s.itemFacts().first { $0.name == "Sessions" }?.excludedFromBackup == false)
+}
+
+@Test func theDelayAfterWrongPINsGrowsFromTheFifthToACeiling() {
+    // Detects a delay rule that gives a delay before the fifth wrong PIN, that does not grow, or that has no ceiling.
+    let delays = (0...12).map { Storage.PinAttempts.delay(afterFailures: $0) }
+    #expect(delays == [0, 0, 0, 0, 0, 30, 60, 120, 240, 480, 900, 900, 900])
+    #expect(Storage.PinAttempts.delay(afterFailures: 10_000) == 900)
+    let last = Date(timeIntervalSince1970: 1_000)
+    let locked = Storage.PinAttempts(failures: 6, lastWrong: last)
+    #expect(locked.wait(at: last) == 60)
+    #expect(locked.wait(at: last.addingTimeInterval(45)) == 15)
+    #expect(locked.wait(at: last.addingTimeInterval(60)) == 0)
+    // A clock that was set back one day gives one delay from the time that the caller first saw it, not one day.
+    let back = last.addingTimeInterval(-86_400)
+    #expect(locked.wait(at: back) == 60)
+    #expect(locked.wait(at: back.addingTimeInterval(45), clockSetBackSeenAt: back) == 15)
+    #expect(locked.wait(at: back.addingTimeInterval(60), clockSetBackSeenAt: back) == 0)
+    #expect(Storage.PinAttempts(failures: 4, lastWrong: last).wait(at: last) == 0)
+}
+
+@Test func wrongPINsAreCountedOnStorageUntilACorrectPIN() throws {
+    // Detects a count of wrong PINs that a relaunch resets, that a correct PIN does not reset, or a log with a PIN.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    func at(_ seconds: Double) -> WallTime { WallTime(Date(timeIntervalSince1970: 1_800_000_000 + seconds)) }
+    #expect(try storage(in: root).pinAttempts() == Storage.PinAttempts(failures: 0, lastWrong: nil))
+    for n in 1...6 { #expect(try storage(in: root).recordPin(wrong: true, at: at(Double(n))).failures == n) }
+    // A new `Storage` value stands for a relaunch.
+    let kept = try storage(in: root).pinAttempts()
+    #expect(kept.failures == 6 && kept.wait(at: at(6).date!) == 60)
+    #expect(try storage(in: root).recordPin(wrong: false, at: at(100)) == Storage.PinAttempts(failures: 0, lastWrong: nil))
+    #expect(try storage(in: root).recordPin(wrong: true, at: at(101)).failures == 1)
+    let log = try snapshot(root)
+    #expect(log.keys.sorted() == ["Support/PinAttempts.jsonl"])
+    for line in Contract.lines(log["Support/PinAttempts.jsonl"]!) {
+        let entry = try Fields(try JSON.decodeDocument(line), path: "")
+        #expect(throws: Never.self) { try entry.only(["at", "wrong"]) }
+    }
+    #expect(try storage(in: root).pinLog.resourceValues(forKeys: [.isExcludedFromBackupKey]).isExcludedFromBackup == true)
 }

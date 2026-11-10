@@ -45,6 +45,9 @@ struct ScriptApp: App {
                 configurations: ConfigurationLibrary(folder: support.appendingPathComponent("Configurations"),
                                                      demo: contract.demo)
             )
+            #if DEBUG
+            if let pin = LaunchMode.testPIN { store.setTestPIN(pin) }
+            #endif
             store.launch()
             self.store = store
         } catch {

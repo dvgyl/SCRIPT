@@ -9,10 +9,13 @@ struct RootView: View {
         Group {
             if let live = store.live, !live.away {
                 SessionView(store: store, live: live)
+            } else if store.homeLocked {
+                LockedHomeScreen(store: store)
             } else {
                 HomeScreen(store: store)
             }
         }
+        .environment(store)
         .tint(Palette.accent)
         .onChange(of: store.keepsScreenAwake, initial: true) { _, awake in
             UIApplication.shared.isIdleTimerDisabled = awake
@@ -50,6 +53,30 @@ extension Notice {
         case .failed(let text):
             text
         }
+    }
+}
+
+/// Home before the operator PIN, when the active configuration has a PIN. It offers nothing but the PIN, so a
+/// participant who holds the iPad after a session cannot withdraw a code, import a configuration, or start a session.
+struct LockedHomeScreen: View {
+    let store: SessionStore
+    @State private var askingPIN = false
+
+    var body: some View {
+        NavigationStack {
+            ContentUnavailableView {
+                Label("Home is locked", systemImage: "lock")
+            } actions: {
+                Button("Enter the operator PIN") { askingPIN = true }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("unlockHome")
+            }
+            .navigationTitle("SCRIPT Capture")
+        }
+        .sheet(isPresented: $askingPIN) {
+            if let pin = store.activeConfiguration.operatorPin { PINSheet(pin: pin, onUnlock: store.unlockCodes) }
+        }
+        .demoBanner(store.activeConfiguration.demo)
     }
 }
 

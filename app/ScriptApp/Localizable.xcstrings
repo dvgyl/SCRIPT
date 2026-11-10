@@ -225,6 +225,9 @@
     "Enrolment record code" : {
 
     },
+    "Enter the operator PIN" : {
+
+    },
     "Exclude" : {
 
     },
@@ -256,6 +259,9 @@
 
     },
     "Go to Home" : {
+
+    },
+    "Home is locked" : {
 
     },
     "ID card" : {
@@ -633,6 +639,9 @@
     "Thank you." : {
 
     },
+    "The PIN could not be checked." : {
+
+    },
     "The PIN is not correct." : {
 
     },
@@ -703,6 +712,9 @@
 
     },
     "Time limit" : {
+
+    },
+    "Too many wrong PINs. Try again in ^[%lld minute](inflect: true)." : {
 
     },
     "Trials" : {

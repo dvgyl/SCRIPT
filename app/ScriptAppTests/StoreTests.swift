@@ -672,7 +672,7 @@ private func answerUntil(_ item: ItemID, in store: SessionStore) async {
     #expect(storage["freeBytes"] as? Int == 123)
     let items = try #require(storage["items"] as? [[String: Any]])
     #expect(items.compactMap { $0["name"] as? String } == ["Sessions", "Staging", "Exports", "Damaged", "Deletions.jsonl",
-                                                          "ExportIndex.jsonl", "ResumeAttempts.jsonl"])
+                                                          "ExportIndex.jsonl", "ResumeAttempts.jsonl", "PinAttempts.jsonl"])
     #expect(items.first?["excludedFromBackup"] as? Bool == true)
 }
 
@@ -751,4 +751,149 @@ private func answerUntil(_ item: ItemID, in store: SessionStore) async {
     #expect(second.live?.stage == .finished)
     #expect(!second.confirmCode("T-OWNER"))
     #expect(second.state?.status == .closed)
+}
+
+@Test @MainActor func homeIsLockedAfterALaunchAndAfterASessionEndWhenTheConfigurationHasAPIN() async throws {
+    // Detects a Home that is open without the operator PIN after a launch or after the thank-you screen, so that a
+    // participant who holds the iPad can withdraw a code, import a configuration, or start a session.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try makeStore(root: root)
+    store.launch()
+    #expect(!store.homeLocked)
+    store.setTestPIN("4821")
+    #expect(store.homeLocked)
+    store.unlockCodes()
+    #expect(!store.homeLocked && store.codesUnlocked)
+
+    let config = store.activeConfiguration
+    store.open(opened(.selfAdministered, configuration: config, battery: store.contract.battery),
+               configuration: config, dominant: .right)
+    store.start()
+    store.runTasks()
+    await store.answerBlocks()
+    store.continueAfterCrisisList()
+    #expect(store.live?.stage == .finished)
+    #expect(store.homeLocked && !store.codesUnlocked)
+    // The operator control of the thank-you screen takes the PIN, and that one entry opens Home.
+    store.operatorTookOver(withPIN: true)
+    #expect(store.live == nil && !store.homeLocked)
+}
+
+@Test @MainActor func aSessionThatStopsLocksHome() async throws {
+    // Detects a stopped session whose Go to Home button opens Home without the operator PIN.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try makeStore(root: root) { url, onFailure in FailingSink(url: url, failAfter: 3, onFailure: onFailure) }
+    store.setTestPIN("4821")
+    store.unlockCodes()
+    openSupervised(store)
+    store.start()
+    store.startTrial(view: ViewSize(width: 834, height: 1000)!)
+    store.begin()
+    store.done()
+    var waits = 0
+    while store.live?.stage != .stopped, waits < 1000 {
+        await Task.yield()
+        waits += 1
+    }
+    #expect(store.live?.stage == .stopped && store.homeLocked)
+    store.leave()
+    #expect(store.homeLocked)
+}
+
+@Test @MainActor func theFifthWrongPINStartsADelayThatARelaunchKeeps() async throws {
+    // Detects a PIN sheet that takes any number of wrong PINs, a delay that a relaunch or a second sheet resets, or
+    // a correct PIN that the store accepts during the delay.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let pin = try #require(OperatorPin(pin: "4821", salt: Data(0..<16)))
+    var now = Date(timeIntervalSince1970: 1_800_000_000)
+    var store = try makeStore(root: root)
+    store.wallClock = { now }
+    for _ in 1...4 { #expect(await store.checkPIN(pin, "0000") == .wrong(wait: 0)) }
+    #expect(await store.checkPIN(pin, "0000") == .wrong(wait: 30))
+    #expect(await store.checkPIN(pin, "4821") == .locked(wait: 30))
+
+    // A new store over the same folders stands for a relaunch.
+    store = try makeStore(root: root)
+    store.wallClock = { now }
+    now += 10
+    #expect(store.pinWait() == 20)
+    #expect(await store.checkPIN(pin, "4821") == .locked(wait: 20))
+    now += 20
+    #expect(await store.checkPIN(pin, "0000") == .wrong(wait: 60))
+    now += 59
+    #expect(await store.checkPIN(pin, "4821") == .locked(wait: 1))
+    now += 1
+    #expect(await store.checkPIN(pin, "4821") == .correct)
+    // The correct PIN resets the count, so the next wrong PIN has no delay.
+    #expect(await store.checkPIN(pin, "0000") == .wrong(wait: 0))
+    #expect(try store.storage.pinAttempts().failures == 1)
+    #expect(String(SessionStore.pinWaitMessage(30).characters).hasSuffix("Try again in 1 minute."))
+    #expect(String(SessionStore.pinWaitMessage(61).characters).hasSuffix("Try again in 2 minutes."))
+}
+
+@Test @MainActor func twoPINChecksAtOneTimeAreBothCounted() async throws {
+    // Detects a second PIN check that starts while the first one runs and is not counted, so that a person who
+    // closes and opens the sheet gets more tries than the rule gives.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let pin = try #require(OperatorPin(pin: "4821", salt: Data(0..<16)))
+    let now = Date(timeIntervalSince1970: 1_800_000_000)
+    let store = try makeStore(root: root)
+    store.wallClock = { now }
+    for _ in 1...4 { _ = await store.checkPIN(pin, "0000") }
+    async let first = store.checkPIN(pin, "1111")
+    async let second = store.checkPIN(pin, "4821")
+    let results = await [first, second]
+    // The check that starts second finds the fifth wrong PIN of the first one on storage, whichever starts first.
+    #expect(results.filter { $0 == .locked(wait: 30) }.count == 1)
+}
+
+@Test @MainActor func aClockSetBackGivesOneDelayAndAPINLogThatCannotBeReadGivesNoTry() async throws {
+    // Detects a delay that lasts as long as a clock change, which locks the operator out for days, or a PIN check
+    // that runs when the count of wrong PINs cannot be read.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let pin = try #require(OperatorPin(pin: "4821", salt: Data(0..<16)))
+    var now = Date(timeIntervalSince1970: 1_800_000_000)
+    let store = try makeStore(root: root)
+    store.wallClock = { now }
+    for _ in 1...5 { _ = await store.checkPIN(pin, "0000") }
+    now -= 86_400
+    #expect(store.pinWait() == 30)
+    now += 20
+    #expect(store.pinWait() == 10)
+    now += 10
+    #expect(await store.checkPIN(pin, "4821") == .correct)
+
+    try FileManager.default.removeItem(at: store.storage.pinLog)
+    try FileManager.default.createDirectory(at: store.storage.pinLog, withIntermediateDirectories: true)
+    #expect(store.pinWait() == 900)
+    #expect(await store.checkPIN(pin, "4821") == .locked(wait: 0))
+    #expect(store.notice != nil)
+}
+
+@Test @MainActor func aPINOfAnotherConfigurationDoesNotOpenHomeAndACloseFromReviewKeepsHomeOpen() async throws {
+    // Detects a Home that opens with the PIN of a session whose configuration is not the active one, or an extra
+    // PIN after the operator closes a session from Review.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try makeStore(root: root)
+    let demo = store.contract.demo
+    store.open(opened(participant: "T-0001", configuration: demo, battery: store.contract.battery),
+               configuration: demo, dominant: .right)
+    store.setTestPIN("4821")
+    // The session runs under the demo configuration, which has no PIN, and the active configuration has one.
+    store.operatorTookOver(withPIN: true)
+    #expect(store.homeLocked)
+    store.leave()
+    #expect(store.homeLocked)
+    store.unlockCodes()
+    store.returnToSession()
+    await store.endEarly()
+    #expect(store.live?.stage == .review)
+    store.closeFromReview()
+    #expect(store.live == nil && !store.homeLocked)
 }
