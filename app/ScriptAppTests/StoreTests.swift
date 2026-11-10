@@ -376,10 +376,11 @@ private func answerUntil(_ item: ItemID, in store: SessionStore) async {
     // Detects a crisis list that appears before the flag that caused it is synced to storage.
     let root = try temporaryFolder()
     defer { try? FileManager.default.removeItem(at: root) }
-    let gate = SyncGate()
+    let gate = SyncGate(open: true)
     let store = try makeStore(root: root) { _, _ in GatedSink(gate: gate) }
     try openSelfAtFirstItem(store)
     await answerUntil("phq9-9", in: store)
+    gate.close()
     let answering = Task { await store.answer(1) }
     #expect(await gate.waitForSync())
     #expect(gate.flaggedBeforeSync)
@@ -389,7 +390,210 @@ private func answerUntil(_ item: ItemID, in store: SessionStore) async {
     #expect(store.live?.stage == .flagCrisisList)
 }
 
-@Test @MainActor func homeShowsOnlyTheLastFourCharactersOfACodeUntilThePINUnlocks() throws {
+@Test @MainActor func nothingFollowsAnAnswerUntilItIsOnStorage() async throws {
+    // Detects a screen after a flagged answer that shows while the flag is on its way to storage, a crisis-list
+    // display that the journal records before the list shows, or a second tap that answers the next item unseen.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let gate = SyncGate(open: true)
+    let store = try makeStore(root: root) { _, _ in GatedSink(gate: gate) }
+    try openSelfAtFirstItem(store)
+    await answerUntil("phq9-9", in: store)
+    gate.close()
+    let answering = Task { await store.answer("phq9-9", 1) }
+    #expect(await gate.waitForSync())
+    // The view asks the store to go on while the sync waits, and the participant taps Next again.
+    store.advance()
+    await store.answer("phq9-9", 1)
+    await store.answer("difficulty", 0)
+    #expect(store.currentItem?.item.id == "phq9-9")
+    #expect(store.live?.stage == .working)
+    #expect(gate.appendedWhileHeld.isEmpty)
+    #expect(store.state?.session.safety.crisisListShown == 0)
+    gate.open()
+    await answering.value
+    #expect(store.live?.stage == .flagCrisisList)
+    let safety = try #require(store.state?.session.safety)
+    #expect(safety.flags == 1 && safety.crisisListShown == 1)
+    #expect(store.state?.summary.questionnaires.first?.answered == 9)
+    store.continueAfterCrisisList()
+    #expect(store.currentItem?.item.id == "difficulty")
+}
+
+@Test @MainActor func anOperatorEndWaitsForStorageBeforeTheNextScreen() async throws {
+    // Detects a second tap on End the session, or a return to the participant, that moves the session on while the
+    // flag of the ended block is on its way to storage, so the crisis list that the block needs never shows.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let gate = SyncGate(open: true)
+    let store = try makeStore(root: root) { _, _ in GatedSink(gate: gate) }
+    try openSelfAtFirstItem(store)
+    await store.answer(0)
+    store.operatorTookOver()
+    gate.close()
+    let ending = Task { await store.endEarly() }
+    #expect(await gate.waitForSync())
+    store.returnToParticipant()
+    store.leave()
+    // A second End that the store did not ignore would wait at the gate, so it runs in its own task.
+    let second = Task { await store.endEarly() }
+    for _ in 0..<50 { await Task.yield() }
+    #expect(store.live?.stage == .paused && store.live?.away == false)
+    #expect(store.state?.session.safety.crisisListShown == 0)
+    gate.open()
+    await ending.value
+    await second.value
+    #expect(store.live?.stage == .flagCrisisList)
+    #expect(store.state?.session.safety.flags == 1 && store.state?.session.safety.crisisListShown == 1)
+    #expect(store.state?.summary.questionnaires.count == 1)
+}
+
+@Test @MainActor func aResumeEndsAfterFiveWrongCodesAndARelaunchGivesNoNewTry() async throws {
+    // Detects a resume screen that takes any number of wrong codes, or a count that a relaunch resets, so that a
+    // person without the code can try codes until one continues the session of another participant.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let first = try makeStore(root: root)
+    let demo = first.contract.demo
+    first.open(opened(.selfAdministered, participant: "T-OWNER", configuration: demo, battery: first.contract.battery),
+               configuration: demo, dominant: .left)
+    let id = first.live!.opened.sessionID
+    first.start()
+    try await first.live!.sink.close()
+
+    let second = try makeStore(root: root)
+    second.launch()
+    #expect(second.codeAttemptsLeft == 5)
+    for left in [4, 3, 2] {
+        #expect(!second.confirmCode("T-OTHER"))
+        #expect(second.codeAttemptsLeft == left && second.live?.stage == .confirmCode)
+        #expect(String(second.wrongCodeMessage.characters).hasSuffix("You can try \(left) more times."))
+    }
+    try await second.live!.sink.close()
+
+    let third = try makeStore(root: root)
+    third.launch()
+    #expect(third.live?.stage == .confirmCode && third.codeAttemptsLeft == 2)
+    #expect(!third.confirmCode("T-OTHER"))
+    #expect(String(third.wrongCodeMessage.characters).hasSuffix("You can try 1 more time."))
+    #expect(!third.confirmCode("T-OTHER"))
+    // The session had no questionnaire block, so it closes with no support list.
+    #expect(third.live?.stage == .finished)
+    #expect(!third.confirmCode("T-OWNER"))
+    #expect(third.live?.stage == .finished)
+    let result = try #require(await third.export(id))
+    let saved = try Journal.read(try Data(contentsOf: result.url.appendingPathComponent("journal.jsonl")))
+    #expect(saved.status == .closed && saved.summary.trials.isEmpty)
+}
+
+@Test @MainActor func aCorrectCodeForgetsTheWrongCodesBeforeIt() async throws {
+    // Detects a participant who loses the session after a few typing errors in each of several resumes.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    var store = try makeStore(root: root)
+    let demo = store.contract.demo
+    store.open(opened(.selfAdministered, participant: "T-OWNER", configuration: demo, battery: store.contract.battery),
+               configuration: demo, dominant: .left)
+    store.start()
+    for _ in 1...3 {
+        try await store.live!.sink.close()
+        store = try makeStore(root: root)
+        store.launch()
+        for _ in 1...4 { #expect(!store.confirmCode("T-OWNERS")) }
+        #expect(store.codeAttemptsLeft == 1)
+        #expect(store.confirmCode("T-OWNER"))
+        #expect(store.live?.stage == .ready && store.codeAttemptsLeft == 5)
+    }
+}
+
+@Test @MainActor func aResumeThatEndsAfterWrongCodesShowsTheSupportListWhenTheSessionHadABlock() async throws {
+    // Detects a session with an interrupted questionnaire block that closes after wrong codes with no support list,
+    // or that cannot close because the flag of the block still waits for the list.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let first = try makeStore(root: root)
+    try openSelfAtFirstItem(first, participant: "T-RESUME")
+    let id = first.live!.opened.sessionID
+    await first.answer(0)
+    try await first.live!.sink.close()
+
+    let second = try makeStore(root: root)
+    second.launch()
+    #expect(second.state?.summary.safety.flags == 1)
+    for _ in 1...5 { #expect(!second.confirmCode("T-WRONG")) }
+    #expect(second.live?.stage == .closingCrisisList)
+    second.continueAfterCrisisList()
+    #expect(second.live?.stage == .finished)
+    let result = try #require(await second.export(id))
+    #expect(result.encrypted == false)
+    let saved = try Journal.read(try Data(contentsOf: result.url.appendingPathComponent("journal.jsonl")))
+    #expect(saved.status == .closed)
+    #expect(saved.summary.safety.flags == 1 && saved.summary.safety.crisisListShown == 1)
+}
+
+@Test @MainActor func noTrialStartsWhileTheAppIsInTheBackground() throws {
+    // Detects a trial that starts while the app is in the background, so its time limit runs out before the
+    // participant comes back and the task is lost.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try makeStore(root: root)
+    openSupervised(store)
+    store.start()
+    let view = ViewSize(width: 834, height: 1000)!
+    store.startTrial(view: view)
+    store.begin()
+    store.enterBackground()
+    #expect(store.state?.summary.trials.map(\.outcome) == [.interrupted])
+    store.startTrial(view: view)
+    #expect(store.state?.summary.trials.count == 1)
+    store.becomeActive()
+    store.startTrial(view: view)
+    #expect(store.state?.summary.trials.map(\.outcome) == [.interrupted, .open])
+}
+
+@Test @MainActor func aSelfAdministeredSessionThatStopsAfterABlockStartedShowsTheSupportList() async throws {
+    // Detects a write failure in a self-administered questionnaire block after which the participant, who is alone,
+    // never sees the support list.
+    func stopped(at kind: LineKind) async throws -> LiveSession? {
+        let root = try temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try makeStore(root: root) { url, onFailure in FailingSink(url: url, failAt: kind, onFailure: onFailure) }
+        let config = try store.importConfiguration(try remoteReviewConfigurationData()).get()
+        store.open(opened(.selfAdministered, configuration: config, battery: store.contract.battery),
+                   configuration: config, dominant: .left)
+        store.start()
+        store.runTasks()
+        store.acknowledgeDisclosure()
+        await store.answer(0)
+        var waits = 0
+        while store.live?.stage != .stopped, waits < 1000 {
+            await Task.yield()
+            waits += 1
+        }
+        await store.rebuild?.value
+        return store.live
+    }
+    let inTask = try #require(await stopped(at: .trialBegan))
+    #expect(inTask.stage == .stopped && !inTask.supportListOnStop)
+    let inBlock = try #require(await stopped(at: .response))
+    #expect(inBlock.stage == .stopped && inBlock.supportListOnStop)
+}
+
+@Test @MainActor func aShortParticipantCodeShowsNoCharacterUntilThePINUnlocks() throws {
+    // Detects a mask that shows a code of 3 or 4 characters in full, or a paused screen that shows a code in full
+    // before the PIN.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try makeStore(root: root)
+    #expect(store.shown("P42") == "•••")
+    #expect(store.shown("AB12") == "•••")
+    #expect(store.shown("AB123") == "•••3")
+    #expect(store.shown("SITE-0042") == "•••0042")
+    store.operatorTookOver(withPIN: true)
+    #expect(store.shown("P42") == "P42")
+}
+
+@Test @MainActor func homeMasksAParticipantCodeUntilThePINUnlocks() throws {
     // Detects a Home list that shows each participant code in full to whoever holds the iPad without the PIN.
     let root = try temporaryFolder()
     defer { try? FileManager.default.removeItem(at: root) }
@@ -397,9 +601,9 @@ private func answerUntil(_ item: ItemID, in store: SessionStore) async {
     openSupervised(store, participant: "T-0042")
     store.leave()
     let row = try #require(store.listing.first { $0.participant != nil })
-    #expect(store.title(of: row) == "•••0042")
+    #expect(store.title(of: row) == "•••42")
     store.operatorTookOver()
-    #expect(store.title(of: row) == "•••0042")
+    #expect(store.title(of: row) == "•••42")
     store.operatorTookOver(withPIN: true)
     #expect(store.title(of: row) == "T-0042")
 }
@@ -441,4 +645,110 @@ private func answerUntil(_ item: ItemID, in store: SessionStore) async {
         let review = try #require(config.safety.remoteReview)
         #expect(String(review.disclosure.characters).hasSuffix("within \(words)"), "\(weekdays)")
     }
+}
+
+@Test @MainActor func theDeviceDiagnosticsHoldNoParticipantCodeAndNoSessionIdentifier() throws {
+    // Detects diagnostics that take a participant code or a session identifier off the iPad, or that miss the
+    // storage facts that the device test reads.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = try makeStore(root: root)
+    openSupervised(store, participant: "T-SECRET")
+    let id = store.live!.opened.sessionID.description
+    store.leave()
+    let display = DeviceDiagnostics.Display(widthPoints: 834, heightPoints: 1210, scale: 2, maximumFramesPerSecond: 120,
+                                            voiceOver: false, reduceMotion: false, contentSizeCategory: "L")
+    let name = try DeviceDiagnostics.save(store: store, display: display, at: WallTime(Date(timeIntervalSince1970: 0)),
+                                          freeBytes: 123)
+    #expect(name.hasPrefix("SCRIPT_DIAGNOSTICS_1970") && name.hasSuffix(".json"))
+    let data = try Data(contentsOf: root.appendingPathComponent("Documents/Diagnostics/\(name)"))
+    let text = String(decoding: data, as: UTF8.self).lowercased()
+    #expect(!text.contains("t-secret") && !text.contains(id.lowercased()) && !text.contains(id.prefix(8).lowercased()))
+    let json = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+    #expect(json["format"] as? String == "script.diagnostics")
+    #expect(json["sessions"] as? [String: Int] == ["open": 1])
+    #expect((json["app"] as? [String: String])?["sourceRevision"] == "test")
+    let storage = try #require(json["storage"] as? [String: Any])
+    #expect(storage["freeBytes"] as? Int == 123)
+    let items = try #require(storage["items"] as? [[String: Any]])
+    #expect(items.compactMap { $0["name"] as? String } == ["Sessions", "Staging", "Exports", "Damaged", "Deletions.jsonl",
+                                                          "ExportIndex.jsonl", "ResumeAttempts.jsonl"])
+    #expect(items.first?["excludedFromBackup"] as? Bool == true)
+}
+
+@Test @MainActor func aTakeoverDuringAFlaggedAnswerStillShowsTheCrisisListOnTheReturn() async throws {
+    // Detects an operator takeover while a flagged answer is on its way to storage that leaves the participant, after
+    // the return, at an item that takes no answer, because the crisis list for the flag never showed.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let gate = SyncGate(open: true)
+    let store = try makeStore(root: root) { _, _ in GatedSink(gate: gate) }
+    try openSelfAtFirstItem(store)
+    await answerUntil("phq9-9", in: store)
+    gate.close()
+    let answering = Task { await store.answer("phq9-9", 2) }
+    #expect(await gate.waitForSync())
+    store.operatorTookOver()
+    #expect(store.live?.stage == .paused)
+    gate.open()
+    await answering.value
+    #expect(store.live?.stage == .paused)
+    store.returnToParticipant()
+    #expect(store.live?.stage == .flagCrisisList)
+    #expect(store.state?.session.safety.crisisListShown == 1)
+    store.continueAfterCrisisList()
+    #expect(store.currentItem?.item.id == "difficulty")
+    await store.answer(0)
+    #expect(store.state?.summary.questionnaires.first?.outcome == .completed)
+}
+
+@Test @MainActor func theItemScreenStaysWhenATaskFollowsTheBlock() async throws {
+    // Detects a task screen that shows, and a trial that starts with its time limit, while the last answer of a
+    // block before the tasks is on its way to storage.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let gate = SyncGate(open: true)
+    let store = try makeStore(root: root) { _, _ in GatedSink(gate: gate) }
+    let url = Bundle.main.url(forResource: "demo", withExtension: "json")!
+    var file = try JSONSerialization.jsonObject(with: try Data(contentsOf: url)) as! [String: Any]
+    file["questionnaires"] = [["administration": "supervised", "ageBand": "18-24", "position": "beforeTasks",
+                               "instruments": ["gad7"]]]
+    let config = try store.importConfiguration(try JSONSerialization.data(withJSONObject: file)).get()
+    store.open(opened(configuration: config, battery: store.contract.battery), configuration: config, dominant: .right)
+    store.start()
+    let last = try #require(store.currentItem?.instrument.items.last?.id)
+    await answerUntil(last, in: store)
+    gate.close()
+    let answering = Task { await store.answer(last, 0) }
+    #expect(await gate.waitForSync())
+    #expect(store.state?.summary.questionnaires.first?.outcome == .completed)
+    #expect(store.currentTask == nil && store.currentItem?.item.id == last)
+    store.startTrial(view: ViewSize(width: 834, height: 1000)!)
+    #expect(store.state?.session.trials.isEmpty == true && gate.appendedWhileHeld.isEmpty)
+    gate.open()
+    await answering.value
+    #expect(store.currentItem == nil && store.currentTask != nil)
+    store.startTrial(view: ViewSize(width: 834, height: 1000)!)
+    #expect(store.state?.session.trials.count == 1)
+}
+
+@Test @MainActor func aRelaunchAfterTheFifthWrongCodeGivesNoResume() async throws {
+    // Detects an app that stops after the fifth wrong code is on storage and before the session ends, and then
+    // takes a sixth code at the next launch.
+    let root = try temporaryFolder()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let first = try makeStore(root: root)
+    let demo = first.contract.demo
+    first.open(opened(.selfAdministered, participant: "T-OWNER", configuration: demo, battery: first.contract.battery),
+               configuration: demo, dominant: .left)
+    let id = first.live!.opened.sessionID
+    first.start()
+    try await first.live!.sink.close()
+    for _ in 1...5 { try first.storage.recordResume(of: id, wrong: true) }
+
+    let second = try makeStore(root: root)
+    second.launch()
+    #expect(second.live?.stage == .finished)
+    #expect(!second.confirmCode("T-OWNER"))
+    #expect(second.state?.status == .closed)
 }

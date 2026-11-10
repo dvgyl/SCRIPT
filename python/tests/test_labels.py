@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from conftest import fixture_lines
 
@@ -106,3 +108,54 @@ def test_safety_flag_count_counts_endorsed_skipped_and_unreached_items(name: str
     rec = fold(fixture_lines(name))
     assert safety_flag_count(rec) == flags
     assert {label.scale for label in labels(rec)} == {"total"}
+
+
+def test_last_response_and_later_skip_control_score() -> None:
+    # Detects a repeated response that does not replace the earlier answer, including a later skip.
+    from dataclasses import replace
+
+    rec = session("gad7", {})
+    block = rec.questionnaires[0]
+    original = block.responses[0]
+    changed = replace(original, value=3)
+    for value, expected in ((changed, 3), (replace(changed, value=None), None)):
+        repeated = replace(block, responses=(*block.responses, changed, value))
+        result = labels(replace(rec, questionnaires=(repeated,)))[0].score
+        assert refused(result) if expected is None else result == expected
+
+
+def test_declined_block_with_all_answers_has_score() -> None:
+    # Detects a fully answered declined block that loses its score or its outcome.
+    from dataclasses import replace
+
+    rec = session("gad7", {"gad7-1": 2})
+    block = replace(rec.questionnaires[0], outcome=BlockOutcome.DECLINED)
+    [label] = labels(replace(rec, questionnaires=(block,)))
+    assert label.score == 2
+    assert label.outcome == BlockOutcome.DECLINED
+
+
+def test_response_outside_options_is_refused() -> None:
+    # Detects a score that includes a response outside the item options.
+    [label] = labels(session("gad7", {"gad7-1": 999}))
+    assert isinstance(label.score, Refusal)
+    assert label.score.code == "undefined"
+
+
+def test_csv_error_hides_score_cell(tmp_path: Path) -> None:
+    # Detects a CSV error message that contains the score cell text.
+    import csv
+
+    from scriptkin.labels import read_labels_csv, write_labels_csv
+
+    path = tmp_path / "labels.csv"
+    write_labels_csv(labels(session("gad7", {})), path)
+    with path.open() as stream:
+        rows = list(csv.reader(stream))
+    rows[1][rows[0].index("score")] = "PRIVATE-SCORE-CELL"
+    with path.open("w", newline="") as stream:
+        csv.writer(stream).writerows(rows)
+    with pytest.raises(ValueError) as error:
+        read_labels_csv(path)
+    assert "PRIVATE-SCORE-CELL" not in str(error.value)
+    assert "2" in str(error.value) and "score" in str(error.value)

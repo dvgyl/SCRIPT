@@ -65,6 +65,21 @@ private func corrections(_ events: [Event]) -> [Correction] {
     #expect(d.state.summary.trials[0].corrections == 1)
 }
 
+@Test func aSampleAfterACorrectionOfItsKeyKeepsItsOwnEstimate() throws {
+    // Detects an unresolved count that also counts the samples that a correction resolved, when a later sample has
+    // the same (contact, update) key. The Python fold counts each sample by its own pending bits.
+    let config = try Contract.demoConfiguration()
+    let opened = makeOpened(configuration: config, battery: try Contract.battery())
+    var d = try Driver(opened: opened, rules: try rules(for: opened, configuration: config))
+    try d.run(.startTrial(Driver.plan("loops"), t: 101))
+    try d.write(d.recorder.pen([reading(3, 1, .began, pending: [.force], update: 5)]))
+    try d.write(d.recorder.estimatesUpdated([reading(3, 1, .moved, update: 5)], arrived: 1.005))
+    #expect(d.state.summary.trials[0].unresolved == 0)
+    try d.write(d.recorder.pen([reading(3, 1.01, .moved, pending: [.force], update: 5), reading(3, 1.02, .ended)]))
+    #expect(d.state.summary.trials[0].unresolved == 1)
+    #expect(d.state.summary.trials[0].corrections == 1)
+}
+
 @Test func anUnmatchedCorrectionHasNoContactKey() throws {
     // Detects an unmatched correction written with a guessed contact, which the library would join to a wrong sample.
     var recorder = InkRecorder(plan: pro)

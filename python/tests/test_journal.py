@@ -14,9 +14,9 @@ from conftest import fixture_lines as lines
 from jsonschema import Draft202012Validator
 
 from scriptkin import Channel, PenState, bench
-from scriptkin.contract import FORCE, JournalBuilder
+from scriptkin.contract import FORCE, JournalBuilder, encode_line
 from scriptkin.formats.export import load_export, read_journal
-from scriptkin.formats.journal import JournalError, fold, summarize
+from scriptkin.formats.journal import JournalError, fold, replay, summarize
 from scriptkin.recording import (
     BenchContext,
     BenchRunContext,
@@ -153,7 +153,7 @@ def test_bench_header_and_run_facts_reach_the_recording() -> None:
     context = rec.context
     assert context is not None and context.purpose == "bench" and context.tablet is None
     assert context.subject == BenchContext(
-        "P", "M1", DocumentRef("nextdraw-8511", "unknown"), bench.PROTOCOL_VERSION, bench.PROTOCOL_SHA256
+        "P", "M1", DocumentRef("nextdraw-8511", "unknown"), bench.PROTOCOL_VERSION, bench.protocol_sha256()
     )
     assert context.device_asset == "IPAD-02"
     assert [t.context for t in rec.trials] == [
@@ -403,7 +403,18 @@ def test_correction_resolves_every_sample_with_its_pending_key(corrected: bool) 
     assert stroke.channels[Channel.FORCE].tolist() == ([0.5, 0.5, 0.31] if corrected else [0.31] * 3)
 
 
-@pytest.mark.parametrize("payload", [b'{"kind":', b"[]\n", b'{"seq":0,"kind":"alien"}\n', b"{}", b"{}\r\n"])
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b'{"kind":',
+        b"[]\n",
+        b'{"seq":0,"kind":"alien"}\n',
+        b"{}",
+        b"{}\r\n",
+        (FIXTURES / "journal" / "basic.jsonl").read_bytes().splitlines(keepends=True)[0][:-1],
+        (FIXTURES / "journal" / "basic.jsonl").read_bytes().splitlines(keepends=True)[0][:-1] + b"\r\n",
+    ],
+)
 def test_i1_rejects_invalid_lines(payload: bytes) -> None:
     # Detects acceptance of invalid JSON, objects, kinds, or LF endings.
     with pytest.raises(JournalError, match="I1, line 0"):
@@ -687,3 +698,50 @@ def test_hover_stroke_survives_interleaved_correction() -> None:
     rows[-1]["counts"]["hover"] += 1
     air = [s for s in fold(rows).trials[1].strokes if s.state == "in_air"]
     assert len(air) == 1 and len(air[0].t) == 2
+
+
+@pytest.mark.parametrize("field,value", [("x", 10**399), ("contact", 2**63), ("contact", -(2**63) - 1)])
+def test_reader_refuses_large_integers(field: str, value: int) -> None:
+    # Detects an integer overflow or an integer outside the Swift signed range.
+    from scriptkin.formats.checks import number
+
+    if field == "x":
+        assert not number(value)
+    rows = lines()
+    next(r for r in rows if r["kind"] == "sample")[field] = value
+    with pytest.raises(JournalError) as error:
+        fold([encode_line(r) for r in rows])
+    assert error.value.rule == "I1"
+
+
+@pytest.mark.parametrize("case", ["bom", "nan", "infinity", "surrogate", "integer"])
+def test_raw_json_decoder_matches_swift(case: str) -> None:
+    # Detects a raw JSON value that the Swift decoder refuses but Python accepts.
+    raw = encode_line(lines()[0])
+    if case == "bom":
+        raw = b"\xef\xbb\xbf" + raw
+    else:
+        value = {
+            "nan": b"NaN",
+            "infinity": b"Infinity",
+            "surrogate": b'"\\udc00"',
+            "integer": str(2**63).encode(),
+        }[case]
+        raw = raw[:-2] + b',"unknown":' + value + b"}\n"
+    with pytest.raises(JournalError) as error:
+        replay([raw], closed=False)
+    assert error.value.rule == "I1"
+
+
+@pytest.mark.parametrize("kind", ["trialStarted", "questionnaireStarted"])
+def test_first_index_must_be_zero(kind: str) -> None:
+    # Detects a first trial or block whose index skips earlier indices.
+    rows = lines("supervised_minor_safety")
+    index = next(i for i, row in enumerate(rows) if row["kind"] == kind)
+    if kind == "trialStarted":
+        rows[index]["trial"]["index"] = 5
+    else:
+        rows[index]["block"] = 5
+    with pytest.raises(JournalError) as error:
+        replay(rows[: index + 1], closed=False)
+    assert error.value.rule == "I6"

@@ -71,7 +71,7 @@ def test_bench_facts_reach_the_recording() -> None:
         assert isinstance(subject, BenchContext) and subject.role == "W"
         assert (subject.protocol_version, subject.protocol_sha256) == (
             bench.PROTOCOL_VERSION,
-            bench.PROTOCOL_SHA256,
+            bench.protocol_sha256(),
         )
         assert context.tablet is not None and context.scale == TABLET_SCALE
         assert (rec.device.model, rec.device.input) == (context.tablet.model, "tablet")

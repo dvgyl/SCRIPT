@@ -88,6 +88,12 @@ extension SessionStore {
         }
     }
 
+    /// Answers the item on the screen, as a tap on Next does.
+    func answer(_ value: Int?) async {
+        guard let item = currentItem else { return }
+        await answer(item.item.id, value)
+    }
+
     /// Answers every item of the open blocks: the value in `values`, else 0.
     func answerBlocks(_ values: [ItemID: Int?] = [:]) async {
         var guardCount = 0
@@ -111,8 +117,9 @@ final class MemorySecret: DeviceSecret {
     }
 }
 
-/// A sink that writes like the journal writer and then fails: the append after `failAfter` writes half of its
-/// bytes, as a full disk does, and reports the failure; every later append throws.
+/// A sink that writes like the journal writer and then fails: the append after `failAfter`, or the first append with
+/// a line of the kind `failAt`, writes half of its bytes, as a full disk does, and reports the failure; every later
+/// append throws.
 final class FailingSink: JournalSink {
     private struct State {
         var appends = 0
@@ -121,12 +128,15 @@ final class FailingSink: JournalSink {
 
     private let url: URL
     private let failAfter: Int
+    private let failAt: LineKind?
     private let onFailure: @Sendable (JournalWriter.WriteError) -> Void
     private let state = Mutex(State())
 
-    init(url: URL, failAfter: Int, onFailure: @escaping @Sendable (JournalWriter.WriteError) -> Void) {
+    init(url: URL, failAfter: Int = .max, failAt: LineKind? = nil,
+         onFailure: @escaping @Sendable (JournalWriter.WriteError) -> Void) {
         self.url = url
         self.failAfter = failAfter
+        self.failAt = failAt
         self.onFailure = onFailure
         FileManager.default.createFile(atPath: url.path, contents: nil)
     }
@@ -137,7 +147,7 @@ final class FailingSink: JournalSink {
         let fails = try state.withLock { state -> Bool in
             if state.failed { throw JournalWriter.WriteError.io(EIO) }
             state.appends += 1
-            state.failed = state.appends > failAfter
+            state.failed = state.appends > failAfter || entries.contains { $0.event.kind == failAt }
             return state.failed
         }
         let handle = try FileHandle(forWritingTo: url)
@@ -151,37 +161,51 @@ final class FailingSink: JournalSink {
     func close() async throws {}
 }
 
-/// Holds every `sync()` of a `GatedSink` until the test opens it, and records whether a `safetyFlagged` line was
-/// appended before the first sync.
+/// Holds every `sync()` of a `GatedSink` while the gate is closed, and records the line kinds that were appended
+/// before the first held sync and while a sync was held.
 final class SyncGate: Sendable {
     private struct State {
-        var open = false
-        var syncs = 0
-        var flagged = false
-        var flaggedBeforeSync = false
+        var open: Bool
+        var held = 0
+        var appended: [LineKind] = []
+        var beforeHeldSync: [LineKind]?
+        var whileHeld: [LineKind] = []
         var waiting: [CheckedContinuation<Void, Never>] = []
     }
 
-    private let state = Mutex(State())
+    private let state: Mutex<State>
 
-    var flaggedBeforeSync: Bool { state.withLock { $0.flaggedBeforeSync } }
+    init(open: Bool = false) { state = Mutex(State(open: open)) }
+
+    /// True when a `safetyFlagged` line was appended before the first sync that the gate held.
+    var flaggedBeforeSync: Bool { state.withLock { $0.beforeHeldSync?.contains(.safetyFlagged) == true } }
+    /// The kinds of the lines that were appended while the gate held a sync.
+    var appendedWhileHeld: [LineKind] { state.withLock { $0.whileHeld } }
 
     func appended(_ kinds: [LineKind]) {
         state.withLock { state in
-            if kinds.contains(.safetyFlagged) { state.flagged = true }
+            state.appended += kinds
+            if !state.waiting.isEmpty { state.whileHeld += kinds }
         }
     }
 
     func sync() async {
         await withCheckedContinuation { (k: CheckedContinuation<Void, Never>) in
             let passes = state.withLock { state -> Bool in
-                if state.syncs == 0 { state.flaggedBeforeSync = state.flagged }
-                state.syncs += 1
-                if !state.open { state.waiting.append(k) }
+                if !state.open {
+                    if state.held == 0 { state.beforeHeldSync = state.appended }
+                    state.held += 1
+                    state.waiting.append(k)
+                }
                 return state.open
             }
             if passes { k.resume() }
         }
+    }
+
+    /// Closes the gate, so that the next sync waits.
+    func close() {
+        state.withLock { $0.open = false }
     }
 
     func open() {
@@ -196,7 +220,7 @@ final class SyncGate: Sendable {
     /// True once a sync has arrived. It gives up after many yields, so a store that never syncs fails the test.
     func waitForSync() async -> Bool {
         for _ in 0..<1000 {
-            if state.withLock({ $0.syncs > 0 }) { return true }
+            if state.withLock({ $0.held > 0 }) { return true }
             await Task.yield()
         }
         return false

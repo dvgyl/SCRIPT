@@ -239,5 +239,16 @@ def validate(config: dict[str, Any]) -> list[str]:
             problems.append("a study configuration needs export.recipientPublicKey")
         if config["operatorPin"] is None:
             problems.append("a study configuration needs operatorPin")
+    pin = config["operatorPin"]
+    if pin is not None:
+        try:
+            salt = base64.b64decode(pin["salt"], validate=True)
+        except (ValueError, binascii.Error):
+            problems.append("operatorPin.salt is not valid padded base64")
+        else:
+            if len(salt) < 16:
+                problems.append("operatorPin.salt needs at least 16 bytes")
+        if pin["iterations"] > 4294967295:
+            problems.append("operatorPin.iterations exceeds 4294967295")
     problems += _key_id_problems(config["export"])
     return problems

@@ -17,7 +17,7 @@ struct PausedScreen: View {
             List {
                 if let person = live.opened.person {
                     Section {
-                        LabeledContent("Participant", value: person.participant.rawValue)
+                        LabeledContent("Participant", value: store.shown(person.participant))
                         LabeledContent("Administration") { Text(person.administration.name) }
                     }
                 }
@@ -28,6 +28,7 @@ struct PausedScreen: View {
                         .accessibilityIdentifier("endSession")
                     Button("Leave the session open and go to Home", action: store.leave)
                 }
+                .disabled(store.endingEarly)
             }
             .navigationTitle("Session paused")
         }

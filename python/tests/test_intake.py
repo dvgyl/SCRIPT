@@ -11,7 +11,7 @@ import pytest
 from conftest import FIXTURES, fixture_lines, write_encrypted_export, write_export
 
 from scriptkin.contract import encode_line, manifest_bytes
-from scriptkin.formats.export import read_journal
+from scriptkin.formats.export import read_journal, verify_export
 from scriptkin.intake import intake
 
 KEY = bytes(range(1, 33))
@@ -299,3 +299,140 @@ def test_the_app_damaged_package_is_filed_for_review(tmp_path: Path) -> None:
     expected = (FIXTURES / "recovery" / "damaged_interior.jsonl").read_bytes()
     assert (receipt.result, receipt.encrypted, receipt.reason) == ("damaged", True, "Damage at line 3.")
     assert (store / "damaged" / receipt.export_sha256[:16] / "journal.jsonl").read_bytes() == expected
+
+
+@pytest.mark.parametrize("encryption", ["x", {}])
+def test_malformed_encryption_is_quarantined(tmp_path: Path, encryption: Any) -> None:
+    # Detects malformed encryption metadata that stops intake before the next export.
+    folder = tmp_path / "in" / "a"
+    write_export(folder, fixture_lines())
+    path = folder / "manifest.json"
+    manifest = json.loads(path.read_bytes())
+    manifest["encryption"] = encryption
+    path.write_text(json.dumps(manifest))
+    write_export(tmp_path / "in" / "b", fixture_lines())
+    report = intake([tmp_path / "in"], tmp_path / "store")
+    assert [r.result for r in report.receipts] == ["quarantined", "accepted"]
+    assert report.receipts[0].reason is not None
+    assert report.receipts[0].reason.startswith("I5")
+
+
+def test_unexpected_verification_error_is_contained(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Detects an unexpected verification exception that stops the next export or exposes its message.
+    import scriptkin.intake as module
+
+    for name in ("a", "b"):
+        write_export(tmp_path / "in" / name, fixture_lines())
+    calls = 0
+
+    def verify(*args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("PRIVATE-CELL")
+        return verify_export(*args, **kwargs)
+
+    monkeypatch.setattr(module, "verify_export", verify)
+    report = intake([tmp_path / "in"], tmp_path / "store")
+    assert [r.result for r in report.receipts] == ["quarantined", "accepted"]
+    assert report.receipts[0].reason == "RuntimeError"
+
+
+def test_session_case_conflict_keeps_both_copies(tmp_path: Path) -> None:
+    # Detects session identifiers with different letter case that replace an accepted journal.
+    rows = fixture_lines()
+    write_export(tmp_path / "in" / "a", rows)
+    rows[0]["sessionID"] = rows[0]["sessionID"].lower()
+    rows[0]["participant"] = "P9999"
+    write_export(tmp_path / "in" / "b", rows)
+    report = intake([tmp_path / "in"], tmp_path / "store")
+    assert [r.result for r in report.receipts] == ["accepted", "conflict"]
+    assert len(list((tmp_path / "store" / "quarantine").glob("*/journal.jsonl"))) == 2
+
+
+def test_unlogged_session_folder_is_preserved(tmp_path: Path) -> None:
+    # Detects replacement of a session folder that has no intake log entry.
+    rows = fixture_lines()
+    store = tmp_path / "store"
+    write_export(store / "sessions" / rows[0]["sessionID"], rows)
+    rows[0]["participant"] = "P9999"
+    write_export(tmp_path / "in", rows)
+    assert intake([tmp_path / "in"], store).receipts[0].result == "conflict"
+    assert len(list((store / "quarantine").glob("*/journal.jsonl"))) == 2
+
+
+@pytest.mark.parametrize("manifest", [b"{", b'{"sessionID":"FFFFFFFF-0000-4000-8000-000000000000"}'])
+def test_store_copies_finds_journal_identifier(tmp_path: Path, manifest: bytes) -> None:
+    # Detects a quarantine copy that withdrawal cannot find by its journal identifier.
+    from scriptkin.intake import store_copies
+
+    rows = fixture_lines()
+    folder = tmp_path / "in"
+    write_export(folder, rows)
+    (folder / "manifest.json").write_bytes(manifest)
+    store = tmp_path / "store"
+    intake([folder], store)
+    copies = store_copies(store, [rows[0]["sessionID"].lower(), "FFFFFFFF-0000-4000-8000-000000000000"])
+    assert len(copies[rows[0]["sessionID"]]) == 1
+    if manifest != b"{":
+        assert copies[rows[0]["sessionID"]] == copies["FFFFFFFF-0000-4000-8000-000000000000"]
+    assert copies["unidentified"] == []
+
+
+def test_store_copies_lists_unidentified_copy(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # Detects an unreadable quarantine copy omitted from the withdrawal copy list.
+    from scriptkin.cli import main
+    from scriptkin.intake import store_copies
+
+    folder = tmp_path / "in"
+    folder.mkdir()
+    (folder / "manifest.json").write_bytes(b"{")
+    (folder / "journal.jsonl.hpke").write_bytes(b"unreadable")
+    store = tmp_path / "store"
+    intake([folder], store)
+    [copy] = store_copies(store, [fixture_lines()[0]["sessionID"]])["unidentified"]
+    assert json.loads((copy / "reason.json").read_bytes())["sessionID"] is None
+    assert main(["store-copies", str(store), fixture_lines()[0]["sessionID"]]) == 0
+    assert str(copy) in capsys.readouterr().out
+
+
+def test_store_copies_includes_accepted_and_damaged_folders(tmp_path: Path) -> None:
+    # Detects stored accepted or damaged copies omitted from the withdrawal copy list.
+    from scriptkin.intake import store_copies
+
+    rows = fixture_lines()
+    session = rows[0]["sessionID"]
+    for name in ("a", "b"):
+        folder = tmp_path / "in" / name
+        write_export(folder, rows)
+        if name == "b":
+            manifest = json.loads((folder / "manifest.json").read_bytes())
+            manifest["damaged"] = {"line": 2}
+            (folder / "manifest.json").write_text(json.dumps(manifest))
+    store = tmp_path / "store"
+    report = intake([tmp_path / "in"], store)
+    assert [r.result for r in report.receipts] == ["accepted", "damaged"]
+    copies = store_copies(store, [session])
+    assert set(copies[session]) == {
+        store / "sessions" / session,
+        store / "damaged" / report.receipts[1].export_sha256[:16],
+    }
+    assert copies["unidentified"] == []
+
+
+def test_encrypted_mismatch_has_receipts_for_both_identifiers(tmp_path: Path) -> None:
+    # Detects a decrypted journal copy omitted from withdrawal under its own session identifier.
+    from conftest import write_encrypted_export
+
+    from scriptkin.intake import store_copies
+
+    rows = fixture_lines()
+    session = rows[0]["sessionID"]
+    claimed = "FFFFFFFF-0000-4000-8000-000000000000"
+    key = bytes(range(32))
+    source, store = tmp_path / "in", tmp_path / "store"
+    write_encrypted_export(source, b"".join(map(encode_line, rows)), claimed, key)
+    assert intake([source], store, private_key=key).receipts[0].result == "quarantined"
+    copies = store_copies(store, [session, claimed])
+    assert len(copies[session]) == 1
+    assert copies[session] == copies[claimed]

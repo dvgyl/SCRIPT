@@ -5,10 +5,11 @@ a motion of one bench task at one speed, with or without a fault. It goes into `
 Both captures bundle the programs file, and the decider checks each run against it. The study script
 `python/studies/bench_programs.py` imports the designs from here and computes their move lists.
 
-The programs and the tasks are final for the build (protocol 1.2, section 5). `PROTOCOL_SHA256` is a
-placeholder until the protocol lock. The trajectory digest of a program is the SHA-256 of its controller
-file under `bench/programs/` (section 2.4). That folder exists from step 4 of the lock (section 14).
-Until then, each trajectory digest is the SHA-256 of a placeholder text that names the program.
+The programs and the tasks are final for the build (protocol 1.2, section 5). The trajectory digest of a
+program is the SHA-256 of its controller file under `bench/programs/` (section 2.4). Until that file
+exists, the digest is the SHA-256 of a placeholder text that names the program. The protocol digest is
+the SHA-256 of `docs/BENCH_PROTOCOL.md` from the time that a controller file exists, and 64 zeros before
+(`protocol_sha256`). So `scriptkin contract regenerate` in step 4 of the lock (section 14) writes both.
 To add a program, add a row to `MAIN`. Its task follows from its geometry and scale. A new geometry
 needs one row in `_TASK_OF_GEOMETRY` here and one figure function in `battery.FIGURES`.
 """
@@ -23,8 +24,10 @@ from pathlib import Path
 from typing import Any, Literal
 
 PROTOCOL_VERSION = "1.2"
-# Provisional. At the protocol lock, this becomes the SHA-256 of docs/BENCH_PROTOCOL.md.
-PROTOCOL_SHA256 = "0" * 64
+PLACEHOLDER_SHA256 = "0" * 64
+"""The protocol digest of a programs file that no controller file stands behind."""
+PROTOCOL_FILE = Path(__file__).resolve().parents[4] / "docs" / "BENCH_PROTOCOL.md"
+"""The bench protocol of the repository."""
 PROGRAM_FOLDER = Path(__file__).resolve().parents[4] / "bench" / "programs"
 """The move lists and the controller files of the repository (section 15)."""
 
@@ -138,6 +141,18 @@ def registered_digests() -> dict[str, str]:
     return translated_digests(PROGRAM_FOLDER)
 
 
+@functools.cache
+def protocol_sha256() -> str:
+    """The protocol digest of the programs file: the SHA-256 of `docs/BENCH_PROTOCOL.md`.
+
+    Before a controller file exists under `bench/programs/`, it is the placeholder of 64 zeros, so an edit
+    of the protocol text changes no contract file. The motion qualification and the pilot execute
+    controller files, so from then on each bench journal names the protocol text of its build."""
+    if not registered_digests():
+        return PLACEHOLDER_SHA256
+    return hashlib.sha256(PROTOCOL_FILE.read_bytes()).hexdigest()
+
+
 def trajectory_sha256(program_id: str) -> str:
     """The trajectory digest of one program: the SHA-256 of its controller file under `bench/programs/`.
 
@@ -157,7 +172,7 @@ def programs() -> dict[str, Any]:
         if p.base is not None and p.base not in main_ids:
             raise KeyError(p.base)
     return {
-        "protocol": {"version": PROTOCOL_VERSION, "sha256": PROTOCOL_SHA256},
+        "protocol": {"version": PROTOCOL_VERSION, "sha256": protocol_sha256()},
         "programs": [
             {
                 "id": p.id,

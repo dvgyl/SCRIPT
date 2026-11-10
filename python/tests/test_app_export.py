@@ -107,7 +107,7 @@ def test_bench_export_is_plaintext_and_keeps_every_bench_fact() -> None:
         context = recording.context
         assert context is not None and context.purpose == "bench" and context.tablet is None
         assert context.subject == BenchContext(
-            "P", "M2", DocumentRef("nextdraw-8511", "2.4"), bench.PROTOCOL_VERSION, bench.PROTOCOL_SHA256
+            "P", "M2", DocumentRef("nextdraw-8511", "2.4"), bench.PROTOCOL_VERSION, bench.protocol_sha256()
         )
         assert context.device_asset == "IPAD-01"
         assert [t.context for t in recording.trials] == [

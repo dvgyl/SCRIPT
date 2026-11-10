@@ -452,6 +452,8 @@ extension Manifest.Facts {
 ///     <applicationSupport>/Deletions.jsonl         one line for each withdrawal
 ///     <applicationSupport>/ExportIndex.jsonl       the keyed hash of the participant code of each export name,
 ///                                                  without the bench exports, which name no person
+///     <applicationSupport>/ResumeAttempts.jsonl    one line for each wrong code on the resume screen of a
+///                                                  self-administered session, and for each correct one
 ///     <documents>/Exports/<name>/                  verified exports, visible in Files
 public struct Storage: Sendable {
     public let sessions: URL
@@ -462,8 +464,12 @@ public struct Storage: Sendable {
     /// One line for each export: its name and `participantHMAC`. An export name holds no participant code, and an
     /// encrypted export cannot be read on the device, so withdrawal finds a participant's exports here.
     public let exportIndex: URL
+    /// One line for each code that a person typed to resume a self-administered session: the session identifier and
+    /// whether the code was wrong. It never holds a code. The count of wrong codes must outlive the app process,
+    /// or a relaunch would give new attempts.
+    public let resumeLog: URL
     /// The key of `participantHMAC` in the deletion log.
-    let deviceSecret: any DeviceSecret
+    public let deviceSecret: any DeviceSecret
 
     /// The fault-injection seam. A test returns true for a step to stop there: `publish` and `reconcile` throw as a
     /// crash would, and `JournalWriter` fails a write after half of its bytes, or an fsync, with `EIO`.
@@ -474,6 +480,7 @@ public struct Storage: Sendable {
         case stagingCleared, journalStaged, manifestWritten, stagedSynced, stagedVerified, indexed, renamed, sourceRemoved
         case leftoverRemoved, movedToDamaged, recoveryStaged, recoveryCommitted, staleStagingRemoved
         case journalWrite, journalSync
+        case withdrawalItemRemoved
     }
 
     struct InjectedCrash: Error, Equatable {
@@ -517,6 +524,7 @@ public struct Storage: Sendable {
         staging = applicationSupport.appendingPathComponent("Staging", isDirectory: true)
         deletionLog = applicationSupport.appendingPathComponent("Deletions.jsonl")
         exportIndex = applicationSupport.appendingPathComponent("ExportIndex.jsonl")
+        resumeLog = applicationSupport.appendingPathComponent("ResumeAttempts.jsonl")
         exports = documents.appendingPathComponent("Exports", isDirectory: true)
         damaged = applicationSupport.appendingPathComponent("Damaged", isDirectory: true)
         self.deviceSecret = deviceSecret
@@ -968,6 +976,57 @@ public struct Storage: Sendable {
         public let unreadable: [URL]
     }
 
+    /// What this device holds for one participant code.
+    private struct Copies {
+        /// The sessions of the journals, exports, and packages of the code.
+        var ids = Set<SessionID>()
+        /// The journals, damaged journals, staging folders, exports, and damaged packages of the code.
+        var owned: [URL] = []
+        /// Every `*.recovering` file, which is a disposable copy of a journal of any participant.
+        var recovering: [URL] = []
+        /// Journals whose first line does not decode, so they name no participant.
+        var unreadable: [URL] = []
+    }
+
+    /// Finds the copies of one participant code. A journal or a damaged journal names its code in its first line.
+    /// An export or a package is found by the export index, by the export name of a journal of the code, and by the
+    /// package name of a damaged journal of the code. The last name finds a package that a crash left in `Staging/`
+    /// before the export index had it.
+    private func copies(of participant: ParticipantCode, mac: String) throws -> Copies {
+        var found = Copies()
+        var names = try indexedNames(participantHMAC: mac)
+        for folder in [sessions, damaged] {
+            for file in try contents(of: folder) {
+                switch file.pathExtension {
+                case "recovering":
+                    found.recovering.append(file)
+                case "jsonl":
+                    guard let opened = Self.firstLine(of: file) else {
+                        found.unreadable.append(file)
+                        continue
+                    }
+                    guard opened.participant == participant else { continue }
+                    found.ids.insert(opened.sessionID)
+                    names.insert(opened.exportName)
+                    if folder == damaged { names.insert(Self.damagedExportName(file.lastPathComponent)) }
+                    found.owned.append(file)
+                default:
+                    continue
+                }
+            }
+        }
+        for folder in [staging, exports] {
+            for export in try contents(of: folder) where names.contains(export.lastPathComponent) {
+                if let manifest = try? Self.readManifest(export, session: nil),
+                   let uuid = UUID(uuidString: manifest.sessionID) {
+                    found.ids.insert(SessionID(uuid))
+                }
+                found.owned.append(export)
+            }
+        }
+        return found
+    }
+
     /// Deletes every journal, staging folder, export, and damaged journal of one participant code on this device,
     /// and every `*.recovering` file, which is a disposable copy of a journal. It first appends one line to the
     /// deletion log: the time, the HMAC-SHA256 of the code with the device secret, and the session identifiers.
@@ -977,39 +1036,8 @@ public struct Storage: Sendable {
         try guarded {
             try makeDirectories()
             let mac = try participantHMAC(participant).hex
-            var ids = Set<SessionID>()
-            var targets: [URL] = []
-            var unreadable: [URL] = []
-            var names = try indexedNames(participantHMAC: mac)
-            for folder in [sessions, damaged] {
-                for file in try contents(of: folder) {
-                    switch file.pathExtension {
-                    case "recovering":
-                        targets.append(file)
-                    case "jsonl":
-                        guard let opened = Self.firstLine(of: file) else {
-                            unreadable.append(file)
-                            continue
-                        }
-                        guard opened.participant == participant else { continue }
-                        ids.insert(opened.sessionID)
-                        names.insert(opened.exportName)
-                        targets.append(file)
-                    default:
-                        continue
-                    }
-                }
-            }
-            for folder in [staging, exports] {
-                for export in try contents(of: folder) where names.contains(export.lastPathComponent) {
-                    if let manifest = try? Self.readManifest(export, session: nil),
-                       let uuid = UUID(uuidString: manifest.sessionID) {
-                        ids.insert(SessionID(uuid))
-                    }
-                    targets.append(export)
-                }
-            }
-            let sorted = ids.sorted { $0.description < $1.description }
+            let found = try copies(of: participant, mac: mac)
+            let sorted = found.ids.sorted { $0.description < $1.description }
             let line = JSON.object([
                 ("at", .string(at.text)),
                 ("participantHMAC", .string(mac)),
@@ -1018,36 +1046,81 @@ public struct Storage: Sendable {
             var bytes: [UInt8] = []
             line.write(into: &bytes)
             bytes.append(0x0A)
-            let created = !exists(deletionLog)
-            try appendAndSync(Data(bytes), to: deletionLog, create: true)
-            if created {
-                try protect(deletionLog)
-                try syncPath(deletionLog.deletingLastPathComponent())
-            }
-            try excludeFromBackup(deletionLog)
-            for target in targets {
+            try appendLine(Data(bytes), to: deletionLog)
+            for target in found.owned + found.recovering {
                 try FileManager.default.removeItem(at: target)
                 try syncPath(target.deletingLastPathComponent())
+                try checkpoint(.withdrawalItemRemoved)
             }
-            return Withdrawal(sessions: sorted, unreadable: unreadable)
+            return Withdrawal(sessions: sorted, unreadable: found.unreadable)
         }
     }
 
-    /// True when the deletion log has a line for this participant code. A site confirms a withdrawal this way on
-    /// the device, because the log holds only the keyed hash of the code.
-    public func verifyWithdrawal(participant: ParticipantCode) throws -> Bool {
+    /// What the device shows for a withdrawal of one participant code.
+    public enum WithdrawalCheck: Hashable, Sendable {
+        /// The deletion log has no line for the code.
+        case notLogged
+        /// The deletion log has a line for the code, and the device holds no copy of the code.
+        case complete
+        /// The deletion log has a line for the code, but the device still holds a copy of the code: a withdrawal
+        /// that did not finish, or a session recorded after it.
+        case copiesRemain
+    }
+
+    /// Checks a withdrawal on the device. The deletion log holds only the keyed hash of the code, so the site
+    /// confirms a withdrawal by entering the code. The log line is written before the files go, so the check also
+    /// searches for a copy that a failed withdrawal left.
+    public func verifyWithdrawal(participant: ParticipantCode) throws -> WithdrawalCheck {
         try guarded {
-            guard exists(deletionLog) else { return false }
+            guard exists(deletionLog) else { return .notLogged }
             let key = try deviceSecret.key()
             let code = Data(participant.rawValue.utf8)
+            var logged = false
             for line in try Data(contentsOf: deletionLog).split(separator: 0x0A) {
                 guard let entry = try? Fields(JSON.decodeDocument(Data(line)), path: ""),
                       let mac = try? entry.text("participantHMAC", SHA256Digest.init(hex:))
                 else { continue }
-                if HMAC<SHA256>.isValidAuthenticationCode(mac.bytes, authenticating: code, using: key) { return true }
+                if HMAC<SHA256>.isValidAuthenticationCode(mac.bytes, authenticating: code, using: key) {
+                    logged = true
+                    break
+                }
             }
-            return false
+            guard logged else { return .notLogged }
+            try makeDirectories()
+            return try copies(of: participant, mac: try participantHMAC(participant).hex).owned.isEmpty
+                ? .complete : .copiesRemain
         }
+    }
+
+    // MARK: Resume attempts
+
+    /// The wrong codes that the resume screen got for this session since the last correct code.
+    public func failedResumes(of id: SessionID) throws -> Int {
+        try guarded {
+            guard exists(resumeLog) else { return 0 }
+            var failed = 0
+            for line in try Data(contentsOf: resumeLog).split(separator: 0x0A) {
+                guard let entry = try? Fields(JSON.decodeDocument(Data(line)), path: ""),
+                      (try? entry.string("sessionID")) == id.description, let wrong = try? entry.bool("wrong")
+                else { continue }
+                failed = wrong ? failed + 1 : 0
+            }
+            return failed
+        }
+    }
+
+    /// Records one code that a person typed to resume this session, and syncs the line before it returns, so a
+    /// relaunch cannot give back an attempt. Returns the wrong codes since the last correct code.
+    @discardableResult
+    public func recordResume(of id: SessionID, wrong: Bool) throws -> Int {
+        try guarded {
+            try makeDirectories()
+            var bytes: [UInt8] = []
+            JSON.object([("sessionID", .string(id.description)), ("wrong", .bool(wrong))]).write(into: &bytes)
+            bytes.append(0x0A)
+            try appendLine(Data(bytes), to: resumeLog)
+        }
+        return try failedResumes(of: id)
     }
 
     /// Appends the export's name and the keyed hash of its participant code to the export index, once.
@@ -1057,13 +1130,19 @@ public struct Storage: Sendable {
         var bytes: [UInt8] = []
         JSON.object([("name", .string(name)), ("participantHMAC", .string(mac))]).write(into: &bytes)
         bytes.append(0x0A)
-        let created = !exists(exportIndex)
-        try appendAndSync(Data(bytes), to: exportIndex, create: true)
+        try appendLine(Data(bytes), to: exportIndex)
+    }
+
+    /// Appends one synced line to a log of the device, which it creates on first use with the file protection of
+    /// the journals and outside device backups.
+    private func appendLine(_ line: Data, to log: URL) throws {
+        let created = !exists(log)
+        try appendAndSync(line, to: log, create: true)
         if created {
-            try protect(exportIndex)
-            try syncPath(exportIndex.deletingLastPathComponent())
+            try protect(log)
+            try syncPath(log.deletingLastPathComponent())
         }
-        try excludeFromBackup(exportIndex)
+        try excludeFromBackup(log)
     }
 
     /// The export names that the index gives for one keyed hash.
@@ -1089,6 +1168,36 @@ public struct Storage: Sendable {
               case .sessionOpened(let opened) = entry.event
         else { return nil }
         return opened
+    }
+
+    // MARK: Diagnostics
+
+    /// What the file system reports for one research folder or log of the device.
+    public struct ItemFacts: Hashable, Sendable {
+        /// The last path component, for example `Sessions` or `Deletions.jsonl`.
+        public let name: String
+        public let exists: Bool
+        /// The file protection class as the system names it. Nil when the item does not exist or the system has
+        /// no protection class, as on a Mac.
+        public let protection: String?
+        /// Nil when the item does not exist.
+        public let excludedFromBackup: Bool?
+    }
+
+    /// The protection class and the backup exclusion that the file system reports for each research folder and log.
+    /// The device diagnostics show them, because only a real device has file protection. It reads no content.
+    public func itemFacts() -> [ItemFacts] {
+        [sessions, staging, exports, damaged, deletionLog, exportIndex, resumeLog].map { url in
+            guard exists(url) else {
+                return ItemFacts(name: url.lastPathComponent, exists: false, protection: nil, excludedFromBackup: nil)
+            }
+            let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+            return ItemFacts(
+                name: url.lastPathComponent, exists: true,
+                protection: (attributes?[.protectionKey] as? FileProtectionType)?.rawValue,
+                excludedFromBackup: (try? url.resourceValues(forKeys: [.isExcludedFromBackupKey]))?.isExcludedFromBackup
+            )
+        }
     }
 
     // MARK: Files
@@ -1145,6 +1254,12 @@ public struct Storage: Sendable {
 public protocol DeviceSecret: Sendable {
     /// The key. The first call creates and stores it.
     func key() throws -> SymmetricKey
+    /// The accessibility class of the stored key as its store names it, or nil when the store has none.
+    func accessibility() -> String?
+}
+
+extension DeviceSecret {
+    public func accessibility() -> String? { nil }
 }
 
 /// The app's device secret: a generic-password Keychain item, readable after the first unlock, that never moves to
@@ -1171,6 +1286,18 @@ public struct KeychainDeviceSecret: DeviceSecret {
     private static var query: [String: Any] {
         [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
          kSecAttrAccount as String: account, kSecUseDataProtectionKeychain as String: true]
+    }
+
+    /// The accessibility class of the stored item as the Keychain names it, for the device diagnostics. Nil when no
+    /// item exists yet. It reads no key.
+    public func accessibility() -> String? {
+        var query = Self.query
+        query[kSecReturnAttributes as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let attributes = result as? [String: Any] else { return nil }
+        return attributes[kSecAttrAccessible as String] as? String
     }
 
     private func read() throws -> SymmetricKey? {

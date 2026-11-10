@@ -273,7 +273,7 @@ For remote participation by minors, published studies used extra identity checks
 
 ### Resume a self-administered session
 
-When the app stops during a self-administered session, the next launch opens the session again for its participant. The app asks "Type your participant code to continue." The session resumes only when the participant types the code of the session. A wrong code shows "This code is not the code of this session."
+When the app stops during a self-administered session, the next launch opens the session again for its participant. The app asks "Type your participant code to continue." The session resumes only when the participant types the code of the session. A wrong code shows "This code is not the code of this session." and the number of tries that are left. After 5 wrong codes, the session closes and does not resume. The app shows the support list first when the session had a questionnaire. Home then lists the session as closed, with **Export**. Export it at once, because it can hold a flag. The app keeps the count of wrong codes when it relaunches. A correct code sets the count back to zero.
 
 A session can resume only inside its resume window, `selfAdministered.resumeWithinHours` after the session opened. After the window, the next launch closes the session without a crisis list, because no participant is present. Home then lists it as closed, with **Export**. Export it at once, because it can hold a flag.
 
@@ -328,6 +328,7 @@ The count includes endorsed, skipped, and unreached safety items. When the count
 - **Participant stops.** Respect the decision. [Take over](#take-over-during-a-session), and tap **End the session**.
 - **Damaged journal.** Home lists a journal with damage before its last line as damaged. Tap **Export damaged journal**. Transfer the package and take it into the study store as an export. Tell the sponsor. Do not delete it unless the protocol or a withdrawal requires it.
 - **Write failure.** The app shows "The session stopped" and keeps every line saved before the failure. Tap **Go to Home**. Free storage, and relaunch the app. Home lists the session as interrupted.
+- **Write failure in a self-administered session.** The participant sees "The session stopped. Please tell the study team." The screen also shows the support list when a questionnaire had started. Press and hold **Operator** to open Home. Export the session after the next launch, because it can hold a flag.
 - **Configuration not on this iPad.** To resume or export a session, the iPad needs the configuration that the session used. Import that configuration, and try again.
 
 ## Export a session
@@ -341,7 +342,7 @@ The count includes endorsed, skipped, and unreached safety items. When the count
 7. [Take the export into the study store](#take-exports-into-the-study-store).
 8. After the result `accepted`, `duplicate`, or `damaged`, delete the export from the iPad and the transfer location.
 
-Home shows only the last 4 characters of each participant code. To see the full codes, tap **Show participant codes** and enter the PIN. A self-administered participant exports with **Save to Files** on the thank-you screen. Record that export in the register in the same way.
+Home masks each participant code. It shows at most the last 4 characters and hides at least 4. To see the full codes, tap **Show participant codes** and enter the PIN. A self-administered participant exports with **Save to Files** on the thank-you screen. Record that export in the register in the same way.
 
 ## Take exports into the study store
 
@@ -405,6 +406,7 @@ Follow the [withdrawal and deletion procedure](DATA_GOVERNANCE.md#withdrawal-and
 4. Tap **Delete every recording of this code**, and then tap **Delete**.
 5. Record the session identifiers that the app lists under **Deleted**.
 6. Tap **Verify a withdrawal**, enter the code, and tap **Check the deletion log**.
+7. Check that the app reports a withdrawal and no recording of this code. If a recording is still on the iPad, do steps 2 to 6 again.
 
 ## Session checklists
 

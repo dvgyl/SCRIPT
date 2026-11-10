@@ -104,7 +104,7 @@ SCRIPT Bench records the Wacom tablet of the [bench protocol](BENCH_PROTOCOL.md)
 
 1. Make the build on the bench Mac from a commit that `./check` passed, with no change in the working tree.
 2. Run the build command below. Use the Release configuration.
-3. Run the [tablet test](DEVICE_TESTING.md#test-script-bench-on-a-mac-with-the-wacom-tablet) with this build.
+3. Run the [tablet test](DEVICE_TESTING.md#part-b-the-wacom-tablet) with this build.
 4. Record the version, the build number, and the source revision from the first journal of the build.
 
 ```sh

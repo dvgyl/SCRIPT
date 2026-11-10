@@ -498,15 +498,26 @@ def write_lock(
 def check_programs_file(root: Path) -> None:
     """Section 14 step 4: each controller file under `bench/programs/` is the translation of its move list,
     and `contract/bench_programs.json` records its SHA-256, so that the capture tools never lock a
-    placeholder and the motion system never executes a stale controller file."""
+    placeholder and the motion system never executes a stale controller file. The programs file also
+    records the SHA-256 of `docs/BENCH_PROTOCOL.md`, so that each bench journal names the locked text."""
     try:
         digests = translated_digests(root / "bench" / "programs")
         raw: Any = json.loads((root / "contract" / "bench_programs.json").read_text(encoding="utf-8"))
         recorded = {str(p["id"]): str(p["trajectorySHA256"]) for p in raw["programs"]}
+        protocol = str(raw["protocol"]["sha256"])
     except (ControllerError, FormatError) as e:
         raise InputError(str(e)) from e
     except (OSError, json.JSONDecodeError, KeyError, TypeError) as e:
         raise InputError(f"contract/bench_programs.json: {e}") from e
+    try:
+        text_digest = _sha256(root / "docs" / "BENCH_PROTOCOL.md")
+    except OSError as e:
+        raise InputError(f"docs/BENCH_PROTOCOL.md: {e}") from e
+    if protocol != text_digest:
+        raise InputError(
+            "contract/bench_programs.json does not record the SHA-256 of docs/BENCH_PROTOCOL.md."
+            " Run scriptkin contract regenerate."
+        )
     stale = sorted(pid for pid, digest in digests.items() if recorded.get(pid) != digest)
     if stale:
         raise InputError(

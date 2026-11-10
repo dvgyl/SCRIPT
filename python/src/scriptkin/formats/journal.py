@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 from typing import Any, cast
@@ -103,9 +104,14 @@ _APP_CLOCK_KINDS = (
 _CONTACT = integer(1)
 _BITS = integer(0, 31)
 _INDEX = integer(0)
-_LOCALIZED = record({"id": text, "version": text, "locale": text})
+_UUID = matches("[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}")
+_CODE = matches("[A-Za-z0-9-]{1,32}")
+_ID = matches("[a-z0-9-]+")
+_LOCALE = matches("[a-z]{2,3}(-[A-Za-z0-9]{2,8})*")
+_LOCALIZED = record({"id": text, "version": text, "locale": _LOCALE})
+_INSTRUMENT = record({"id": _ID, "version": text, "locale": _LOCALE})
 _SHA256 = matches("[0-9a-f]{64}")
-_PENCIL_VALUES = {k: number for k in _PENCIL_CHANNELS}
+_PENCIL_VALUES = {k: uptime if k == "force" else number for k in _PENCIL_CHANNELS}
 # A tablet tilt component is the normalised tilt of AppKit, -1 to 1.
 _TABLET_VALUES = {"tiltX": between(-1, 1), "tiltY": between(-1, 1), "rotation": number}
 _SCALE = any_of(
@@ -141,13 +147,13 @@ _STIMULUS = any_of(
         },
         {"start": point},
     ),
-    record({"kind": one_of("text"), "frameMM": point, "text": text, "fontSizeMM": positive}),
+    record({"kind": one_of("text"), "frameMM": point, "text": nonempty, "fontSizeMM": positive}),
 )
 _SPEC = record(
     {
-        "id": text,
+        "id": _ID,
         "mode": one_of("trace", "copy", "free"),
-        "instruction": text,
+        "instruction": nonempty,
         "stimulus": _STIMULUS,
         "completion": any_of(
             record({"kind": one_of("participantDone"), "maxSeconds": positive}),
@@ -155,7 +161,7 @@ _SPEC = record(
         ),
     }
 )
-_ANSWER = {"t": uptime, "block": _INDEX, "item": text, "skipped": boolean}
+_ANSWER = {"t": uptime, "block": _INDEX, "item": _ID, "skipped": boolean}
 
 # Required and optional payload fields of each line kind. Unknown keys pass: a minor version adds keys.
 # `sessionOpened` and `trialStarted` also have the keys of their subject shape, in `_SUBJECT_LINES`.
@@ -164,12 +170,12 @@ _LINES: dict[str, tuple[dict[str, Check], dict[str, Check]]] = {
         {
             "format": text,
             "purpose": one_of("study", "qualification", "bench"),
-            "sessionID": text,
+            "sessionID": _UUID,
             "openedAt": text,
             "openedUptime": uptime,
-            "boot": text,
-            "app": record({"version": text, "build": text, "sourceRevision": text}),
-            "device": record({"model": text, "os": text, "nativeScale": positive, "asset": text}),
+            "boot": _UUID,
+            "app": record({"version": text, "build": text, "sourceRevision": nonempty}),
+            "device": record({"model": text, "os": text, "nativeScale": positive, "asset": _CODE}),
             "surface": record(
                 {
                     "protector": one_of("none", "glossy", "matte", "paperlike", "unknown"),
@@ -182,15 +188,15 @@ _LINES: dict[str, tuple[dict[str, Check], dict[str, Check]]] = {
                 {k: boolean for k in (*_PENCIL_CHANNELS, "hover")}, {k: boolean for k in _TABLET_CHANNELS}
             ),
             "input": one_of("pencil", "directTouchAsPen", "tablet"),
-            "battery": record({"id": text, "version": text, "sha256": text}),
+            "battery": record({"id": text, "version": text, "sha256": _SHA256}),
         },
-        {"qualification": record({"sessionID": text, "at": text}), "tablet": _TABLET},
+        {"qualification": record({"sessionID": _UUID, "at": text}), "tablet": _TABLET},
     ),
     "handoff": ({"t": uptime, "to": one_of("participant", "operator")}, {}),
     "trialStarted": (
         {
             "t": uptime,
-            "trial": record({"index": _INDEX, "task": text, "attempt": integer(1)}),
+            "trial": record({"index": _INDEX, "task": _ID, "attempt": integer(1)}),
             "spec": _SPEC,
             "practice": boolean,
             "position": integer(1),
@@ -228,7 +234,7 @@ _LINES: dict[str, tuple[dict[str, Check], dict[str, Check]]] = {
     ),
     "finger": ({"t": uptime, "phase": one_of("began", "ended", "cancelled"), "x": number, "y": number}, {}),
     "trialEnded": ({"t": uptime, "trial": _INDEX, "reason": one_of(*OUTCOME_OF_REASON)}, {}),
-    "questionnaireStarted": ({"t": uptime, "block": _INDEX, "instrument": _LOCALIZED}, {}),
+    "questionnaireStarted": ({"t": uptime, "block": _INDEX, "instrument": _INSTRUMENT}, {}),
     "response": (_ANSWER, {"value": integer()}),
     "questionnaireEnded": (
         {"t": uptime, "block": _INDEX, "reason": one_of("completed", "declined", "interrupted")},
@@ -236,7 +242,7 @@ _LINES: dict[str, tuple[dict[str, Check], dict[str, Check]]] = {
     ),
     "safetyFlagged": (_ANSWER, {"value": integer()}),
     "safetyShown": ({"t": uptime, "what": one_of("crisisList", "operatorAlert")}, {"listVersion": text}),
-    "safetyAction": ({"t": uptime, "code": text, "role": one_of("operator")}, {}),
+    "safetyAction": ({"t": uptime, "code": _CODE, "role": one_of("operator")}, {}),
     "mark": (
         {
             "t": uptime,
@@ -246,7 +252,7 @@ _LINES: dict[str, tuple[dict[str, Check], dict[str, Check]]] = {
         {},
     ),
     "recovered": (
-        {"t": uptime, "at": text, "boot": text, "truncatedBytes": integer(0)},
+        {"t": uptime, "at": text, "boot": _UUID, "truncatedBytes": integer(0)},
         {"interrupted": _INDEX, "interruptedBlock": _INDEX},
     ),
     "sessionClosed": ({"t": uptime, "counts": record({k: integer(0) for k in KINDS[:-1]})}, {}),
@@ -255,21 +261,28 @@ _LINES: dict[str, tuple[dict[str, Check], dict[str, Check]]] = {
 # The required keys of each subject shape. The purpose selects one shape, and the keys of the other
 # shape are refused. A study or qualification session has a participant, and a bench session has none.
 _PARTICIPANT_SESSION: dict[str, Check] = {
-    "participant": text,
+    "participant": matches("[A-Z0-9-]{3,16}"),
     "administration": one_of("supervised", "self"),
     "study": record(
-        {k: text for k in ("id", "site", "configID", "configVersion", "configSHA256", "protocolVersion")}
+        {
+            "id": _CODE,
+            "site": _CODE,
+            "configID": _CODE,
+            "configVersion": text,
+            "configSHA256": _SHA256,
+            "protocolVersion": text,
+        }
     ),
-    "visit": record({"id": text, "number": integer(1)}),
+    "visit": record({"id": _CODE, "number": integer(1)}),
     "ageBand": one_of("13-17", "18-24"),
-    "jurisdiction": text,
-    "locale": text,
+    "jurisdiction": matches("[A-Z]{2}"),
+    "locale": _LOCALE,
     "consent": record(
         {
             "model": one_of("adult", "guardianAndAssent", "waiver"),
-            "attestedBy": record({"code": text, "role": one_of("operator", "enrolment")}),
+            "attestedBy": record({"code": _CODE, "role": one_of("operator", "enrolment")}),
             "attestedAt": text,
-            "documents": array(record({"id": text, "version": text})),
+            "documents": array(record({"id": nonempty, "version": nonempty})),
         },
         {"waiverReference": text},
     ),
@@ -340,6 +353,23 @@ def _shape(line: Line, i: int, purpose: str) -> None:
         raise JournalError("I1", i, "A skipped item has no value, and an answered item has one.")
 
 
+_LONG_DIGITS = re.compile(rb"[0-9]{19}")
+
+
+def _invalid_constant(value: str) -> Any:
+    raise ValueError("Invalid JSON constant.")
+
+
+def _valid_integers(value: Any) -> bool:
+    if type(value) is int:
+        return -(2**63) <= value < 2**63
+    if isinstance(value, dict):
+        return all(_valid_integers(v) for v in value.values())
+    if isinstance(value, list):
+        return all(_valid_integers(v) for v in value)
+    return True
+
+
 def _decode(lines: Lines) -> list[Line]:
     decoded: list[Line] = []
     purpose = ""
@@ -355,12 +385,25 @@ def _decode(lines: Lines) -> list[Line]:
             if not valid_lf:
                 raise JournalError("I1", i, "Each line must end in LF.")
             try:
-                line = json.loads(raw)
+                if isinstance(raw, bytes) and raw.startswith(b"\xef\xbb\xbf"):
+                    raise ValueError("BOM")
+                line = json.loads(raw, parse_constant=_invalid_constant)
+                # Only a `\u` escape can give a lone surrogate, which does not encode to UTF-8.
+                escaped = b"\\u" in raw if isinstance(raw, bytes) else "\\u" in raw
+                if escaped:
+                    json.dumps(line, ensure_ascii=False).encode("utf-8")
             except (ValueError, UnicodeError) as e:
                 raise JournalError("I1", i, "Invalid UTF-8 JSON.") from e
         if not isinstance(line, dict) or line.get("kind") not in KINDS:
             raise JournalError("I1", i, "Expected an object with a known kind.")
+        # Only a number of 19 digits or more can leave the signed 64-bit range, so a line of bytes without one
+        # skips the walk.
+        walk = not isinstance(raw, bytes) or _LONG_DIGITS.search(raw) is not None
+        if walk and not _valid_integers(line):
+            raise JournalError("I1", i, "Integer outside the signed 64-bit range.")
         row = cast(Line, line)
+        if type(row.get("seq")) is int and not integer(0)(row["seq"]):
+            raise JournalError("I1", i, "seq is invalid.")
         if type(row.get("seq")) is not int or row["seq"] != i:
             raise JournalError("I2", i, "seq must equal the zero-based line index.")
         if i == 0:
@@ -491,8 +534,8 @@ class FoldState:
 
     def _trial_started(self, i: int, row: Line) -> None:
         index = row["trial"]["index"]
-        if self.state not in ("ready", "suspended") or any(t.index == index for t in self.trials):
-            raise JournalError("I6", i, "Trials and blocks overlap, or a trial index repeats.")
+        if self.state not in ("ready", "suspended") or index != len(self.trials):
+            raise JournalError("I6", i, "Trials and blocks overlap, or the trial index is not next.")
         self.trial = _Trial(row, self.boot)
         self.trials.append(self.trial)
         self.state = "drawing"
@@ -568,8 +611,8 @@ class FoldState:
 
     def _questionnaire_started(self, i: int, row: Line) -> None:
         number = row["block"]
-        if self.state not in ("ready", "suspended") or any(b.number == number for b in self.blocks):
-            raise JournalError("I6", i, "Trials and blocks overlap, or a block number repeats.")
+        if self.state not in ("ready", "suspended") or number != len(self.blocks):
+            raise JournalError("I6", i, "Trials and blocks overlap, or the block index is not next.")
         self.block = _Block(row, self.boot)
         self.blocks.append(self.block)
         self.state = "answering"

@@ -273,6 +273,7 @@ def registered_folder(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
     def clear() -> None:
         bench.registered_digests.cache_clear()
+        bench.protocol_sha256.cache_clear()
         bench.programs_json.cache_clear()
         bench.programs_sha256.cache_clear()
 
@@ -291,6 +292,30 @@ def test_the_programs_file_takes_each_trajectory_digest_from_its_controller_file
     table = {p["id"]: p["trajectorySHA256"] for p in json.loads(bench.programs_json())["programs"]}
     files = {p.id: controller_folder / f"{p.id}.ebb" for p in bench.PROGRAMS}
     assert table == {pid: hashlib.sha256(path.read_bytes()).hexdigest() for pid, path in files.items()}
+
+
+def test_the_protocol_digest_is_the_placeholder_until_a_controller_file_exists(
+    controller_folder: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, registered_folder: None
+) -> None:
+    # Detects a programs file that keeps the placeholder of 64 zeros as its protocol digest after step 4 of
+    # the lock, so that every bench journal names no protocol text, or a digest that changes before that step.
+    protocol = tmp_path / "BENCH_PROTOCOL.md"
+    protocol.write_text("the protocol text at the lock\n", encoding="utf-8")
+    monkeypatch.setattr(bench, "PROTOCOL_FILE", protocol)
+    # A folder without a controller file, whatever the repository holds after the lock.
+    monkeypatch.setattr(bench, "PROGRAM_FOLDER", tmp_path / "programs")
+    assert json.loads(bench.programs_json())["protocol"] == {
+        "version": bench.PROTOCOL_VERSION,
+        "sha256": bench.PLACEHOLDER_SHA256,
+    }
+    bench.registered_digests.cache_clear()
+    bench.protocol_sha256.cache_clear()
+    bench.programs_json.cache_clear()
+    monkeypatch.setattr(bench, "PROGRAM_FOLDER", controller_folder)
+    assert json.loads(bench.programs_json())["protocol"] == {
+        "version": bench.PROTOCOL_VERSION,
+        "sha256": hashlib.sha256(protocol.read_bytes()).hexdigest(),
+    }
 
 
 def test_the_trajectory_digests_refuse_a_move_list_or_a_controller_file_alone(

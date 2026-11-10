@@ -199,13 +199,22 @@ struct Driver {
         try write(recorder.pen(readings))
     }
 
-    /// Answers every item of the open block. Items not in `values` get 0. A nil value skips the item.
+    /// Answers every item of the open block. Items not in `values` get 0. A nil value skips the item. A
+    /// self-administered session shows the crisis list at once after a flag, as the app does.
     mutating func answerAll(_ instrument: InstrumentID, t: Double, values: [ItemID: Int?] = [:]) throws {
         try run(.startQuestionnaire(instrument, t: t))
         for (n, item) in rules.instruments.instrument(instrument)!.items.enumerated() {
             try run(.respond(item: item.id, value: values[item.id] ?? 0, t: t + Double(n + 1)))
+            try showCrisisListIfItWaits(t: t + Double(n + 1))
         }
         try run(.endQuestionnaire(reason: .completed, t: t + 20))
+        try showCrisisListIfItWaits(t: t + 20)
+    }
+
+    private mutating func showCrisisListIfItWaits(t: Double) throws {
+        guard case .participant(let person) = state.session.opened.subject, person.administration == .selfAdministered,
+              state.session.safety.flaggedSinceCrisisList else { return }
+        try run(.show(.crisisList, t: t))
     }
 }
 
